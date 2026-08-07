@@ -740,7 +740,6 @@ def test_list_recent_respects_limit(pg_store: PostgresStore) -> None:
 from __future__ import annotations
 
 from collections.abc import Iterator
-from textwrap import dedent
 
 import pytest
 from testcontainers.postgres import PostgresContainer
@@ -749,7 +748,8 @@ from dojo.adapters.db import Base, PostgresStore
 
 
 @pytest.fixture(scope="session")
-def pg_store() -> Iterator[PostgresStore]:
+def _pg_session() -> Iterator[PostgresStore]:
+    """One real PostgreSQL container shared by all tests in the session."""
     with PostgresContainer("postgres:16-alpine") as pg:
         url = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql+psycopg://")
         store = PostgresStore(url)
@@ -760,14 +760,19 @@ def pg_store() -> Iterator[PostgresStore]:
             store.dispose()
 
 
-@pytest.fixture(autouse=True)
-def clean_db(pg_store: PostgresStore) -> Iterator[None]:
-    """Truncate both tables before each test so the shared container stays isolated."""
-    with pg_store._session() as session:  # noqa: SLF001
+@pytest.fixture
+def pg_store(_pg_session: PostgresStore) -> Iterator[PostgresStore]:
+    """Truncate both tables before each DB test so the shared container stays isolated.
+
+    Only tests that request ``pg_store`` touch PostgreSQL; unit tests and the
+    FFmpeg harness never start a container.
+    """
+    store = _pg_session
+    with store._session() as session:  # noqa: SLF001
         session.execute(Base.metadata.tables["audit_events"].delete())
         session.execute(Base.metadata.tables["packages"].delete())
         session.commit()
-    yield
+    yield store
 ```
 
 - [ ] **Step 3: Run, expect failure (no `db.py`)**
