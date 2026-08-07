@@ -2047,19 +2047,19 @@ jobs:
         run: uv sync --all-packages
       - name: Lint
         run: |
-          uv run --project dojo-core ruff check src tests
-          uv run --project backend ruff check src tests
-          uv run --project worker ruff check src tests
+          uv run --project dojo-core ruff check dojo-core/src dojo-core/tests
+          uv run --project backend ruff check backend/src backend/tests
+          uv run --project worker ruff check worker/src worker/tests
       - name: Typecheck
         run: |
-          uv run --project dojo-core mypy src/dojo
-          uv run --project backend mypy src/backend
-          uv run --project worker mypy src/worker
+          uv run --project dojo-core mypy dojo-core/src/dojo
+          uv run --project backend mypy backend/src/backend
+          uv run --project worker mypy worker/src/worker
       - name: Tests
         run: |
-          uv run --project dojo-core pytest tests -v
-          uv run --project backend pytest tests -v
-          uv run --project worker pytest tests -v
+          uv run --project dojo-core pytest dojo-core/tests -v
+          uv run --project backend pytest backend/tests -v
+          uv run --project worker pytest worker/tests -v
 
   web:
     runs-on: ubuntu-latest
