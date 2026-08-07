@@ -1,4 +1,4 @@
-[workspace]
+[tool.uv.workspace]
 members = ["dojo-core", "backend", "worker"]
 
 [tool.ruff]

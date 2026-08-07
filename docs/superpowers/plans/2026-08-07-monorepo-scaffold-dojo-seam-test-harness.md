@@ -51,11 +51,8 @@
 
 `pyproject.toml`:
 ```toml
-[workspace]
+[tool.uv.workspace]
 members = ["dojo-core", "backend", "worker"]
-
-[tool.uv]
-default-groups = ["dev"]
 
 [tool.ruff]
 line-length = 100
