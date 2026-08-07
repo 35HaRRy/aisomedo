@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import re
+import json
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -50,7 +50,7 @@ def render_test_clip(dst: Path, *, duration: float = 1.0, size: str = "640x360")
 
 
 def probe_duration(dst: Path) -> float:
-    """Decode a media file inside the container; return duration in seconds."""
+    """Probe a media file inside the container; return duration in seconds."""
     import docker
 
     client = docker.from_env()
@@ -58,13 +58,12 @@ def probe_duration(dst: Path) -> float:
     dst = dst.resolve()
     logs = client.containers.run(
         FFMPEG_IMAGE,
-        command=["-v", "error", "-i", f"/work/{dst.name}", "-f", "null", "-"],
+        command=["-v", "error", "-print_format", "json", "-show_format", "-i", f"/work/{dst.name}"],
         volumes={str(dst.parent): {"bind": "/work", "mode": "rw"}},
-        entrypoint="ffmpeg",
+        entrypoint="ffprobe",
         remove=True,
     )
-    match = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", logs.decode())
-    if not match:
-        return 1.0
-    h, m, s = (float(x) for x in match.groups())
-    return h * 3600 + m * 60 + s
+    duration = json.loads(logs.decode()).get("format", {}).get("duration")
+    if duration is None:
+        raise RuntimeError(f"could not probe duration of {dst}")
+    return float(duration)
