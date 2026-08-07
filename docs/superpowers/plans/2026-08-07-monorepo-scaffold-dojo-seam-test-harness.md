@@ -1064,7 +1064,7 @@ def test_alembic_upgrade_head_creates_schema(pg_store: PostgresStore, tmp_path: 
 - [ ] **Step 8: Lint + typecheck + full suite**
 
 Run: `uv run --project dojo-core ruff check dojo-core/src dojo-core/tests; uv run --project dojo-core mypy dojo-core/src/dojo; uv run --project dojo-core pytest dojo-core/tests -v`
-Expected: clean + all tests pass. Note: the migration test drops and recreates schema via alembic; the `clean_db` autouse fixture still runs after it.
+Expected: clean + all tests pass. Note: the migration test drops and recreates schema via alembic; the `pg_store` truncation fixture still runs after it.
 
 - [ ] **Step 9: Commit**
 
