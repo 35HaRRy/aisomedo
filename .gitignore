@@ -22,5 +22,14 @@ node_modules/
 .next/
 out/
 coverage/
+dist/
+build/
 
 .agents/
+
+# Python packaging
+*.egg-info/
+
+*.log
+media/
+.DS_Store
