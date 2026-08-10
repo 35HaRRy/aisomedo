@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
 from dojo import DojoPublishing
 from fastapi import FastAPI
@@ -11,14 +11,14 @@ from backend.routes import health, packages
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if not hasattr(app.state, "publishing"):
         app.state.publishing = build_publishing()
     yield
 
 
 def create_app(publishing: DojoPublishing | None = None) -> FastAPI:
-    app = FastAPI(title="Dojo Publishing API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Dojo publishing API", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
     if publishing is not None:
         app.state.publishing = publishing
     app.include_router(health.router)
