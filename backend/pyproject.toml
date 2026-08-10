@@ -9,6 +9,9 @@ dependencies = [
     "dojo-core",
 ]
 
+[project.scripts]
+dojo-create-pairing-code = "backend.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.4,<10",
