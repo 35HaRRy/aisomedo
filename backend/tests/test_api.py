@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backend.main import create_app
 from dojo import DojoPublishing, InMemoryStore
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
 from dojo.testing import FakeClock
 from fastapi.testclient import TestClient
+
+from backend.main import create_app
 
 
 def make_client(tmp_path: Path) -> tuple[TestClient, DojoPublishing]:
