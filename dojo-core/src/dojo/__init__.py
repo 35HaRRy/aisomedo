@@ -27,6 +27,7 @@ from dojo.model import (
     PairingCodeIssued,
     PairingResult,
 )
+from dojo.pairing import DojoPairing
 from dojo.publishing import DojoPublishing
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "Client",
     "ClientNotFound",
     "DojoError",
+    "DojoPairing",
     "DojoPublishing",
     "InMemoryStore",
     "Manifest",
