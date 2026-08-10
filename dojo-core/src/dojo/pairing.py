@@ -5,6 +5,7 @@ from datetime import timedelta
 from dojo.adapters.clock import SystemClock
 from dojo.adapters.secrets import RandomSecretGenerator, Sha256Hasher
 from dojo.exceptions import (
+    ClientNotFound,
     PairingCodeConsumed,
     PairingCodeExpired,
     PairingCodeInvalid,
@@ -98,6 +99,26 @@ class DojoPairing:
             )
         )
         return PairingResult(client_id=client.id, kind=kind, raw_credential=raw_credential)
+
+    def list_clients(self) -> list[Client]:
+        return self._pairing.list_clients()
+
+    def revoke_client(self, *, client_id: int, requester: str) -> None:
+        client = self._pairing.find_client_by_id(client_id)
+        if client is None:
+            raise ClientNotFound(f"no client {client_id}")
+        if client.revoked_at is not None:
+            return
+        now = self._clock.now()
+        self._pairing.mark_client_revoked(client_id, now)
+        self._audit.append(
+            AuditEvent(
+                action="pairing.client_revoked",
+                actor=requester,
+                occurred_at=now,
+                details={"client_id": client_id, "name": client.name, "kind": client.kind},
+            )
+        )
 
     def authenticate_bearer(self, token: str) -> Client | None:
         return self._verify_credential(self._hasher.hash(token))
