@@ -29,7 +29,7 @@ def pg_store(_pg_session: PostgresStore) -> Iterator[PostgresStore]:
     """
     store = _pg_session
     with store._session() as session:  # noqa: SLF001
-        session.execute(Base.metadata.tables["audit_events"].delete())
-        session.execute(Base.metadata.tables["packages"].delete())
+        for table in ("pairing_codes", "clients", "audit_events", "packages"):
+            session.execute(Base.metadata.tables[table].delete())
         session.commit()
     yield store
