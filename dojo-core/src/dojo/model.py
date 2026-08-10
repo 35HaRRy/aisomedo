@@ -38,3 +38,37 @@ class AuditEvent:
     actor: str
     occurred_at: datetime
     details: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PairingCode:
+    id: int
+    code_hash: str
+    expires_at: datetime
+    created_by: str
+    created_at: datetime
+    consumed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PairingCodeIssued:
+    raw_code: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class Client:
+    id: int
+    name: str
+    kind: str
+    created_at: datetime
+    created_by: str
+    last_seen_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PairingResult:
+    client_id: int
+    kind: str
+    raw_credential: str
