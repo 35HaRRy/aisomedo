@@ -49,6 +49,8 @@ New frozen dataclasses in `dojo/model.py`:
 
 - `PairingCode`: `id`, `code_hash`, `expires_at`, `created_by`, `created_at`,
   `consumed_at` (nullable).
+- `PairingCodeIssued`: `raw_code`, `expires_at` — what `create_pairing_code`
+  returns to the caller (the raw code is never persisted).
 - `Client`: `id`, `name`, `kind` (`"device"`|`"browser"`), `created_at`,
   `created_by`, `last_seen_at` (nullable), `revoked_at` (nullable).
 
@@ -75,8 +77,10 @@ implements both the existing store and `PairingStore`.
 ## Ports (`dojo/ports.py`)
 
 - `PairingStore(Protocol)`: `create_code`, `find_code_by_hash`,
-  `mark_code_consumed`, `create_client`, `find_client_by_credential_hash`,
-  `list_clients`, `mark_client_revoked`, `touch_client`.
+  `mark_code_consumed(code_id, at) -> bool` (conditional, returns whether this
+  call won the single-use), `find_client_by_id`, `create_client(client,
+  credential_hash)`, `find_client_by_credential_hash`, `list_clients`,
+  `mark_client_revoked`, `touch_client`.
 - `Hasher(Protocol)`: `hash(secret) -> str` (SHA-256).
 - `SecretGenerator(Protocol)`: `generate_code() -> str`, `generate_token() -> str`.
 - Reuse `Clock`, `AuditStore`.
@@ -86,9 +90,10 @@ implements both the existing store and `PairingStore`.
 `DojoPairing(pairing: PairingStore, audit: AuditStore, clock, hasher, generator)`
 with defaults wired to real adapters:
 
-- `create_pairing_code(*, requester: str) -> str` — returns the raw code,
-  stores only the hash. Audit `pairing.code_created`, actor=`requester`
-  (`"cli"` from the bootstrap command, client id from the API).
+- `create_pairing_code(*, requester: str) -> PairingCodeIssued` — returns the
+  raw code plus its expiry, stores only the hash. Audit
+  `pairing.code_created`, actor=`requester` (`"cli"` from the bootstrap
+  command, client id from the API).
 - `validate_code(*, code, kind, name) -> PairingResult` — validates, burns the
   code on success, creates the client, returns `PairingResult(client_id, kind,
   raw_credential)` (token for device, session id for browser). Audit
@@ -119,7 +124,7 @@ with defaults wired to real adapters:
 ## Exceptions (`dojo/exceptions.py`)
 
 `PairingError` base with `PairingCodeInvalid` (unknown), `PairingCodeExpired`,
-`PairingCodeConsumed`, `ClientNotFound`, `InvalidCredential`. FastAPI maps:
+`PairingCodeConsumed`, `ClientNotFound`. FastAPI maps:
 - bad/expired/consumed code → `401` with a generic message (never reveals
   whether the code exists).
 - unknown client on revoke/list/me → `404`.
