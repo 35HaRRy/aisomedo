@@ -12,10 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from backend.deps import get_current_client
+from backend.deps import COOKIE_NAME, SESSION_MAX_AGE, get_current_client
 
-COOKIE_NAME = "dojo_session"
-SESSION_MAX_AGE = 30 * 24 * 3600
 TTL_SECONDS = int(CODE_TTL.total_seconds())
 
 

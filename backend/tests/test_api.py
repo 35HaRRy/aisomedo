@@ -82,6 +82,18 @@ def test_browser_session_cookie_auth(tmp_path: Path) -> None:
     assert client.post("/api/packages/active").status_code == 201
 
 
+def test_browser_session_cookie_refreshed_on_auth(tmp_path: Path) -> None:
+    client, _, pairing = make_app(tmp_path)
+    code = pairing.create_pairing_code(requester="cli").raw_code
+    paired = client.post(
+        "/api/pairing/validate", json={"code": code, "kind": "browser", "name": "Browser"}
+    )
+    assert paired.status_code == 200
+    resp = client.get("/api/pairing/me")
+    assert resp.status_code == 200
+    assert "dojo_session" in resp.headers["set-cookie"]
+
+
 def test_browser_validate_sets_secure_http_only_cookie(tmp_path: Path) -> None:
     store = InMemoryStore()
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
