@@ -116,3 +116,13 @@ def test_invalid_code_returns_401(tmp_path: Path) -> None:
 def test_unauthenticated_code_minting_rejected(tmp_path: Path) -> None:
     client, _, _ = make_app(tmp_path)
     assert client.post("/api/pairing/codes").status_code == 401
+
+
+def test_validate_throttled_per_ip(tmp_path: Path) -> None:
+    client, _, _ = make_app(tmp_path)
+    body = {"code": "aaaaaaaa", "kind": "device", "name": "X"}
+    for _ in range(10):
+        resp = client.post("/api/pairing/validate", json=body)
+        assert resp.status_code == 401
+    resp = client.post("/api/pairing/validate", json=body)
+    assert resp.status_code == 429

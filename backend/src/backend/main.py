@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI
 from backend.deps import build_pairing, build_publishing, get_current_client
 from backend.routes import health, packages
 from backend.routes import pairing as pairing_router
+from backend.routes.pairing import IpThrottle
 
 
 @asynccontextmanager
@@ -41,6 +42,7 @@ def create_app(
     if cookie_secure is None:
         cookie_secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
     app.state.cookie_secure = cookie_secure
+    app.state.throttle = IpThrottle()
     app.include_router(health.router)
     app.include_router(packages.router, dependencies=[Depends(get_current_client)])
     app.include_router(pairing_router.router)

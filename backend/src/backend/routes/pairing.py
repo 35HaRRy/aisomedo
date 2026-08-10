@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import time
+from collections import deque
 from datetime import datetime
+from threading import Lock
 from typing import Literal
 
 from dojo import Client, ClientNotFound, DojoPairing, PairingError
@@ -18,6 +21,35 @@ TTL_SECONDS = int(CODE_TTL.total_seconds())
 
 def get_pairing(request: Request) -> DojoPairing:
     return request.app.state.pairing
+
+
+class IpThrottle:
+    def __init__(self, *, limit: int = 10, window: float = 60.0) -> None:
+        self._limit = limit
+        self._window = window
+        self._attempts: dict[str, deque[float]] = {}
+        self._lock = Lock()
+
+    def allow(self, ip: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            window = self._attempts.setdefault(ip, deque())
+            while window and now - window[0] > self._window:
+                window.popleft()
+            if len(window) >= self._limit:
+                return False
+            window.append(now)
+            return True
+
+
+def get_throttle(request: Request) -> IpThrottle:
+    return request.app.state.throttle
+
+
+def enforce_throttle(request: Request, throttle: IpThrottle = Depends(get_throttle)) -> None:
+    ip = request.client.host if request.client is not None else "unknown"
+    if not throttle.allow(ip):
+        raise HTTPException(status_code=429, detail="too many attempts")
 
 
 router = APIRouter(prefix="/api/pairing", tags=["pairing"])
@@ -54,7 +86,7 @@ def create_code(
     return CodeOut(code=issued.raw_code, expires_at=issued.expires_at, ttl_seconds=TTL_SECONDS)
 
 
-@router.post("/validate")
+@router.post("/validate", dependencies=[Depends(enforce_throttle)])
 def validate(
     body: ValidateIn, request: Request, pairing: DojoPairing = Depends(get_pairing)
 ) -> Response:
