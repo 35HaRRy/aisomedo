@@ -116,17 +116,21 @@ class PostgresStore:
             )
             session.commit()
 
-    def list_recent(self, limit: int = 50) -> list[AuditEvent]:
+    def list_recent(self, limit: int = 50, before_id: int | None = None) -> list[AuditEvent]:
         with self._session() as session:
-            rows = session.scalars(select(AuditRow).order_by(AuditRow.id.desc()).limit(limit)).all()
+            stmt = select(AuditRow).order_by(AuditRow.id.desc()).limit(limit)
+            if before_id is not None:
+                stmt = stmt.where(AuditRow.id < before_id)
+            rows = session.scalars(stmt).all()
             return [
                 AuditEvent(
+                    id=r.id,
                     action=r.action,
                     actor=r.actor,
                     occurred_at=r.occurred_at,
                     details=r.details,
                 )
-                for r in reversed(rows)
+                for r in rows
             ]
 
     def create_code(self, code: PairingCode) -> PairingCode:

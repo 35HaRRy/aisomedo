@@ -38,6 +38,7 @@ class AuditEvent:
     actor: str
     occurred_at: datetime
     details: dict = field(default_factory=dict)
+    id: int = 0
 
 
 @dataclass(frozen=True)

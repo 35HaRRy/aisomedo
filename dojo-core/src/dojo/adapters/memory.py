@@ -16,6 +16,7 @@ class InMemoryStore:
         self._next_id = 1
         self._next_code_id = 1
         self._next_client_id = 1
+        self._next_event_id = 1
 
     def create(self, package: Package) -> Package:
         created = replace(package, id=self._next_id)
@@ -30,10 +31,15 @@ class InMemoryStore:
         return None
 
     def append(self, event: AuditEvent) -> None:
-        self._events.append(event)
+        stored = replace(event, id=self._next_event_id)
+        self._next_event_id += 1
+        self._events.append(stored)
 
-    def list_recent(self, limit: int = 50) -> list[AuditEvent]:
-        return self._events[-limit:]
+    def list_recent(self, limit: int = 50, before_id: int | None = None) -> list[AuditEvent]:
+        events = self._events
+        if before_id is not None:
+            events = [e for e in events if e.id < before_id]
+        return list(reversed(events[-limit:]))
 
     def create_code(self, code: PairingCode) -> PairingCode:
         created = replace(code, id=self._next_code_id)

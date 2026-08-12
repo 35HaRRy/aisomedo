@@ -21,7 +21,9 @@ class PackageStore(Protocol):
 @runtime_checkable
 class AuditStore(Protocol):
     def append(self, event: AuditEvent) -> None: ...
-    def list_recent(self, limit: int = 50) -> list[AuditEvent]: ...
+    def list_recent(
+        self, limit: int = 50, before_id: int | None = None
+    ) -> list[AuditEvent]: ...
 
 
 @runtime_checkable

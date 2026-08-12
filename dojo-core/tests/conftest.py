@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from dojo.adapters.db import Base, PostgresStore
+from dojo.adapters.db import PostgresStore
+from sqlalchemy import text
 from testcontainers.postgres import PostgresContainer
 
 
@@ -28,8 +29,8 @@ def pg_store(_pg_session: PostgresStore) -> Iterator[PostgresStore]:
     FFmpeg harness never start a container.
     """
     store = _pg_session
-    with store._session() as session:  # noqa: SLF001
-        for table in ("pairing_codes", "clients", "audit_events", "packages"):
-            session.execute(Base.metadata.tables[table].delete())
-        session.commit()
+    with store._engine.begin() as conn:  # noqa: SLF001
+        conn.execute(
+            text("TRUNCATE TABLE pairing_codes, clients, audit_events, packages RESTART IDENTITY")
+        )
     yield store

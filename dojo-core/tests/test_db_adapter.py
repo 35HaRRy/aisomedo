@@ -29,7 +29,7 @@ def test_folder_name_is_unique(pg_store: PostgresStore) -> None:
         pg_store.create(Package(id=0, folder_name="06-08-2026 14-30", created_at=FIXED_AT))
 
 
-def test_append_and_list_recent(pg_store: PostgresStore) -> None:
+def test_append_and_list_recent_newest_first(pg_store: PostgresStore) -> None:
     pg_store.append(
         AuditEvent(action="package.created", actor="system", occurred_at=FIXED_AT, details={"a": 1})
     )
@@ -38,7 +38,17 @@ def test_append_and_list_recent(pg_store: PostgresStore) -> None:
     )
 
     events = pg_store.list_recent()
-    assert [e.details for e in events] == [{"a": 1}, {"b": 2}]
+    assert [e.details for e in events] == [{"b": 2}, {"a": 1}]
+    assert [r.id for r in events] == [2, 1]
+
+
+def test_list_recent_before_id_excludes_cursor(pg_store: PostgresStore) -> None:
+    for i in range(5):
+        pg_store.append(
+            AuditEvent(action="x", actor="system", occurred_at=FIXED_AT, details={"i": i})
+        )
+    events = pg_store.list_recent(limit=10, before_id=4)
+    assert [e.id for e in events] == [3, 2, 1]
 
 
 def test_list_recent_respects_limit(pg_store: PostgresStore) -> None:
