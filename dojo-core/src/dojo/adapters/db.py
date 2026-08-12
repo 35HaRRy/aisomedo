@@ -4,10 +4,19 @@ from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import JSON, DateTime, String, create_engine, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
-from dojo.model import AuditEvent, Client, Package, PairingCode
+from dojo.model import (
+    AuditEvent,
+    Client,
+    ConsentAcceptance,
+    ConsentPolicy,
+    Package,
+    PairingCode,
+)
 
 
 class Base(DeclarativeBase):
@@ -57,6 +66,27 @@ class ClientRow(Base):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConsentPolicyRow(Base):
+    __tablename__ = "consent_policies"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    version: Mapped[int] = mapped_column(unique=True, nullable=False, index=True)
+    text: Mapped[str] = mapped_column(String(4096), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ConsentAcceptanceRow(Base):
+    __tablename__ = "consent_acceptances"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    policy_version: Mapped[int] = mapped_column(unique=True, nullable=False, index=True)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepting_client_id: Mapped[int] = mapped_column(nullable=False)
+    accepting_client_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    accepting_client_kind: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
 class PostgresStore:
@@ -247,4 +277,91 @@ class PostgresStore:
             created_by=row.created_by,
             last_seen_at=row.last_seen_at,
             revoked_at=row.revoked_at,
+        )
+
+    def create_policy(
+        self, *, version: int, text: str, created_by: str, created_at: datetime
+    ) -> ConsentPolicy:
+        with self._session() as session:
+            stmt = pg_insert(ConsentPolicyRow).values(
+                version=version, text=text, created_at=created_at, created_by=created_by
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[ConsentPolicyRow.version],
+                set_={
+                    "text": stmt.excluded.text,
+                    "created_at": stmt.excluded.created_at,
+                    "created_by": stmt.excluded.created_by,
+                },
+            )
+            session.execute(stmt)
+            session.commit()
+            row = session.scalar(
+                select(ConsentPolicyRow).where(ConsentPolicyRow.version == version)
+            )
+            assert row is not None
+            return self._policy_from_row(row)
+
+    def get_current_policy(self) -> ConsentPolicy | None:
+        with self._session() as session:
+            row = session.scalar(
+                select(ConsentPolicyRow)
+                .order_by(ConsentPolicyRow.version.desc())
+                .limit(1)
+            )
+            return self._policy_from_row(row) if row is not None else None
+
+    def get_policy(self, version: int) -> ConsentPolicy | None:
+        with self._session() as session:
+            row = session.scalar(
+                select(ConsentPolicyRow).where(ConsentPolicyRow.version == version)
+            )
+            return self._policy_from_row(row) if row is not None else None
+
+    def find_acceptance(self, policy_version: int) -> ConsentAcceptance | None:
+        with self._session() as session:
+            row = session.scalar(
+                select(ConsentAcceptanceRow).where(
+                    ConsentAcceptanceRow.policy_version == policy_version
+                )
+            )
+            return self._acceptance_from_row(row) if row is not None else None
+
+    def record_acceptance(self, acceptance: ConsentAcceptance) -> bool:
+        with self._session() as session:
+            try:
+                session.add(
+                    ConsentAcceptanceRow(
+                        policy_version=acceptance.policy_version,
+                        accepted_at=acceptance.accepted_at,
+                        accepting_client_id=acceptance.accepting_client_id,
+                        accepting_client_name=acceptance.accepting_client_name,
+                        accepting_client_kind=acceptance.accepting_client_kind,
+                    )
+                )
+                session.commit()
+                return True
+            except IntegrityError:
+                session.rollback()
+                return False
+
+    @staticmethod
+    def _policy_from_row(row: ConsentPolicyRow) -> ConsentPolicy:
+        return ConsentPolicy(
+            id=row.id,
+            version=row.version,
+            text=row.text,
+            created_at=row.created_at,
+            created_by=row.created_by,
+        )
+
+    @staticmethod
+    def _acceptance_from_row(row: ConsentAcceptanceRow) -> ConsentAcceptance:
+        return ConsentAcceptance(
+            id=row.id,
+            policy_version=row.policy_version,
+            accepted_at=row.accepted_at,
+            accepting_client_id=row.accepting_client_id,
+            accepting_client_name=row.accepting_client_name,
+            accepting_client_kind=row.accepting_client_kind,
         )

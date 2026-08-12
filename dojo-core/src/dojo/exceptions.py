@@ -28,3 +28,15 @@ class PairingCodeConsumed(PairingError):
 
 class ClientNotFound(PairingError):
     pass
+
+
+class ConsentError(DojoError):
+    pass
+
+
+class ConsentPolicyDowngrade(ConsentError):
+    pass
+
+
+class NoConsentPolicy(ConsentError):
+    pass

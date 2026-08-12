@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from dojo.model import AuditEvent, Client, Package, PairingCode
+from dojo.model import (
+    AuditEvent,
+    Client,
+    ConsentAcceptance,
+    ConsentPolicy,
+    Package,
+    PairingCode,
+)
 
 
 class InMemoryStore:
@@ -17,6 +24,10 @@ class InMemoryStore:
         self._next_code_id = 1
         self._next_client_id = 1
         self._next_event_id = 1
+        self._policies: list[ConsentPolicy] = []
+        self._acceptances: list[ConsentAcceptance] = []
+        self._next_policy_id = 1
+        self._next_acceptance_id = 1
 
     def create(self, package: Package) -> Package:
         created = replace(package, id=self._next_id)
@@ -88,3 +99,44 @@ class InMemoryStore:
             if client.id == client_id:
                 self._clients[i] = replace(client, last_seen_at=at)
                 return
+
+    def create_policy(
+        self, *, version: int, text: str, created_by: str, created_at: datetime
+    ) -> ConsentPolicy:
+        for i, existing in enumerate(self._policies):
+            if existing.version == version:
+                updated = replace(
+                    existing,
+                    text=text,
+                    created_by=created_by,
+                    created_at=created_at,
+                )
+                self._policies[i] = updated
+                return updated
+        created = ConsentPolicy(
+            id=self._next_policy_id,
+            version=version,
+            text=text,
+            created_by=created_by,
+            created_at=created_at,
+        )
+        self._next_policy_id += 1
+        self._policies.append(created)
+        return created
+
+    def get_current_policy(self) -> ConsentPolicy | None:
+        return max(self._policies, key=lambda p: p.version, default=None)
+
+    def get_policy(self, version: int) -> ConsentPolicy | None:
+        return next((p for p in self._policies if p.version == version), None)
+
+    def find_acceptance(self, policy_version: int) -> ConsentAcceptance | None:
+        return next((a for a in self._acceptances if a.policy_version == policy_version), None)
+
+    def record_acceptance(self, acceptance: ConsentAcceptance) -> bool:
+        if any(a.policy_version == acceptance.policy_version for a in self._acceptances):
+            return False
+        created = replace(acceptance, id=self._next_acceptance_id)
+        self._next_acceptance_id += 1
+        self._acceptances.append(created)
+        return True

@@ -72,4 +72,6 @@ def test_alembic_upgrade_head_creates_schema(pg_store: PostgresStore, tmp_path: 
     command.upgrade(cfg, "head")
 
     inspector = inspect(pg_store._engine)  # noqa: SLF001
-    assert {"packages", "audit_events"} <= set(inspector.get_table_names())
+    assert {"packages", "audit_events", "consent_policies", "consent_acceptances"} <= set(
+        inspector.get_table_names()
+    )

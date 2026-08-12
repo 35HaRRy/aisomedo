@@ -88,3 +88,29 @@ class ActivityEntry:
 class ActivityPage:
     entries: list[ActivityEntry]
     next_cursor: int | None
+
+
+@dataclass(frozen=True)
+class ConsentPolicy:
+    version: int
+    text: str
+    created_at: datetime
+    created_by: str
+    id: int = 0
+
+
+@dataclass(frozen=True)
+class ConsentAcceptance:
+    policy_version: int
+    accepted_at: datetime
+    accepting_client_id: int
+    accepting_client_name: str
+    accepting_client_kind: str
+    id: int = 0
+
+
+@dataclass(frozen=True)
+class SetupItem:
+    key: str
+    label: str
+    complete: bool
