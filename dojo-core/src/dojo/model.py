@@ -73,3 +73,18 @@ class PairingResult:
     client_id: int
     kind: str
     raw_credential: str
+
+
+@dataclass(frozen=True)
+class ActivityEntry:
+    id: int
+    action: str
+    occurred_at: datetime
+    details: dict
+    actor: Client | str
+
+
+@dataclass(frozen=True)
+class ActivityPage:
+    entries: list[ActivityEntry]
+    next_cursor: int | None

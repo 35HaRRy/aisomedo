@@ -1,3 +1,4 @@
+from dojo.activity import DojoActivity
 from dojo.adapters import (
     InMemoryStore,
     RandomSecretGenerator,
@@ -19,6 +20,8 @@ from dojo.exceptions import (
 )
 from dojo.model import (
     PACKAGE_FOLDER_FORMAT,
+    ActivityEntry,
+    ActivityPage,
     AuditEvent,
     Client,
     Manifest,
@@ -32,9 +35,12 @@ from dojo.publishing import DojoPublishing
 
 __all__ = [
     "ActivePackageExists",
+    "ActivityEntry",
+    "ActivityPage",
     "AuditEvent",
     "Client",
     "ClientNotFound",
+    "DojoActivity",
     "DojoError",
     "DojoPairing",
     "DojoPublishing",
