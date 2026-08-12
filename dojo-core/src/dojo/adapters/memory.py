@@ -36,9 +36,10 @@ class InMemoryStore:
         self._events.append(stored)
 
     def list_recent(self, limit: int = 50, before_id: int | None = None) -> list[AuditEvent]:
-        events = self._events
         if before_id is not None:
-            events = [e for e in events if e.id < before_id]
+            events = [e for e in reversed(self._events) if e.id < before_id]
+        else:
+            events = self._events
         return list(reversed(events[-limit:]))
 
     def create_code(self, code: PairingCode) -> PairingCode:
