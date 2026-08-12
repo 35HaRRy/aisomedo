@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dojo import Client, DojoPairing, DojoPublishing
+from dojo import Client, DojoActivity, DojoPairing, DojoPublishing
 from dojo.adapters.db import PostgresStore
 from fastapi import HTTPException, Request, Response
 
@@ -25,6 +25,13 @@ def build_pairing() -> DojoPairing:
     store = PostgresStore(url)
     store.create_all()
     return DojoPairing(pairing=store, audit=store)
+
+
+def build_activity() -> DojoActivity:
+    url = os.environ.get("DATABASE_URL", DEFAULT_URL)
+    store = PostgresStore(url)
+    store.create_all()
+    return DojoActivity(audit=store, pairing=store)
 
 
 def get_current_client(request: Request, response: Response) -> Client:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dojo import DojoPairing, DojoPublishing, InMemoryStore
+from dojo import DojoActivity, DojoPairing, DojoPublishing, InMemoryStore
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
 from dojo.testing import FakeClock
 from fastapi.testclient import TestClient
@@ -22,7 +22,8 @@ def make_app(tmp_path: Path) -> tuple[TestClient, DojoPublishing, DojoPairing]:
         signed_urls=StubSignedUrlStore(),
     )
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
-    client = TestClient(create_app(publishing, pairing, cookie_secure=False))
+    activity = DojoActivity(audit=store, pairing=store)
+    client = TestClient(create_app(publishing, pairing, activity, cookie_secure=False))
     return client, publishing, pairing
 
 
@@ -138,3 +139,56 @@ def test_validate_throttled_per_ip(tmp_path: Path) -> None:
         assert resp.status_code == 401
     resp = client.post("/api/pairing/validate", json=body)
     assert resp.status_code == 429
+
+
+def test_activity_requires_auth(tmp_path: Path) -> None:
+    client, _, _ = make_app(tmp_path)
+    assert client.get("/api/activity").status_code == 401
+
+
+def test_paired_device_sees_resolved_activity(tmp_path: Path) -> None:
+    client, _, pairing = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    assert client.post("/api/packages/active", headers=bearer(token)).status_code == 201
+
+    events = client.get("/api/activity", headers=bearer(token)).json()["events"]
+    actions = [e["action"] for e in events]
+    assert "package.created" in actions
+    assert "pairing.client_paired" in actions
+    created = next(e for e in events if e["action"] == "package.created")
+    assert created["actor"]["kind"] == "device"
+    assert created["actor"]["name"] == "Phone"
+    me = client.get("/api/pairing/me", headers=bearer(token)).json()
+    assert created["actor"]["id"] == me["id"]
+
+
+def test_activity_cursor_pages_no_overlap(tmp_path: Path) -> None:
+    client, _, pairing = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    assert client.post("/api/packages/active", headers=bearer(token)).status_code == 201
+
+    first = client.get(
+        "/api/activity", headers=bearer(token), params={"limit": 1}
+    ).json()
+    assert len(first["events"]) == 1
+    assert first["next_cursor"] is not None
+
+    second = client.get(
+        "/api/activity",
+        headers=bearer(token),
+        params={"limit": 1, "before_id": first["next_cursor"]},
+    ).json()
+    assert second["events"]
+    ids = [e["id"] for e in first["events"]] + [e["id"] for e in second["events"]]
+    assert len(set(ids)) == 2
+    assert first["events"][0]["id"] > second["events"][0]["id"]
+
+
+def test_browser_session_sees_activity(tmp_path: Path) -> None:
+    client, _, pairing = make_app(tmp_path)
+    code = pairing.create_pairing_code(requester="cli").raw_code
+    paired = client.post(
+        "/api/pairing/validate", json={"code": code, "kind": "browser", "name": "Browser"}
+    )
+    assert paired.status_code == 200
+    assert client.get("/api/activity").json()["events"]
