@@ -76,6 +76,16 @@ def test_evaluate_due_work_is_a_noop(tmp_path):
     assert seam.evaluate_due_work() is None
 
 
+def test_ensure_active_package_attributed_to_requester(tmp_path):
+    store, seam = make_seam(tmp_path)
+
+    package = seam.ensure_active_package(requester="7")
+
+    assert package.status == "active"
+    events = seam.list_audit()
+    assert events[0].actor == "7"
+
+
 def test_stubbed_methods_raise_not_implemented(tmp_path):
     _, seam = make_seam(tmp_path)
     for method in ("add_media", "resolve_conflict", "publish", "approve"):

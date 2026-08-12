@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from dojo import ActivePackageExists, DojoPublishing
+from dojo import ActivePackageExists, Client, DojoPublishing
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+
+from backend.deps import get_current_client
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -30,9 +32,12 @@ def get_active(publishing: DojoPublishing = Depends(get_publishing)) -> PackageO
 
 
 @router.post("/active", response_model=PackageOut, status_code=201)
-def ensure_active(publishing: DojoPublishing = Depends(get_publishing)) -> PackageOut:
+def ensure_active(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> PackageOut:
     try:
-        package = publishing.ensure_active_package()
+        package = publishing.ensure_active_package(requester=str(client.id))
     except ActivePackageExists as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return PackageOut(**package.__dict__)

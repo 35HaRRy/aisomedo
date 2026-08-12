@@ -37,7 +37,7 @@ class DojoPublishing:
         self._notifier = notifier or StubNotifier()
         self._signed_urls = signed_urls or StubSignedUrlStore()
 
-    def ensure_active_package(self) -> Package:
+    def ensure_active_package(self, *, requester: str | None = None) -> Package:
         """Create an active Dojo Paylaşım Paketi when none exists."""
         existing = self._packages.get_active()
         if existing is not None:
@@ -58,7 +58,7 @@ class DojoPublishing:
         self._audit.append(
             AuditEvent(
                 action="package.created",
-                actor="system",
+                actor=requester or "system",
                 occurred_at=now,
                 details={"folder_name": folder_name},
             )
