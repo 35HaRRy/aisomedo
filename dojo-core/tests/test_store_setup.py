@@ -63,6 +63,7 @@ def test_pg_get_current_policy_returns_highest_version(pg_store: PostgresStore) 
 
 
 def test_pg_acceptance_idempotent(pg_store: PostgresStore) -> None:
+    pg_store.create_policy(version=1, text="v1", created_by="cli", created_at=FIXED_AT)
     assert pg_store.record_acceptance(make_acceptance()) is True
     assert pg_store.record_acceptance(make_acceptance()) is False
     found = pg_store.find_acceptance(1)

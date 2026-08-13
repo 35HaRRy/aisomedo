@@ -35,6 +35,7 @@ def upgrade() -> None:
         sa.Column("accepting_client_id", sa.Integer(), nullable=False),
         sa.Column("accepting_client_name", sa.String(length=128), nullable=False),
         sa.Column("accepting_client_kind", sa.String(length=16), nullable=False),
+        sa.ForeignKeyConstraint(["policy_version"], ["consent_policies.version"]),
         sa.UniqueConstraint("policy_version"),
     )
     op.create_index(

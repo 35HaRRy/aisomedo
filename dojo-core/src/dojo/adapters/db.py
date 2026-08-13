@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import JSON, DateTime, String, create_engine, select, update
+from sqlalchemy import JSON, DateTime, ForeignKey, String, create_engine, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -82,7 +82,9 @@ class ConsentAcceptanceRow(Base):
     __tablename__ = "consent_acceptances"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    policy_version: Mapped[int] = mapped_column(unique=True, nullable=False, index=True)
+    policy_version: Mapped[int] = mapped_column(
+        ForeignKey("consent_policies.version"), unique=True, nullable=False, index=True
+    )
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepting_client_id: Mapped[int] = mapped_column(nullable=False)
     accepting_client_name: Mapped[str] = mapped_column(String(128), nullable=False)
