@@ -11,8 +11,11 @@ from dojo.adapters import (
 from dojo.exceptions import (
     ActivePackageExists,
     ClientNotFound,
+    ConsentError,
+    ConsentPolicyDowngrade,
     DojoError,
     NoActivePackage,
+    NoConsentPolicy,
     PairingCodeConsumed,
     PairingCodeExpired,
     PairingCodeInvalid,
@@ -24,14 +27,18 @@ from dojo.model import (
     ActivityPage,
     AuditEvent,
     Client,
+    ConsentAcceptance,
+    ConsentPolicy,
     Manifest,
     Package,
     PairingCode,
     PairingCodeIssued,
     PairingResult,
+    SetupItem,
 )
 from dojo.pairing import DojoPairing
 from dojo.publishing import DojoPublishing
+from dojo.setup import DojoSetup
 
 __all__ = [
     "ActivePackageExists",
@@ -40,13 +47,19 @@ __all__ = [
     "AuditEvent",
     "Client",
     "ClientNotFound",
+    "ConsentAcceptance",
+    "ConsentError",
+    "ConsentPolicy",
+    "ConsentPolicyDowngrade",
     "DojoActivity",
     "DojoError",
     "DojoPairing",
     "DojoPublishing",
+    "DojoSetup",
     "InMemoryStore",
     "Manifest",
     "NoActivePackage",
+    "NoConsentPolicy",
     "PACKAGE_FOLDER_FORMAT",
     "Package",
     "PairingCode",
@@ -58,6 +71,7 @@ __all__ = [
     "PairingResult",
     "RandomSecretGenerator",
     "Sha256Hasher",
+    "SetupItem",
     "StubMetaPublisher",
     "StubNotifier",
     "StubSignedUrlStore",
