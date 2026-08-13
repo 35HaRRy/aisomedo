@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dojo import DojoActivity, DojoPairing, DojoPublishing, InMemoryStore
+from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
 from dojo.testing import FakeClock
 from fastapi.testclient import TestClient
@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from backend.main import create_app
 
 
-def make_app(tmp_path: Path) -> tuple[TestClient, DojoPublishing, DojoPairing]:
+def make_app(tmp_path: Path) -> tuple[TestClient, DojoPublishing, DojoPairing, DojoSetup]:
     store = InMemoryStore()
     publishing = DojoPublishing(
         packages=store,
@@ -23,8 +23,9 @@ def make_app(tmp_path: Path) -> tuple[TestClient, DojoPublishing, DojoPairing]:
     )
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
     activity = DojoActivity(audit=store, pairing=store)
-    client = TestClient(create_app(publishing, pairing, activity, cookie_secure=False))
-    return client, publishing, pairing
+    setup = DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock())
+    client = TestClient(create_app(publishing, pairing, activity, setup, cookie_secure=False))
+    return client, publishing, pairing, setup
 
 
 def pair_device(client: TestClient, pairing: DojoPairing, name: str = "Phone") -> str:
@@ -39,18 +40,18 @@ def bearer(token: str) -> dict[str, str]:
 
 
 def test_health(tmp_path: Path) -> None:
-    client, _, _ = make_app(tmp_path)
+    client, _, _, _ = make_app(tmp_path)
     assert client.get("/health").json() == {"status": "ok"}
 
 
 def test_packages_require_auth(tmp_path: Path) -> None:
-    client, _, _ = make_app(tmp_path)
+    client, _, _, _ = make_app(tmp_path)
     assert client.get("/api/packages/active").status_code == 401
     assert client.post("/api/packages/active").status_code == 401
 
 
 def test_paired_device_can_use_packages(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
     created = client.post("/api/packages/active", headers=bearer(token))
     assert created.status_code == 201
@@ -59,7 +60,7 @@ def test_paired_device_can_use_packages(tmp_path: Path) -> None:
 
 
 def test_revoked_device_denied_on_next_request(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
     assert client.post("/api/packages/active", headers=bearer(token)).status_code == 201
 
@@ -71,7 +72,7 @@ def test_revoked_device_denied_on_next_request(tmp_path: Path) -> None:
 
 
 def test_browser_session_cookie_auth(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     code = pairing.create_pairing_code(requester="cli").raw_code
     resp = client.post(
         "/api/pairing/validate", json={"code": code, "kind": "browser", "name": "Browser"}
@@ -84,7 +85,7 @@ def test_browser_session_cookie_auth(tmp_path: Path) -> None:
 
 
 def test_browser_session_cookie_refreshed_on_auth(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     code = pairing.create_pairing_code(requester="cli").raw_code
     paired = client.post(
         "/api/pairing/validate", json={"code": code, "kind": "browser", "name": "Browser"}
@@ -110,7 +111,7 @@ def test_browser_validate_sets_secure_http_only_cookie(tmp_path: Path) -> None:
 
 
 def test_me_returns_current_client(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
     me = client.get("/api/pairing/me", headers=bearer(token)).json()
     assert me["kind"] == "device"
@@ -119,7 +120,7 @@ def test_me_returns_current_client(tmp_path: Path) -> None:
 
 
 def test_invalid_code_returns_401(tmp_path: Path) -> None:
-    client, _, _ = make_app(tmp_path)
+    client, _, _, _ = make_app(tmp_path)
     resp = client.post(
         "/api/pairing/validate", json={"code": "aaaaaaaa", "kind": "device", "name": "X"}
     )
@@ -127,12 +128,12 @@ def test_invalid_code_returns_401(tmp_path: Path) -> None:
 
 
 def test_unauthenticated_code_minting_rejected(tmp_path: Path) -> None:
-    client, _, _ = make_app(tmp_path)
+    client, _, _, _ = make_app(tmp_path)
     assert client.post("/api/pairing/codes").status_code == 401
 
 
 def test_validate_throttled_per_ip(tmp_path: Path) -> None:
-    client, _, _ = make_app(tmp_path)
+    client, _, _, _ = make_app(tmp_path)
     body = {"code": "aaaaaaaa", "kind": "device", "name": "X"}
     for _ in range(10):
         resp = client.post("/api/pairing/validate", json=body)
@@ -142,12 +143,12 @@ def test_validate_throttled_per_ip(tmp_path: Path) -> None:
 
 
 def test_activity_requires_auth(tmp_path: Path) -> None:
-    client, _, _ = make_app(tmp_path)
+    client, _, _, _ = make_app(tmp_path)
     assert client.get("/api/activity").status_code == 401
 
 
 def test_paired_device_sees_resolved_activity(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
     assert client.post("/api/packages/active", headers=bearer(token)).status_code == 201
 
@@ -163,7 +164,7 @@ def test_paired_device_sees_resolved_activity(tmp_path: Path) -> None:
 
 
 def test_activity_cursor_pages_no_overlap(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
     assert client.post("/api/packages/active", headers=bearer(token)).status_code == 201
 
@@ -185,10 +186,71 @@ def test_activity_cursor_pages_no_overlap(tmp_path: Path) -> None:
 
 
 def test_browser_session_sees_activity(tmp_path: Path) -> None:
-    client, _, pairing = make_app(tmp_path)
+    client, _, pairing, _ = make_app(tmp_path)
     code = pairing.create_pairing_code(requester="cli").raw_code
     paired = client.post(
         "/api/pairing/validate", json={"code": code, "kind": "browser", "name": "Browser"}
     )
     assert paired.status_code == 200
     assert client.get("/api/activity").json()["events"]
+
+
+def test_setup_routes_require_auth(tmp_path: Path) -> None:
+    client, _, _, _ = make_app(tmp_path)
+    assert client.get("/api/setup").status_code == 401
+    assert client.get("/api/setup/consent").status_code == 401
+    assert client.post("/api/setup/consent/accept").status_code == 401
+
+
+def test_setup_without_policy_shows_incomplete(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    body = client.get("/api/setup", headers=bearer(token)).json()
+    assert body["ready"] is False
+    keys = {item["key"]: item["complete"] for item in body["checklist"]}
+    assert keys["pairing"] is True
+    assert keys["consent"] is False
+
+
+def test_consent_404_until_policy_configured(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    assert client.get("/api/setup/consent", headers=bearer(token)).status_code == 404
+    assert client.post("/api/setup/consent/accept", headers=bearer(token)).status_code == 404
+
+
+def test_device_accepts_consent_and_setup_becomes_ready(tmp_path: Path) -> None:
+    client, _, pairing, setup = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    me = client.get("/api/pairing/me", headers=bearer(token)).json()
+    setup.set_policy(version=1, text="Riza metni", requester=str(me["id"]))
+
+    consent = client.get("/api/setup/consent", headers=bearer(token)).json()
+    assert consent["version"] == 1
+    assert consent["accepted_at"] is None
+
+    accepted = client.post("/api/setup/consent/accept", headers=bearer(token))
+    assert accepted.status_code == 200
+    assert accepted.json()["version"] == 1
+
+    again = client.post("/api/setup/consent/accept", headers=bearer(token))
+    assert again.status_code == 200
+    assert again.json()["accepted_at"] == accepted.json()["accepted_at"]
+
+    consent = client.get("/api/setup/consent", headers=bearer(token)).json()
+    assert consent["accepted_at"] == accepted.json()["accepted_at"]
+
+    body = client.get("/api/setup", headers=bearer(token)).json()
+    keys = {item["key"]: item["complete"] for item in body["checklist"]}
+    assert keys["consent"] is True
+    assert body["ready"] is True
+
+
+def test_browser_session_accepts_consent(tmp_path: Path) -> None:
+    client, _, pairing, setup = make_app(tmp_path)
+    code = pairing.create_pairing_code(requester="cli").raw_code
+    client.post("/api/pairing/validate", json={"code": code, "kind": "browser", "name": "Browser"})
+    setup.set_policy(version=1, text="Riza metni", requester="cli")
+    resp = client.post("/api/setup/consent/accept")
+    assert resp.status_code == 200
+    assert resp.json()["version"] == 1
