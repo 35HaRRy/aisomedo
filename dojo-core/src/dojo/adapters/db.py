@@ -156,12 +156,17 @@ class PostgresStore:
 
     def update(self, package: Package) -> Package:
         with self._session() as session:
-            session.execute(
-                update(PackageRow)
-                .where(PackageRow.id == package.id)
-                .values(folder_name=package.folder_name, status=package.status)
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    update(PackageRow)
+                    .where(PackageRow.id == package.id)
+                    .values(folder_name=package.folder_name, status=package.status)
+                ),
             )
             session.commit()
+            if result.rowcount != 1:
+                raise ValueError(f"package {package.id} not found")
             row = session.get(PackageRow, package.id)
             assert row is not None
             return Package(

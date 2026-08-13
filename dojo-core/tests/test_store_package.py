@@ -36,6 +36,17 @@ def test_pg_update_replaces_row(pg_store: PostgresStore) -> None:
     assert pg_store.get_active() is None
 
 
+def test_memory_update_missing_raises_value_error() -> None:
+    store = InMemoryStore()
+    with pytest.raises(ValueError, match="package 999 not found"):
+        store.update(Package(id=999, folder_name="missing", created_at=FIXED_AT))
+
+
+def test_pg_update_missing_raises_value_error(pg_store: PostgresStore) -> None:
+    with pytest.raises(ValueError, match="package 999 not found"):
+        pg_store.update(Package(id=999, folder_name="missing", created_at=FIXED_AT))
+
+
 def test_pg_partial_unique_index_blocks_second_active_row(pg_store: PostgresStore) -> None:
     pg_store.create(Package(id=0, folder_name="06-08-2026 14-30", created_at=FIXED_AT))
     with pytest.raises(Exception):  # IntegrityError on commit
