@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from dojo.adapters.clock import ISTANBUL, SystemClock
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
-from dojo.exceptions import ActivePackageExists
+from dojo.exceptions import ActivePackageExists, NoActivePackage
 from dojo.model import PACKAGE_FOLDER_FORMAT, AuditEvent, Manifest, Package
 from dojo.ports import AuditStore, Clock, MetaPublisher, Notifier, PackageStore, SignedUrlStore
 
@@ -38,11 +39,20 @@ class DojoPublishing:
         self._signed_urls = signed_urls or StubSignedUrlStore()
 
     def ensure_active_package(self, *, requester: str | None = None) -> Package:
-        """Create an active Dojo Paylaşım Paketi when none exists."""
+        """Create an active Dojo Paylaşım Paketi; raise if one already exists."""
         existing = self._packages.get_active()
         if existing is not None:
             raise ActivePackageExists(f"active package {existing.folder_name} already exists")
+        return self._create_active_package(requester=requester)
 
+    def get_or_create_active_package(self, *, requester: str | None = None) -> Package:
+        """Return the active package, creating it when none exists."""
+        existing = self._packages.get_active()
+        if existing is not None:
+            return existing
+        return self._create_active_package(requester=requester)
+
+    def _create_active_package(self, *, requester: str | None = None) -> Package:
         now = self._clock.now().astimezone(ISTANBUL)
         folder_name = now.strftime(PACKAGE_FOLDER_FORMAT)
         folder = self.media_root / folder_name
@@ -51,7 +61,6 @@ class DojoPublishing:
             json.dumps(Manifest().to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-
         package = self._packages.create(
             Package(id=0, folder_name=folder_name, created_at=now, status="active")
         )
@@ -64,6 +73,33 @@ class DojoPublishing:
             )
         )
         return package
+
+    def complete_active_package(self, *, requester: str | None = None) -> Package:
+        """Complete the active package and create the next empty active package."""
+        existing = self._packages.get_active()
+        if existing is None:
+            raise NoActivePackage("no active package to complete")
+
+        now = self._clock.now().astimezone(ISTANBUL)
+        completed_folder_name = f"{existing.folder_name}-completed"
+
+        self._packages.update(replace(existing, status="completed"))
+        (self.media_root / existing.folder_name).rename(
+            self.media_root / completed_folder_name
+        )
+        self._packages.update(
+            replace(existing, status="completed", folder_name=completed_folder_name)
+        )
+
+        self._audit.append(
+            AuditEvent(
+                action="package.completed",
+                actor=requester or "system",
+                occurred_at=now,
+                details={"folder_name": completed_folder_name},
+            )
+        )
+        return self._create_active_package(requester=requester)
 
     def get_active_package(self) -> Package | None:
         """Return the current active package, if any."""
