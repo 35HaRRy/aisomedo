@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, create_engine, select, update
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    create_engine,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +35,14 @@ class Base(DeclarativeBase):
 
 class PackageRow(Base):
     __tablename__ = "packages"
+    __table_args__ = (
+        Index(
+            "ix_packages_status_active",
+            "status",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     folder_name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -129,6 +147,23 @@ class PostgresStore:
             )
             if row is None:
                 return None
+            return Package(
+                id=row.id,
+                folder_name=row.folder_name,
+                created_at=row.created_at,
+                status=row.status,
+            )
+
+    def update(self, package: Package) -> Package:
+        with self._session() as session:
+            session.execute(
+                update(PackageRow)
+                .where(PackageRow.id == package.id)
+                .values(folder_name=package.folder_name, status=package.status)
+            )
+            session.commit()
+            row = session.get(PackageRow, package.id)
+            assert row is not None
             return Package(
                 id=row.id,
                 folder_name=row.folder_name,

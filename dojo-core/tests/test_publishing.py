@@ -43,9 +43,12 @@ def test_ensure_active_package_creates_folder_manifest_row_and_audit(tmp_path):
     assert manifest == {
         "media": [],
         "order": [],
+        "trims": {},
         "caption": None,
         "branding": {},
         "render_revision": None,
+        "meta": {},
+        "recovery": {},
     }
 
     assert store.get_active() == package

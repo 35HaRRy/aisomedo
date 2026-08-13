@@ -41,6 +41,13 @@ class InMemoryStore:
                 return package
         return None
 
+    def update(self, package: Package) -> Package:
+        for i, existing in enumerate(self._packages):
+            if existing.id == package.id:
+                self._packages[i] = package
+                return package
+        raise ValueError(f"package {package.id} not found")
+
     def append(self, event: AuditEvent) -> None:
         stored = replace(event, id=self._next_event_id)
         self._next_event_id += 1

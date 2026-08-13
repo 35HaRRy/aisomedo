@@ -75,3 +75,5 @@ def test_alembic_upgrade_head_creates_schema(pg_store: PostgresStore, tmp_path: 
     assert {"packages", "audit_events", "consent_policies", "consent_acceptances"} <= set(
         inspector.get_table_names()
     )
+    package_indexes = {i["name"] for i in inspector.get_indexes("packages")}
+    assert "ix_packages_status_active" in package_indexes

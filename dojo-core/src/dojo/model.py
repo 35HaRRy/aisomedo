@@ -18,17 +18,23 @@ class Package:
 class Manifest:
     media: list[dict] = field(default_factory=list)
     order: list[str] = field(default_factory=list)
+    trims: dict = field(default_factory=dict)
     caption: str | None = None
     branding: dict = field(default_factory=dict)
     render_revision: str | None = None
+    meta: dict = field(default_factory=dict)
+    recovery: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
             "media": self.media,
             "order": self.order,
+            "trims": self.trims,
             "caption": self.caption,
             "branding": self.branding,
             "render_revision": self.render_revision,
+            "meta": self.meta,
+            "recovery": self.recovery,
         }
 
 
