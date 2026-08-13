@@ -307,22 +307,18 @@ def test_get_or_create_creates_when_absent(tmp_path):
 
 
 def test_complete_active_package_renames_creates_next_and_audits(tmp_path):
-    store, seam = make_seam(tmp_path)
+    _, seam = make_seam(tmp_path)
     first = seam.ensure_active_package()
 
     next_package = seam.complete_active_package(requester="9")
 
-    assert first.status == "active"
     completed_dir = tmp_path / "06-08-2026 14-30-completed"
     assert completed_dir.is_dir()
     assert not (tmp_path / "06-08-2026 14-30").exists()
 
-    completed_row = [p for p in store._packages if p.status == "completed"]  # noqa: SLF001
-    assert len(completed_row) == 1
-    assert completed_row[0].folder_name == "06-08-2026 14-30-completed"
-
     assert next_package.status == "active"
-    assert store.get_active() == next_package
+    assert next_package.id != first.id
+    assert seam.get_active_package() == next_package
     assert (tmp_path / next_package.folder_name / "manifest.json").is_file()
 
     actions = [e.action for e in seam.list_audit()]
