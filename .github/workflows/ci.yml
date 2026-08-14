@@ -48,3 +48,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.yml config
+      - run: docker build -f backend/Dockerfile .
+      - run: docker build -f worker/Dockerfile .

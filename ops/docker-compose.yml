@@ -16,7 +16,9 @@ services:
       - "5433:5432"
 
   backend:
-    build: ../backend
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://dojo:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/dojo
       MEDIA_ROOT: /media
@@ -29,7 +31,9 @@ services:
       - "8000:8000"
 
   worker:
-    build: ../worker
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://dojo:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/dojo
       MEDIA_ROOT: /media
@@ -42,4 +46,14 @@ services:
 
 volumes:
   db-data:
+    driver: local
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: './db-data'
   media-data:
+    driver: local
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: './media-data'

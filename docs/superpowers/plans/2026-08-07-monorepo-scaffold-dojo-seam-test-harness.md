@@ -1993,7 +1993,17 @@ services:
 
 volumes:
   db-data:
+    driver: local
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: './db-data'
   media-data:
+    driver: local
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: './media-data'
 ```
 
 `ops/.env.example`:
