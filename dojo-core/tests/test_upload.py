@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from dataclasses import replace
 
 import pytest
 from dojo import (
@@ -15,7 +17,12 @@ from dojo import (
     UploadNotReceiving,
     UploadTooLarge,
 )
-from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
+from dojo.adapters.stubs import (
+    StubMediaProcessor,
+    StubMetaPublisher,
+    StubNotifier,
+    StubSignedUrlStore,
+)
 from dojo.testing import FIXED_AT, FakeClock
 
 
@@ -230,3 +237,98 @@ def test_get_upload_limits_defaults_and_settings(tmp_path):
     assert limits.max_package_bytes == 20 * 1024**3
     store.set("upload.max_file_bytes", 42, updated_at=FIXED_AT)
     assert seam.get_upload_limits().max_file_bytes == 42
+
+
+def complete(tmp_path, seam, *, content_type="image/jpeg", body=b"x" * 100):
+    seam.ensure_active_package()
+    status = seam.start_upload("pic.jpg", content_type, len(body))
+    seam.append_upload_range(status.upload_id, 0, len(body), sha(body), body)
+    seam.complete_upload(status.upload_id)
+    return status
+
+
+def test_process_job_finalizes_into_package(tmp_path):
+    store, seam = make_seam(tmp_path)
+    seam._media = StubMediaProcessor()
+    status = complete(tmp_path, seam)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+    seam.process_job(claimed.job_id)
+
+    package = seam.get_active_package()
+    media_dir = tmp_path / package.folder_name / "media"
+    entries = list(media_dir.iterdir())
+    assert len(entries) == 1
+    media_id = entries[0].name
+    assert (media_dir / media_id / "original.jpg").is_file()
+    assert (media_dir / media_id / "processed.jpg").is_file()
+
+    manifest = json.loads(
+        (tmp_path / package.folder_name / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["order"] == [media_id]
+    assert len(manifest["media"]) == 1
+    entry = manifest["media"][0]
+    assert entry["media_id"] == media_id
+    assert entry["status"] == "finalized"
+    assert entry["processed"]["content_type"] == "image/jpeg"
+
+    assert seam.get_upload_status(status.upload_id).status == "finalized"
+    assert store.get_by_upload(store.get(status.upload_id).id).status == "done"
+    assert not (tmp_path / "tmp" / status.upload_id).exists()
+    actions = [e.action for e in seam.list_audit()]
+    assert actions[0] == "media.finalized"
+
+
+def test_process_job_validation_failure_marks_failed_and_cleans(tmp_path):
+    store, seam = make_seam(tmp_path)
+    status = complete(tmp_path, seam)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+    seam._media = StubMediaProcessor(fail_reason="unsupported codec: not-h264")
+
+    seam.process_job(claimed.job_id)
+
+    assert seam.get_upload_status(status.upload_id).status == "failed"
+    assert seam.get_upload_status(status.upload_id).error_reason == "unsupported codec: not-h264"
+    failed_job = store.get_by_upload(store.get(status.upload_id).id)
+    assert failed_job.status == "failed"
+    assert not (tmp_path / "tmp" / status.upload_id).exists()
+    actions = [e.action for e in seam.list_audit()]
+    assert actions[0] == "upload.rejected"
+    assert not (tmp_path / seam.get_active_package().folder_name / "media").exists()
+
+
+def test_claim_next_job_returns_one_job(tmp_path):
+    store, seam = make_seam(tmp_path)
+    complete(tmp_path, seam)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+    assert claimed.kind == "media.process"
+    assert seam.claim_next_job() is None
+
+
+def test_process_job_missing_upload_marks_failed(tmp_path):
+    store, seam = make_seam(tmp_path)
+    status = complete(tmp_path, seam)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+    seam._media = StubMediaProcessor(fail_reason="original missing")
+    (tmp_path / "tmp" / status.upload_id / "original").unlink()
+    seam.process_job(claimed.job_id)
+    assert seam.get_upload_status(status.upload_id).status == "failed"
+
+
+def test_sweep_stale_uploads_cleans_expired(tmp_path):
+    store, seam = make_seam(tmp_path)
+    status = complete(tmp_path, seam)
+    from datetime import timedelta
+
+    upload = store.get(status.upload_id)
+    store.update(replace(upload, status="receiving", updated_at=FIXED_AT - timedelta(hours=25)))
+    swept = seam.sweep_stale_uploads(ttl=timedelta(hours=24))
+    assert swept == 1
+    assert seam.get_upload_status(status.upload_id).status == "aborted"
+    assert not (tmp_path / "tmp" / status.upload_id).exists()
+    actions = [e.action for e in seam.list_audit()]
+    assert actions[0] == "upload.expired"

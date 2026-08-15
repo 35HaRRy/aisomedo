@@ -12,6 +12,8 @@ from dojo.adapters.clock import ISTANBUL, SystemClock
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
 from dojo.exceptions import (
     ActivePackageExists,
+    JobNotFound,
+    MediaValidationError,
     NoActivePackage,
     PackageLimitExceeded,
     UploadChecksumMismatch,
@@ -27,7 +29,9 @@ from dojo.model import (
     AuditEvent,
     Job,
     Manifest,
+    MediaEntry,
     Package,
+    ProcessedMedia,
     Upload,
     UploadLimits,
     UploadStatus,
@@ -62,6 +66,19 @@ def merge_ranges(existing: list[list[int]], new_start: int, new_end: int) -> lis
     merged.append([new_start, new_end])
     merged.sort()
     return merged
+
+
+def _ext_for(content_type: str) -> str:
+    mapping = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/heic": ".heic",
+        "image/heif": ".heif",
+        "video/mp4": ".mp4",
+        "video/quicktime": ".mov",
+    }
+    return mapping.get(content_type, "")
 
 
 class DojoPublishing:
@@ -358,6 +375,155 @@ class DojoPublishing:
             declared_size_bytes=upload.declared_size_bytes,
             status=upload.status,
             received_ranges=upload.received_ranges,
+            error_reason=upload.error_reason,
+        )
+
+    def claim_next_job(self) -> Job | None:
+        return self._jobs.claim_next(self._clock.now())
+
+    def process_job(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise JobNotFound(f"job {job_id} not found")
+        if job.status != "processing":
+            raise UploadConflict(f"job {job_id} is {job.status}")
+        upload = self._uploads.get_by_pk(job.upload_id)
+        if upload is None:
+            self._fail_job(job, "upload missing")
+            return
+        now = self._clock.now()
+        self._uploads.update(replace(upload, status="processing", updated_at=now))
+        original = self.media_root / "tmp" / upload.upload_id / "original"
+        if not original.is_file():
+            self._fail_job(job, "staged original missing")
+            return
+        try:
+            processor = self._media
+            if processor is None:
+                from dojo.adapters.media import PillowFFmpegProcessor
+
+                processor = PillowFFmpegProcessor()
+            processed = processor.process(
+                upload, original, self.media_root / "tmp" / upload.upload_id
+            )
+        except MediaValidationError as exc:
+            self._fail_job(job, str(exc))
+            return
+        self.finalize_media(job.job_id, processed)
+
+    def finalize_media(self, job_id: str, processed: ProcessedMedia) -> None:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise JobNotFound(f"job {job_id} not found")
+        upload = self._uploads.get_by_pk(job.upload_id)
+        if upload is None or upload.status != "processing":
+            raise UploadConflict(f"upload for job {job_id} is not processing")
+        import shutil
+
+        required = upload.declared_size_bytes + processed.size_bytes
+        free = shutil.disk_usage(self.media_root).free
+        if free < required:
+            self._fail_job(job, f"insufficient disk space: {free} free, {required} needed")
+            return
+        package = self._packages.get_active()
+        if package is None:
+            self._fail_job(job, "no active package")
+            return
+        now = self._clock.now()
+        media_id = uuid.uuid4().hex
+        media_dir = self.media_root / package.folder_name / "media" / media_id
+        media_dir.mkdir(parents=True, exist_ok=True)
+        original_ext = Path(upload.filename).suffix or _ext_for(upload.content_type)
+        processed_ext = _ext_for(processed.content_type)
+        original_dst = media_dir / f"original{original_ext}"
+        processed_dst = media_dir / f"processed{processed_ext}"
+        shutil.move(str(processed.original_path), str(original_dst))
+        shutil.move(str(processed.processed_path), str(processed_dst))
+
+        entry = MediaEntry(
+            media_id=media_id,
+            filename=upload.filename,
+            content_type=upload.content_type,
+            size_bytes=upload.declared_size_bytes,
+            uploaded_at=upload.created_at,
+            status="finalized",
+            processed={
+                "path": f"media/{media_id}/processed{processed_ext}",
+                "content_type": processed.content_type,
+                "size_bytes": processed.size_bytes,
+            },
+        ).to_dict()
+
+        manifest_path = self.media_root / package.folder_name / "manifest.json"
+        import json
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.setdefault("media", []).append(entry)
+        manifest.setdefault("order", []).append(media_id)
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        self._uploads.update(replace(upload, status="finalized", updated_at=now))
+        self._jobs.update(
+            replace(job, status="done", finished_at=now, error_reason=None)
+        )
+        staging = self.media_root / "tmp" / upload.upload_id
+        shutil.rmtree(staging, ignore_errors=True)
+        self._audit.append(
+            AuditEvent(
+                action="media.finalized",
+                actor="worker",
+                occurred_at=now,
+                details={
+                    "media_id": media_id,
+                    "upload_id": upload.upload_id,
+                    "filename": upload.filename,
+                    "package": package.folder_name,
+                },
+            )
+        )
+
+    def sweep_stale_uploads(self, ttl: timedelta = STALE_TTL) -> int:
+        cutoff = self._clock.now() - ttl
+        stale = self._uploads.list_stale(cutoff)
+        for upload in stale:
+            now = self._clock.now()
+            self._uploads.update(replace(upload, status="aborted", updated_at=now))
+            import shutil
+
+            shutil.rmtree(self.media_root / "tmp" / upload.upload_id, ignore_errors=True)
+            self._audit.append(
+                AuditEvent(
+                    action="upload.expired",
+                    actor="worker",
+                    occurred_at=now,
+                    details={"upload_id": upload.upload_id},
+                )
+            )
+        return len(stale)
+
+    def _fail_job(self, job: Job, reason: str) -> None:
+        upload = self._uploads.get_by_pk(job.upload_id)
+        now = self._clock.now()
+        if upload is not None:
+            self._uploads.update(
+                replace(upload, status="failed", error_reason=reason, updated_at=now)
+            )
+        self._jobs.update(
+            replace(job, status="failed", error_reason=reason, finished_at=now)
+        )
+        import shutil
+
+        if upload is not None:
+            shutil.rmtree(self.media_root / "tmp" / upload.upload_id, ignore_errors=True)
+        self._audit.append(
+            AuditEvent(
+                action="upload.rejected",
+                actor="worker",
+                occurred_at=now,
+                details={"job_id": job.job_id, "reason": reason},
+            )
         )
 
     def evaluate_due_work(self) -> None:

@@ -168,6 +168,7 @@ class UploadStatus:
     declared_size_bytes: int
     status: str
     received_ranges: list[list[int]]
+    error_reason: str | None = None
 
 
 @dataclass(frozen=True)
