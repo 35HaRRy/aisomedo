@@ -40,3 +40,43 @@ class ConsentPolicyDowngrade(ConsentError):
 
 class NoConsentPolicy(ConsentError):
     pass
+
+
+class UploadNotFound(DojoError):
+    pass
+
+
+class UploadNotReceiving(DojoError):
+    pass
+
+
+class UploadChecksumMismatch(DojoError):
+    pass
+
+
+class UploadTooLarge(DojoError):
+    pass
+
+
+class PackageLimitExceeded(DojoError):
+    pass
+
+
+class UploadIncomplete(DojoError):
+    pass
+
+
+class UploadConflict(DojoError):
+    pass
+
+
+class UploadInvalidFilename(DojoError):
+    pass
+
+
+class JobNotFound(DojoError):
+    pass
+
+
+class MediaValidationError(DojoError):
+    pass

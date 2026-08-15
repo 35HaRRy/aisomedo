@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dojo.model import (
     AuditEvent,
     Client,
     ConsentAcceptance,
     ConsentPolicy,
+    Job,
     Package,
     PairingCode,
+    Upload,
 )
+
+STALE_TTL = timedelta(hours=24)
 
 
 class InMemoryStore:
@@ -28,12 +32,27 @@ class InMemoryStore:
         self._acceptances: list[ConsentAcceptance] = []
         self._next_policy_id = 1
         self._next_acceptance_id = 1
+        self._uploads: list[Upload] = []
+        self._jobs: list[Job] = []
+        self._settings: dict[str, object] = {}
+        self._next_upload_id = 1
+        self._next_job_id = 1
 
-    def create(self, package: Package) -> Package:
-        created = replace(package, id=self._next_id)
+    def create(self, obj: Package | Upload | Job) -> Package | Upload | Job:
+        if isinstance(obj, Upload):
+            created_upload = replace(obj, id=self._next_upload_id)
+            self._next_upload_id += 1
+            self._uploads.append(created_upload)
+            return created_upload
+        if isinstance(obj, Job):
+            created_job = replace(obj, id=self._next_job_id)
+            self._next_job_id += 1
+            self._jobs.append(created_job)
+            return created_job
+        created_package = replace(obj, id=self._next_id)
         self._next_id += 1
-        self._packages.append(created)
-        return created
+        self._packages.append(created_package)
+        return created_package
 
     def get_active(self) -> Package | None:
         for package in reversed(self._packages):
@@ -41,12 +60,24 @@ class InMemoryStore:
                 return package
         return None
 
-    def update(self, package: Package) -> Package:
-        for i, existing in enumerate(self._packages):
-            if existing.id == package.id:
-                self._packages[i] = package
-                return package
-        raise ValueError(f"package {package.id} not found")
+    def update(self, obj: Package | Upload | Job) -> Package | Upload | Job:
+        if isinstance(obj, Upload):
+            for i, existing_upload in enumerate(self._uploads):
+                if existing_upload.id == obj.id:
+                    self._uploads[i] = obj
+                    return obj
+            raise ValueError(f"upload {obj.id} not found")
+        if isinstance(obj, Job):
+            for i, existing_job in enumerate(self._jobs):
+                if existing_job.id == obj.id:
+                    self._jobs[i] = obj
+                    return obj
+            raise ValueError(f"job {obj.id} not found")
+        for i, existing_package in enumerate(self._packages):
+            if existing_package.id == obj.id:
+                self._packages[i] = obj
+                return obj
+        raise ValueError(f"package {obj.id} not found")
 
     def append(self, event: AuditEvent) -> None:
         stored = replace(event, id=self._next_event_id)
@@ -146,3 +177,39 @@ class InMemoryStore:
         self._next_acceptance_id += 1
         self._acceptances.append(created)
         return True
+
+    def get(self, key: str) -> Upload | Job | object | None:
+        for u in self._uploads:
+            if u.upload_id == key:
+                return u
+        for j in self._jobs:
+            if j.job_id == key:
+                return j
+        return self._settings.get(key)
+
+    def get_by_pk(self, upload_pk: int) -> Upload | None:
+        return next((u for u in self._uploads if u.id == upload_pk), None)
+
+    def list_active(self) -> list[Upload]:
+        return [u for u in self._uploads if u.status in ("receiving", "queued")]
+
+    def list_stale(self, cutoff: datetime) -> list[Upload]:
+        return [
+            u
+            for u in self._uploads
+            if u.status in ("receiving", "queued") and u.updated_at < cutoff - STALE_TTL
+        ]
+
+    def get_by_upload(self, upload_pk: int) -> Job | None:
+        return next((j for j in self._jobs if j.upload_id == upload_pk), None)
+
+    def claim_next(self, claimed_at: datetime) -> Job | None:
+        for i, job in enumerate(self._jobs):
+            if job.status == "queued":
+                claimed = replace(job, status="processing", claimed_at=claimed_at)
+                self._jobs[i] = claimed
+                return claimed
+        return None
+
+    def set(self, key: str, value: object, *, updated_at: datetime) -> None:
+        self._settings[key] = value

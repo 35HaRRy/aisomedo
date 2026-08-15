@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 PACKAGE_FOLDER_FORMAT = "%d-%m-%Y %H-%M"
 
@@ -120,3 +121,80 @@ class SetupItem:
     key: str
     label: str
     complete: bool
+
+
+@dataclass(frozen=True)
+class MediaEntry:
+    media_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    uploaded_at: datetime
+    status: str = "finalized"
+    processed: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "media_id": self.media_id,
+            "filename": self.filename,
+            "content_type": self.content_type,
+            "size_bytes": self.size_bytes,
+            "uploaded_at": self.uploaded_at.isoformat(),
+            "status": self.status,
+            "processed": self.processed,
+        }
+
+
+@dataclass(frozen=True)
+class Upload:
+    id: int
+    upload_id: str
+    package_id: int
+    filename: str
+    content_type: str
+    declared_size_bytes: int
+    received_ranges: list[list[int]]
+    received_bytes: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    error_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class UploadStatus:
+    upload_id: str
+    received_bytes: int
+    declared_size_bytes: int
+    status: str
+    received_ranges: list[list[int]]
+
+
+@dataclass(frozen=True)
+class Job:
+    id: int
+    job_id: str
+    upload_id: int
+    kind: str
+    status: str
+    payload: dict
+    created_at: datetime
+    claimed_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ProcessedMedia:
+    original_path: Path
+    processed_path: Path
+    content_type: str
+    size_bytes: int
+    dimensions: tuple[int, int] | None = None
+    duration: float | None = None
+
+
+@dataclass(frozen=True)
+class UploadLimits:
+    max_file_bytes: int
+    max_package_bytes: int
