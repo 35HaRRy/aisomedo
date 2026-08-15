@@ -118,9 +118,9 @@ def test_memory_upload_list_stale() -> None:
     store.create(make_upload("u-1"))
     from datetime import timedelta
 
-    stale = store.list_stale(FIXED_AT + timedelta(hours=25))
+    stale = store.list_stale(FIXED_AT + timedelta(seconds=1))
     assert [u.upload_id for u in stale] == ["u-1"]
-    assert store.list_stale(FIXED_AT + timedelta(hours=23)) == []
+    assert store.list_stale(FIXED_AT) == []
 
 
 def test_pg_upload_roundtrip(pg_store: PostgresStore) -> None:
