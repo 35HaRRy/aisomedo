@@ -57,5 +57,31 @@ def consent_main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def settings_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="dojo-settings")
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("DATABASE_URL", DEFAULT_URL),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    limits = subparsers.add_parser("set-upload-limits")
+    limits.add_argument("--max-file-bytes", type=int)
+    limits.add_argument("--max-package-bytes", type=int)
+    args = parser.parse_args(argv)
+
+    store = PostgresStore(args.database_url)
+    store.create_all()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("Europe/Istanbul"))
+    if args.max_file_bytes is not None:
+        store.set("upload.max_file_bytes", args.max_file_bytes, updated_at=now)
+    if args.max_package_bytes is not None:
+        store.set("upload.max_package_bytes", args.max_package_bytes, updated_at=now)
+    print("upload limits saved")
+    return 0
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -16,6 +16,7 @@ from backend.deps import (
 )
 from backend.routes import activity as activity_router
 from backend.routes import health, packages
+from backend.routes import media as media_router
 from backend.routes import pairing as pairing_router
 from backend.routes import setup as setup_router
 from backend.routes.pairing import IpThrottle
@@ -66,6 +67,7 @@ def create_app(
     app.include_router(pairing_router.router)
     app.include_router(activity_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(setup_router.router, dependencies=[Depends(get_current_client)])
+    app.include_router(media_router.router, dependencies=[Depends(get_current_client)])
     return app
 
 

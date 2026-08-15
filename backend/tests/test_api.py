@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
-from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
+from dojo.adapters.stubs import (
+    StubMediaProcessor,
+    StubMetaPublisher,
+    StubNotifier,
+    StubSignedUrlStore,
+)
 from dojo.testing import FakeClock
 from fastapi.testclient import TestClient
 
@@ -301,3 +307,134 @@ def test_browser_session_accepts_consent(tmp_path: Path) -> None:
     resp = client.post("/api/setup/consent/accept")
     assert resp.status_code == 200
     assert resp.json()["version"] == 1
+
+
+def test_media_routes_require_auth(tmp_path: Path) -> None:
+    client, _, _, _ = make_app(tmp_path)
+    assert client.post("/api/media/uploads", json={}).status_code == 401
+    assert client.put("/api/media/uploads/x/ranges", json={}).status_code == 401
+    assert client.get("/api/media/uploads/x").status_code == 401
+    assert client.post("/api/media/uploads/x/complete").status_code == 401
+    assert client.post("/api/media/uploads/x/abort").status_code == 401
+    assert client.get("/api/media/uploads").status_code == 401
+
+
+def test_init_upload_then_range_then_complete(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "pic.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    )
+    assert init.status_code == 201
+    body = init.json()
+    assert body["status"] == "receiving"
+    assert body["received_bytes"] == 0
+
+    chunk = b"x" * 100
+    progress = client.put(
+        f"/api/media/uploads/{body['upload_id']}/ranges",
+        headers=bearer(token),
+        content=chunk,
+        params={"offset": 0, "checksum_sha256": hashlib.sha256(chunk).hexdigest()},
+    )
+    assert progress.status_code == 200
+    assert progress.json()["received_bytes"] == 100
+
+    complete = client.post(
+        f"/api/media/uploads/{body['upload_id']}/complete", headers=bearer(token)
+    )
+    assert complete.status_code == 200
+    assert complete.json()["status"] == "queued"
+
+
+def test_init_upload_too_large_413(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    resp = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={
+            "filename": "big.mp4",
+            "content_type": "video/mp4",
+            "declared_size_bytes": 2 * 1024**3 + 1,
+        },
+    )
+    assert resp.status_code == 413
+
+
+def test_init_upload_bad_filename_400(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    resp = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "a/b.jpg", "content_type": "image/jpeg", "declared_size_bytes": 10},
+    )
+    assert resp.status_code == 400
+
+
+def test_range_checksum_mismatch_400(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "pic.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    resp = client.put(
+        f"/api/media/uploads/{init['upload_id']}/ranges",
+        headers=bearer(token),
+        content=b"x" * 100,
+        params={"offset": 0, "checksum_sha256": "deadbeef"},
+    )
+    assert resp.status_code == 400
+
+
+def test_complete_incomplete_409(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "pic.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    resp = client.post(f"/api/media/uploads/{init['upload_id']}/complete", headers=bearer(token))
+    assert resp.status_code == 409
+
+
+def test_upload_status_and_list(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "pic.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    got = client.get(f"/api/media/uploads/{init['upload_id']}", headers=bearer(token))
+    assert got.status_code == 200
+    listed = client.get("/api/media/uploads", headers=bearer(token))
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+
+
+def test_abort_upload(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "pic.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    abort = client.post(f"/api/media/uploads/{init['upload_id']}/abort", headers=bearer(token))
+    assert abort.status_code == 200
+    got = client.get(f"/api/media/uploads/{init['upload_id']}", headers=bearer(token)).json()
+    assert got["status"] == "aborted"
+
+
+def test_missing_upload_404(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    assert client.get("/api/media/uploads/nope", headers=bearer(token)).status_code == 404

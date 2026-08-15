@@ -17,7 +17,14 @@ def build_publishing() -> DojoPublishing:
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
     store = PostgresStore(url)
     store.create_all()
-    return DojoPublishing(packages=store, audit=store, media_root=media_root)
+    return DojoPublishing(
+        packages=store,
+        audit=store,
+        uploads=store,
+        jobs=store,
+        settings=store,
+        media_root=media_root,
+    )
 
 
 def build_pairing() -> DojoPairing:
