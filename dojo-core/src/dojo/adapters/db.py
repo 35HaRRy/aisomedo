@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, cast, overload
 
 from sqlalchemy import (
     JSON,
@@ -162,6 +162,13 @@ class PostgresStore:
     def dispose(self) -> None:
         self._engine.dispose()
 
+    @overload
+    def create(self, obj: Package) -> Package: ...
+    @overload
+    def create(self, obj: Upload) -> Upload: ...
+    @overload
+    def create(self, obj: Job) -> Job: ...
+
     def create(self, obj: Package | Upload | Job) -> Package | Upload | Job:
         if isinstance(obj, Upload):
             return self._create_upload(obj)
@@ -240,6 +247,13 @@ class PostgresStore:
                 created_at=row.created_at,
                 status=row.status,
             )
+
+    @overload
+    def update(self, obj: Package) -> Package: ...
+    @overload
+    def update(self, obj: Upload) -> Upload: ...
+    @overload
+    def update(self, obj: Job) -> Job: ...
 
     def update(self, obj: Package | Upload | Job) -> Package | Upload | Job:
         if isinstance(obj, Upload):
@@ -516,6 +530,13 @@ class PostgresStore:
             except IntegrityError:
                 session.rollback()
                 return False
+
+    @overload
+    def get(self, key: str) -> Upload | None: ...
+    @overload
+    def get(self, key: str) -> Job | None: ...  # type: ignore[overload-cannot-match]
+    @overload
+    def get(self, key: str) -> object | None: ...  # type: ignore[overload-cannot-match]
 
     def get(self, key: str) -> Upload | Job | object | None:
         with self._session() as session:

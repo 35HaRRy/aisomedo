@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from typing import overload
 
 from dojo.model import (
     AuditEvent,
@@ -36,6 +37,13 @@ class InMemoryStore:
         self._next_upload_id = 1
         self._next_job_id = 1
 
+    @overload
+    def create(self, obj: Package) -> Package: ...
+    @overload
+    def create(self, obj: Upload) -> Upload: ...
+    @overload
+    def create(self, obj: Job) -> Job: ...
+
     def create(self, obj: Package | Upload | Job) -> Package | Upload | Job:
         if isinstance(obj, Upload):
             created_upload = replace(obj, id=self._next_upload_id)
@@ -57,6 +65,13 @@ class InMemoryStore:
             if package.status == "active":
                 return package
         return None
+
+    @overload
+    def update(self, obj: Package) -> Package: ...
+    @overload
+    def update(self, obj: Upload) -> Upload: ...
+    @overload
+    def update(self, obj: Job) -> Job: ...
 
     def update(self, obj: Package | Upload | Job) -> Package | Upload | Job:
         if isinstance(obj, Upload):
@@ -175,6 +190,13 @@ class InMemoryStore:
         self._next_acceptance_id += 1
         self._acceptances.append(created)
         return True
+
+    @overload
+    def get(self, key: str) -> Upload | None: ...
+    @overload
+    def get(self, key: str) -> Job | None: ...  # type: ignore[overload-cannot-match]
+    @overload
+    def get(self, key: str) -> object | None: ...  # type: ignore[overload-cannot-match]
 
     def get(self, key: str) -> Upload | Job | object | None:
         for u in self._uploads:
