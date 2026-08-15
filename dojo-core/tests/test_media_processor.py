@@ -56,6 +56,17 @@ def test_jpeg_accepted_and_normalized(tmp_path: Path) -> None:
     assert out.content_type == "image/jpeg"
 
 
+def test_rgba_png_accepted(tmp_path: Path) -> None:
+    src = tmp_path / "rgba.png"
+    Image.new("RGBA", (100, 100), (255, 0, 0, 128)).save(src, format="PNG")
+    processor = PillowFFmpegProcessor()
+    out = processor.process(make_upload("rgba.png", "image/png"), src, tmp_path)
+    with Image.open(out.processed_path) as img:
+        assert img.format == "JPEG"
+        assert img.mode == "RGB"
+    assert out.content_type == "image/jpeg"
+
+
 def test_dimension_cap_applied(tmp_path: Path) -> None:
     src = tmp_path / "big.png"
     Image.new("RGB", (8000, 1000), "blue").save(src, format="PNG")

@@ -56,7 +56,7 @@ class PillowFFmpegProcessor:
                 if getattr(src, "n_frames", 1) > 1:
                     raise MediaValidationError("animated images are not supported")
                 img = ImageOps.exif_transpose(src)
-                if img.mode not in ("RGB", "RGBA"):
+                if img.mode != "RGB":
                     img = img.convert("RGB")
                 if max(img.size) > MAX_IMAGE_DIMENSION:
                     scale = MAX_IMAGE_DIMENSION / max(img.size)
