@@ -24,6 +24,10 @@ def build_publishing() -> DojoPublishing:
 
 def run_tick(publishing: DojoPublishing) -> None:
     publishing.evaluate_due_work()
+    job = publishing.claim_next_job()
+    if job is not None:
+        publishing.process_job(job.job_id)
+    publishing.sweep_stale_uploads()
 
 
 def main() -> None:
