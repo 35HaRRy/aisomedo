@@ -211,7 +211,7 @@ class InMemoryStore:
         return next((u for u in self._uploads if u.id == upload_pk), None)
 
     def list_active(self) -> list[Upload]:
-        return [u for u in self._uploads if u.status in ("receiving", "queued")]
+        return [u for u in self._uploads if u.status in ("receiving", "queued", "processing")]
 
     def list_stale(self, cutoff: datetime) -> list[Upload]:
         return [

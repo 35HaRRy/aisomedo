@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from dojo.adapters.db import PostgresStore
 from dojo.adapters.memory import InMemoryStore
 from dojo.model import Package, Upload
@@ -58,11 +60,31 @@ def test_memory_upload_update() -> None:
 def test_memory_upload_list_stale() -> None:
     store = InMemoryStore()
     store.create(make_upload("u-1"))
-    from datetime import timedelta
-
     stale = store.list_stale(FIXED_AT + timedelta(seconds=1))
     assert [u.upload_id for u in stale] == ["u-1"]
     assert store.list_stale(FIXED_AT) == []
+
+
+def test_memory_list_active_includes_processing() -> None:
+    store = InMemoryStore()
+    created = store.create(make_upload("u-1"))
+    store.update(
+        Upload(
+            id=created.id,
+            upload_id="u-1",
+            package_id=1,
+            filename="ok.jpg",
+            content_type="image/jpeg",
+            declared_size_bytes=100,
+            received_ranges=[[0, 100]],
+            received_bytes=100,
+            status="processing",
+            created_at=FIXED_AT,
+            updated_at=FIXED_AT,
+        )
+    )
+    assert [u.upload_id for u in store.list_active()] == ["u-1"]
+    assert store.list_stale(FIXED_AT + timedelta(hours=25)) == []
 
 
 def test_pg_upload_roundtrip(pg_store: PostgresStore) -> None:

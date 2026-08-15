@@ -76,29 +76,40 @@ class PillowFFmpegProcessor:
         )
 
     @staticmethod
-    def _probe(path: Path) -> str:
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=codec_name,width,height",
-                "-of",
-                "csv=p=0",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise MediaValidationError(f"could not probe video: {result.stderr.strip()}")
-        return result.stdout.strip()
+    def _probe(path: Path) -> dict[str, str | None]:
+        def probe_stream(stream: str) -> str | None:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    stream,
+                    "-show_entries",
+                    "stream=codec_name,width,height",
+                    "-of",
+                    "csv=p=0",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise MediaValidationError(f"could not probe video: {result.stderr.strip()}")
+            return result.stdout.strip() or None
+
+        video = probe_stream("v:0") or ""
+        audio = probe_stream("a:0")
+        codec, width, height = (video.split(",") + ["", "", ""])[:3]
+        return {
+            "codec": codec,
+            "width": width,
+            "height": height,
+            "audio": audio.split(",")[0] if audio else None,
+        }
 
     def _process_video(self, original_path: Path, work_dir: Path) -> ProcessedMedia:
-        self._probe(original_path)
+        source = self._probe(original_path)
         processed_path = work_dir / "processed.mp4"
         result = subprocess.run(
             [
@@ -124,8 +135,17 @@ class PillowFFmpegProcessor:
                 f"video transcoding failed: {result.stderr.strip()[:200]}"
             )
         probe = self._probe(processed_path)
-        if not probe.startswith("h264"):
-            raise MediaValidationError(f"transcoded video is not H.264: {probe}")
+        if probe["codec"] != "h264":
+            raise MediaValidationError(f"transcoded video is not H.264: {probe['codec']}")
+        if probe["width"] != source["width"] or probe["height"] != source["height"]:
+            raise MediaValidationError(
+                f"resolution changed: {source['width']}x{source['height']} -> "
+                f"{probe['width']}x{probe['height']}"
+            )
+        if source["audio"] and probe["audio"] != "aac":
+            raise MediaValidationError(
+                f"audio is {probe['audio']}, expected aac"
+            )
         return ProcessedMedia(
             original_path=original_path,
             processed_path=processed_path,

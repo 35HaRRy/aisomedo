@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import uuid
 from dataclasses import replace
 from datetime import timedelta
@@ -346,8 +347,6 @@ class DojoPublishing:
         now = self._clock.now()
         self._uploads.update(replace(upload, status="aborted", updated_at=now))
         staging = self.media_root / "tmp" / upload_id
-        import shutil
-
         shutil.rmtree(staging, ignore_errors=True)
         self._audit.append(
             AuditEvent(
@@ -362,8 +361,6 @@ class DojoPublishing:
         manifest_path = self.media_root / package.folder_name / "manifest.json"
         if not manifest_path.is_file():
             return 0
-        import json
-
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         return sum(int(entry.get("size_bytes", 0)) for entry in manifest.get("media", []))
 
@@ -418,8 +415,6 @@ class DojoPublishing:
         upload = self._uploads.get_by_pk(job.upload_id)
         if upload is None or upload.status != "processing":
             raise UploadConflict(f"upload for job {job_id} is not processing")
-        import shutil
-
         required = upload.declared_size_bytes + processed.size_bytes
         free = shutil.disk_usage(self.media_root).free
         if free < required:
@@ -455,8 +450,6 @@ class DojoPublishing:
         ).to_dict()
 
         manifest_path = self.media_root / package.folder_name / "manifest.json"
-        import json
-
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.setdefault("media", []).append(entry)
         manifest.setdefault("order", []).append(media_id)
@@ -490,8 +483,6 @@ class DojoPublishing:
         for upload in stale:
             now = self._clock.now()
             self._uploads.update(replace(upload, status="aborted", updated_at=now))
-            import shutil
-
             shutil.rmtree(self.media_root / "tmp" / upload.upload_id, ignore_errors=True)
             self._audit.append(
                 AuditEvent(
@@ -513,8 +504,6 @@ class DojoPublishing:
         self._jobs.update(
             replace(job, status="failed", error_reason=reason, finished_at=now)
         )
-        import shutil
-
         if upload is not None:
             shutil.rmtree(self.media_root / "tmp" / upload.upload_id, ignore_errors=True)
         self._audit.append(

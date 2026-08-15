@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from dojo import DojoPairing, DojoSetup
 from dojo.adapters.db import PostgresStore
@@ -71,9 +73,6 @@ def settings_main(argv: list[str] | None = None) -> int:
 
     store = PostgresStore(args.database_url)
     store.create_all()
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
     now = datetime.now(ZoneInfo("Europe/Istanbul"))
     if args.max_file_bytes is not None:
         store.set("upload.max_file_bytes", args.max_file_bytes, updated_at=now)

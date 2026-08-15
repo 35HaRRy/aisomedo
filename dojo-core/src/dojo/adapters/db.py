@@ -557,7 +557,7 @@ class PostgresStore:
     def list_active(self) -> list[Upload]:
         with self._session() as session:
             rows = session.scalars(
-                select(UploadRow).where(UploadRow.status.in_(["receiving", "queued"]))
+                select(UploadRow).where(UploadRow.status.in_(["receiving", "queued", "processing"]))
             ).all()
             return [self._upload_from_row(r) for r in rows]
 

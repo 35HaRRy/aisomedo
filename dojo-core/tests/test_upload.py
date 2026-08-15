@@ -88,6 +88,20 @@ def test_start_upload_rejects_package_over_limit(tmp_path):
         seam.start_upload("b.jpg", "image/jpeg", 100)
 
 
+def test_start_upload_counts_processing_toward_package_limit(tmp_path):
+    store, seam = make_seam(tmp_path)
+    store.set("upload.max_package_bytes", 150, updated_at=FIXED_AT)
+    seam.ensure_active_package()
+    status = seam.start_upload("a.jpg", "image/jpeg", 100)
+    seam.append_upload_range(status.upload_id, 0, 100, sha(b"x" * 100), b"x" * 100)
+    seam.complete_upload(status.upload_id)
+    upload = store.get(status.upload_id)
+    assert upload is not None
+    store.update(replace(upload, status="processing", updated_at=FIXED_AT))
+    with pytest.raises(PackageLimitExceeded):
+        seam.start_upload("b.jpg", "image/jpeg", 100)
+
+
 def test_append_range_writes_and_merges(tmp_path):
     _, seam = make_seam(tmp_path)
     seam.ensure_active_package()
