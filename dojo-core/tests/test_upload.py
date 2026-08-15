@@ -96,6 +96,31 @@ def test_append_range_writes_and_merges(tmp_path):
     assert staged.read_bytes() == body + b"y" * 50
 
 
+def test_append_range_out_of_order_writes_at_offset(tmp_path):
+    _, seam = make_seam(tmp_path)
+    seam.ensure_active_package()
+    status = seam.start_upload("pic.jpg", "image/jpeg", 100)
+    seam.append_upload_range(status.upload_id, 0, 50, sha(b"a" * 50), b"a" * 50)
+    seam.append_upload_range(status.upload_id, 60, 40, sha(b"b" * 40), b"b" * 40)
+    seam.append_upload_range(status.upload_id, 50, 10, sha(b"c" * 10), b"c" * 10)
+    staged = tmp_path / "tmp" / status.upload_id / "original"
+    assert staged.read_bytes() == b"a" * 50 + b"c" * 10 + b"b" * 40
+    assert seam.get_upload_status(status.upload_id).received_ranges == [[0, 100]]
+    assert seam.get_upload_status(status.upload_id).received_bytes == 100
+
+
+def test_append_range_overlap_rewrites_content(tmp_path):
+    _, seam = make_seam(tmp_path)
+    seam.ensure_active_package()
+    status = seam.start_upload("pic.jpg", "image/jpeg", 100)
+    seam.append_upload_range(status.upload_id, 0, 100, sha(b"x" * 100), b"x" * 100)
+    seam.append_upload_range(status.upload_id, 0, 50, sha(b"y" * 50), b"y" * 50)
+    staged = tmp_path / "tmp" / status.upload_id / "original"
+    assert staged.read_bytes() == b"y" * 50 + b"x" * 50
+    assert seam.get_upload_status(status.upload_id).received_ranges == [[0, 100]]
+    assert seam.get_upload_status(status.upload_id).received_bytes == 100
+
+
 def test_append_range_duplicate_is_idempotent(tmp_path):
     _, seam = make_seam(tmp_path)
     seam.ensure_active_package()

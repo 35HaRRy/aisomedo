@@ -261,7 +261,8 @@ class DojoPublishing:
                 f"checksum mismatch for upload {upload_id}: got {actual[:8]}"
             )
         staged = self.media_root / "tmp" / upload_id / "original"
-        with staged.open("ab") as fh:
+        staged.touch()
+        with staged.open("r+b") as fh:
             fh.seek(offset)
             fh.write(data)
         now = self._clock.now()
