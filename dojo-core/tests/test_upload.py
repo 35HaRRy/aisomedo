@@ -319,6 +319,55 @@ def test_process_job_missing_upload_marks_failed(tmp_path):
     assert seam.get_upload_status(status.upload_id).status == "failed"
 
 
+def test_finalize_media_exactly_once(tmp_path):
+    from pathlib import Path
+
+    from dojo.model import ProcessedMedia
+
+    _, seam = make_seam(tmp_path)
+    seam._media = StubMediaProcessor()
+    complete(tmp_path, seam)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+    seam.process_job(claimed.job_id)
+    with pytest.raises(UploadConflict):
+        seam.finalize_media(
+            claimed.job_id,
+            ProcessedMedia(
+                original_path=Path("/tmp/original"),
+                processed_path=Path("/tmp/processed"),
+                content_type="image/jpeg",
+                size_bytes=1,
+            ),
+        )
+
+
+def test_finalize_media_disk_space_guard_fails_job(tmp_path, monkeypatch):
+    import shutil
+
+    store, seam = make_seam(tmp_path)
+    seam._media = StubMediaProcessor()
+    status = complete(tmp_path, seam)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+
+    class TinyDisk:
+        free = 1
+        total = 2
+        used = 1
+
+    monkeypatch.setattr(shutil, "disk_usage", lambda _path: TinyDisk())
+
+    seam.process_job(claimed.job_id)
+
+    reason = seam.get_upload_status(status.upload_id).error_reason or ""
+    assert seam.get_upload_status(status.upload_id).status == "failed"
+    assert "insufficient disk space" in reason
+    assert store.get_by_upload(store.get(status.upload_id).id).status == "failed"
+    assert not (tmp_path / "tmp" / status.upload_id).exists()
+    assert not (tmp_path / seam.get_active_package().folder_name / "media").exists()
+
+
 def test_sweep_stale_uploads_cleans_expired(tmp_path):
     store, seam = make_seam(tmp_path)
     status = complete(tmp_path, seam)
