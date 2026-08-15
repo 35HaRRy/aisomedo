@@ -902,8 +902,8 @@ def test_start_upload_rejects_file_over_limit(tmp_path):
 
 
 def test_start_upload_rejects_package_over_limit(tmp_path):
-    _, seam = make_seam(tmp_path)
-    seam.settings.set("upload.max_package_bytes", 150, updated_at=FIXED_AT)
+    store, seam = make_seam(tmp_path)
+    store.set("upload.max_package_bytes", 150, updated_at=FIXED_AT)
     seam.ensure_active_package()
     seam.start_upload("a.jpg", "image/jpeg", 100)
     with pytest.raises(PackageLimitExceeded):
@@ -1032,7 +1032,7 @@ def test_get_upload_limits_defaults_and_settings(tmp_path):
     limits = seam.get_upload_limits()
     assert limits.max_file_bytes == 2 * 1024**3
     assert limits.max_package_bytes == 20 * 1024**3
-    seam.settings.set("upload.max_file_bytes", 42, updated_at=FIXED_AT)
+    store.set("upload.max_file_bytes", 42, updated_at=FIXED_AT)
     assert seam.get_upload_limits().max_file_bytes == 42
 ```
 
@@ -1401,9 +1401,11 @@ def complete(tmp_path, seam, *, content_type="image/jpeg", body=b"x" * 100):
 
 def test_process_job_finalizes_into_package(tmp_path):
     store, seam = make_seam(tmp_path)
+    seam._media = StubMediaProcessor()
     status = complete(tmp_path, seam)
-    job = store.get_by_upload(store.get(status.upload_id).id)
-    seam.process_job(job.job_id)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+    seam.process_job(claimed.job_id)
 
     package = seam.get_active_package()
     media_dir = tmp_path / package.folder_name / "media"
@@ -1433,10 +1435,11 @@ def test_process_job_finalizes_into_package(tmp_path):
 def test_process_job_validation_failure_marks_failed_and_cleans(tmp_path):
     store, seam = make_seam(tmp_path)
     status = complete(tmp_path, seam)
-    job = store.get_by_upload(store.get(status.upload_id).id)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
     seam._media = StubMediaProcessor(fail_reason="unsupported codec: not-h264")
 
-    seam.process_job(job.job_id)
+    seam.process_job(claimed.job_id)
 
     assert seam.get_upload_status(status.upload_id).status == "failed"
     assert seam.get_upload_status(status.upload_id).error_reason == "unsupported codec: not-h264"
@@ -1460,10 +1463,11 @@ def test_claim_next_job_returns_one_job(tmp_path):
 def test_process_job_missing_upload_marks_failed(tmp_path):
     store, seam = make_seam(tmp_path)
     status = complete(tmp_path, seam)
-    job = store.get_by_upload(store.get(status.upload_id).id)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
     seam._media = StubMediaProcessor(fail_reason="original missing")
     (tmp_path / "tmp" / status.upload_id / "original").unlink()
-    seam.process_job(job.job_id)
+    seam.process_job(claimed.job_id)
     assert seam.get_upload_status(status.upload_id).status == "failed"
 
 
@@ -2035,6 +2039,7 @@ class SpyPublishing(DojoPublishing):
     def __init__(self) -> None:
         self.ticks = 0
         self.processed_jobs: list[str] = []
+        self._claims_left = 1
         super().__init__(
             packages=InMemoryStore(),
             audit=InMemoryStore(),
@@ -2046,9 +2051,10 @@ class SpyPublishing(DojoPublishing):
         self.ticks += 1
 
     def claim_next_job(self) -> object:
-        if self.ticks:
-            return None
-        return {"job_id": "j-1"}
+        if self._claims_left:
+            self._claims_left -= 1
+            return {"job_id": "j-1"}
+        return None
 
     def process_job(self, job_id: str) -> None:
         self.processed_jobs.append(job_id)
