@@ -2033,13 +2033,28 @@ from __future__ import annotations
 
 from dojo import DojoPublishing, InMemoryStore
 from dojo.adapters.stubs import StubMediaProcessor
+from dojo.model import Job
+from dojo.testing import FIXED_AT
 from worker.main import run_tick
+
+
+def make_job(job_id: str = "j-1", upload_id: int = 7) -> Job:
+    return Job(
+        id=0,
+        job_id=job_id,
+        upload_id=upload_id,
+        kind="media.process",
+        status="queued",
+        payload={"upload_id": 7},
+        created_at=FIXED_AT,
+    )
 
 
 class SpyPublishing(DojoPublishing):
     def __init__(self) -> None:
         self.ticks = 0
         self.processed_jobs: list[str] = []
+        self.sweeps = 0
         self._claims_left = 1
         super().__init__(
             packages=InMemoryStore(),
@@ -2051,16 +2066,17 @@ class SpyPublishing(DojoPublishing):
     def evaluate_due_work(self) -> None:
         self.ticks += 1
 
-    def claim_next_job(self) -> object:
+    def claim_next_job(self) -> Job | None:
         if self._claims_left:
             self._claims_left -= 1
-            return {"job_id": "j-1"}
+            return make_job("j-1")
         return None
 
     def process_job(self, job_id: str) -> None:
         self.processed_jobs.append(job_id)
 
-    def sweep_stale_uploads(self, ttl: object = None) -> int:
+    def sweep_stale_uploads(self, ttl: int | None = None) -> int:
+        self.sweeps += 1
         return 0
 
 
@@ -2074,6 +2090,14 @@ def test_run_tick_processes_claimed_job() -> None:
     spy = SpyPublishing()
     run_tick(spy)
     assert spy.processed_jobs == ["j-1"]
+
+
+def test_run_tick_sweeps_when_claims_exhausted() -> None:
+    spy = SpyPublishing()
+    run_tick(spy)
+    run_tick(spy)
+    assert spy.processed_jobs == ["j-1"]
+    assert spy.sweeps == 2
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
