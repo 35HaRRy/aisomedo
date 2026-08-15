@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import (
@@ -29,8 +29,6 @@ from dojo.model import (
     PairingCode,
     Upload,
 )
-
-STALE_TTL = timedelta(hours=24)
 
 
 class Base(DeclarativeBase):
@@ -547,7 +545,7 @@ class PostgresStore:
             rows = session.scalars(
                 select(UploadRow).where(
                     UploadRow.status.in_(["receiving", "queued"]),
-                    UploadRow.updated_at < cutoff - STALE_TTL,
+                    UploadRow.updated_at < cutoff,
                 )
             ).all()
             return [self._upload_from_row(r) for r in rows]

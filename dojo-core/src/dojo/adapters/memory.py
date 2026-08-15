@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from dojo.model import (
     AuditEvent,
@@ -13,8 +13,6 @@ from dojo.model import (
     PairingCode,
     Upload,
 )
-
-STALE_TTL = timedelta(hours=24)
 
 
 class InMemoryStore:
@@ -197,7 +195,7 @@ class InMemoryStore:
         return [
             u
             for u in self._uploads
-            if u.status in ("receiving", "queued") and u.updated_at < cutoff - STALE_TTL
+            if u.status in ("receiving", "queued") and u.updated_at < cutoff
         ]
 
     def get_by_upload(self, upload_pk: int) -> Job | None:
