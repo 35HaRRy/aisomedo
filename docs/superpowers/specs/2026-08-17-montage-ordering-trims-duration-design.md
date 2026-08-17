@@ -101,8 +101,8 @@ live on the manifest (filesystem), not in Postgres.
 - `set_trims` requires the active package; raises `NoActivePackage` if none.
 - `set_trims` validates each key is a finalized video media id
   (`MediaNotFound`/validation otherwise), `0 <= start < end <= duration`
-  (`MontageTrimInvalid`), and drops/overwrites trims for non-video or unknown
-  ids rather than storing them.
+  (`MontageTrimInvalid`); unknown ids raise `MediaNotFound` and non-video ids
+  raise `MontageTrimInvalid` — both are rejected, not dropped.
 - Both raise `MontageDurationExceeded` when the resulting combined duration
   exceeds the limit.
 - On success both clear `render_revision`, persist the manifest, and audit
