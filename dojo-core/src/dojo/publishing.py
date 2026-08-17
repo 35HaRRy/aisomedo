@@ -533,6 +533,7 @@ class DojoPublishing:
 
         manifest_path = self.media_root / package.folder_name / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["render_revision"] = None
         display_name = upload.filename
         overwrite_target: str | None = None
         if upload.conflict_decision == KEEP_BOTH:
@@ -570,6 +571,11 @@ class DojoPublishing:
                 "path": f"media/{media_id}/processed{processed_ext}",
                 "content_type": processed.content_type,
                 "size_bytes": processed.size_bytes,
+                **(
+                    {"duration": processed.duration}
+                    if processed.duration is not None
+                    else {}
+                ),
             },
         ).to_dict()
 

@@ -108,6 +108,32 @@ class PillowFFmpegProcessor:
             "audio": audio.split(",")[0] if audio else None,
         }
 
+    @staticmethod
+    def _probe_duration(path: Path) -> float:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise MediaValidationError(
+                f"could not probe duration: {result.stderr.strip()}"
+            )
+        import json as _json
+
+        duration = _json.loads(result.stdout).get("format", {}).get("duration")
+        if duration is None:
+            raise MediaValidationError("could not read video duration")
+        return float(duration)
+
     def _process_video(self, original_path: Path, work_dir: Path) -> ProcessedMedia:
         source = self._probe(original_path)
         processed_path = work_dir / "processed.mp4"
@@ -146,9 +172,11 @@ class PillowFFmpegProcessor:
             raise MediaValidationError(
                 f"audio is {probe['audio']}, expected aac"
             )
+        duration = self._probe_duration(processed_path)
         return ProcessedMedia(
             original_path=original_path,
             processed_path=processed_path,
             content_type="video/mp4",
             size_bytes=processed_path.stat().st_size,
+            duration=duration,
         )

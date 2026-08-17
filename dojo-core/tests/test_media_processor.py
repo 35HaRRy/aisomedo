@@ -135,6 +135,8 @@ def test_video_transcoded_to_h264_aac(tmp_path: Path) -> None:
         check=True,
     )
     assert probe.stdout.strip().startswith("h264")
+    assert out.duration is not None
+    assert out.duration > 0.0
 
 
 @pytest.mark.skipif(not _docker_available(), reason="docker unavailable")

@@ -35,10 +35,17 @@ class StubSignedUrlStore:
 
 
 class StubMediaProcessor:
-    def __init__(self, *, content_type: str = "image/jpeg", fail_reason: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        content_type: str = "image/jpeg",
+        fail_reason: str | None = None,
+        duration: float | None = None,
+    ) -> None:
         self.calls: list[tuple[object, Path]] = []
         self.content_type = content_type
         self.fail_reason = fail_reason
+        self.duration = duration
 
     def process(self, upload: object, original_path: Path, work_dir: Path) -> object:
         from dojo.model import ProcessedMedia
@@ -56,4 +63,5 @@ class StubMediaProcessor:
             content_type=self.content_type,
             size_bytes=processed.stat().st_size,
             dimensions=(100, 100),
+            duration=self.duration,
         )
