@@ -19,6 +19,9 @@ from dojo.exceptions import (
     MediaNotRemovable,
     MediaNotRestorable,
     MediaValidationError,
+    MontageDurationExceeded,
+    MontageOrderInvalid,
+    MontageTrimInvalid,
     NoActivePackage,
     PackageCompleted,
     PackageLimitExceeded,
@@ -41,6 +44,9 @@ from dojo.model import (
     Job,
     Manifest,
     MediaEntry,
+    MontageClip,
+    MontageLimits,
+    MontageStatus,
     Package,
     ProcessedMedia,
     Upload,
@@ -63,6 +69,9 @@ from dojo.ports import (
 DEFAULT_MAX_FILE_BYTES = 2 * 1024**3
 DEFAULT_MAX_PACKAGE_BYTES = 20 * 1024**3
 STALE_TTL = timedelta(hours=24)
+
+DEFAULT_MAX_MONTAGE_SECONDS = 90.0
+DEFAULT_PHOTO_SECONDS = 3.0
 
 
 def merge_ranges(existing: list[list[int]], new_start: int, new_end: int) -> list[list[int]]:
@@ -968,8 +977,171 @@ class DojoPublishing:
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-    def set_order(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+    def get_montage_limits(self) -> MontageLimits:
+        max_seconds = (
+            self._settings.get("montage.max_duration_seconds")
+            or DEFAULT_MAX_MONTAGE_SECONDS
+        )
+        photo_seconds = (
+            self._settings.get("montage.photo_duration_seconds")
+            or DEFAULT_PHOTO_SECONDS
+        )
+        return MontageLimits(
+            max_duration_seconds=float(cast(float, max_seconds)),
+            photo_duration_seconds=float(cast(float, photo_seconds)),
+        )
+
+    def _clip_duration(self, entry: dict, trims: dict, photo_duration: float) -> float:
+        if str(entry.get("content_type", "")).startswith("video/"):
+            source = float(entry.get("processed", {}).get("duration") or 0.0)
+            trim = trims.get(entry.get("media_id"))
+            if trim:
+                source -= float(trim["end"]) - float(trim["start"])
+            return max(source, 0.0)
+        return photo_duration
+
+    def _combined_duration(self, order: list[str], trims: dict) -> float:
+        limits = self.get_montage_limits()
+        package = self._packages.get_active()
+        if package is None:
+            return 0.0
+        manifest = self._load_manifest(package)
+        by_id = {e.get("media_id"): e for e in manifest.get("media", [])}
+        total = 0.0
+        for media_id in order:
+            entry = by_id.get(media_id)
+            if entry is None or entry.get("status") != "finalized":
+                continue
+            total += self._clip_duration(entry, trims, limits.photo_duration_seconds)
+        return total
+
+    def get_montage_status(self) -> MontageStatus:
+        package = self._require_active_package()
+        manifest = self._load_manifest(package)
+        limits = self.get_montage_limits()
+        order = manifest.get("order", [])
+        trims = manifest.get("trims", {})
+        by_id = {e.get("media_id"): e for e in manifest.get("media", [])}
+        clips: list[MontageClip] = []
+        for media_id in order:
+            entry = by_id.get(media_id)
+            if entry is None or entry.get("status") != "finalized":
+                continue
+            is_video = str(entry.get("content_type", "")).startswith("video/")
+            source = (
+                float(entry.get("processed", {}).get("duration") or 0.0)
+                if is_video else None
+            )
+            clips.append(
+                MontageClip(
+                    media_id=media_id,
+                    filename=str(entry.get("filename", "")),
+                    content_type=str(entry.get("content_type", "")),
+                    is_video=is_video,
+                    source_duration=source,
+                    effective_duration=self._clip_duration(
+                        entry, trims, limits.photo_duration_seconds
+                    ),
+                )
+            )
+        combined = sum(c.effective_duration for c in clips)
+        over_limit = combined > limits.max_duration_seconds
+        required_action = None
+        if over_limit:
+            excess = combined - limits.max_duration_seconds
+            required_action = f"trim or remove {excess:.1f}s"
+        return MontageStatus(
+            order=order,
+            trims=trims,
+            clips=clips,
+            combined_duration=combined,
+            max_duration_seconds=limits.max_duration_seconds,
+            over_limit=over_limit,
+            required_action=required_action,
+        )
+
+    def set_order(self, order: list[str], requester: str | None = None) -> MontageStatus:
+        package = self._require_active_package()
+        if any(self._media_in_completed(mid) for mid in order):
+            raise PackageCompleted("media belongs to a completed package")
+        manifest = self._load_manifest(package)
+        finalized = [
+            e.get("media_id")
+            for e in manifest.get("media", [])
+            if e.get("status") == "finalized"
+        ]
+        if len(order) != len(set(order)) or set(order) != set(finalized):
+            raise MontageOrderInvalid(
+                "order must contain every finalized media id exactly once"
+            )
+        limits = self.get_montage_limits()
+        combined = self._combined_duration(order, manifest.get("trims", {}))
+        if combined > limits.max_duration_seconds:
+            excess = combined - limits.max_duration_seconds
+            raise MontageDurationExceeded(
+                f"combined duration {combined:.1f}s exceeds {limits.max_duration_seconds:.1f}s "
+                f"limit; trim or remove {excess:.1f}s"
+            )
+        manifest["order"] = list(order)
+        manifest["render_revision"] = None
+        self._write_manifest(package, manifest)
+        self._audit.append(
+            AuditEvent(
+                action="montage.order_changed",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"order": list(order), "package": package.folder_name},
+            )
+        )
+        return self.get_montage_status()
+
+    def set_trims(self, trims: dict, requester: str | None = None) -> MontageStatus:
+        package = self._require_active_package()
+        if any(self._media_in_completed(mid) for mid in trims):
+            raise PackageCompleted("media belongs to a completed package")
+        manifest = self._load_manifest(package)
+        by_id = {
+            e.get("media_id"): e
+            for e in manifest.get("media", [])
+            if e.get("status") == "finalized"
+        }
+        cleaned: dict = {}
+        for media_id, trim in trims.items():
+            entry = by_id.get(media_id)
+            if entry is None:
+                raise MediaNotFound(f"media {media_id} not found in active package")
+            if not str(entry.get("content_type", "")).startswith("video/"):
+                raise MontageTrimInvalid(
+                    f"media {media_id} is not a video; trims apply to videos only"
+                )
+            start = float(trim["start"])
+            end = float(trim["end"])
+            duration = float(entry.get("processed", {}).get("duration") or 0.0)
+            if not (0.0 <= start < end <= duration):
+                raise MontageTrimInvalid(
+                    f"invalid trim [{start}, {end}) for media {media_id} with duration {duration}"
+                )
+            cleaned[media_id] = {"start": start, "end": end}
+        limits = self.get_montage_limits()
+        combined = self._combined_duration(manifest.get("order", []), cleaned)
+        if combined > limits.max_duration_seconds:
+            excess = combined - limits.max_duration_seconds
+            raise MontageDurationExceeded(
+                f"combined duration {combined:.1f}s exceeds {limits.max_duration_seconds:.1f}s "
+                f"limit; trim or remove {excess:.1f}s"
+            )
+        manifest["trims"] = cleaned
+        manifest["render_revision"] = None
+        self._write_manifest(package, manifest)
+        self._audit.append(
+            AuditEvent(
+                action="montage.trim_changed",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"trims": cleaned, "package": package.folder_name},
+            )
+        )
+        return self.get_montage_status()
 
     def set_caption(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError

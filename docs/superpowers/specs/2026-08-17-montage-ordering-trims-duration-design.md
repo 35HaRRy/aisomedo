@@ -114,6 +114,8 @@ live on the manifest (filesystem), not in Postgres.
 - `MontageDurationExceeded(DojoError)`.
 - `MontageTrimInvalid(DojoError)` — malformed trim (start >= end, out of
   range, non-video target).
+- `MontageOrderInvalid(DojoError)` — order is not an exact permutation of the
+  finalized media set (missing, duplicate, or unknown ids).
 
 ## MediaProcessor (`dojo/adapters/media.py`)
 
