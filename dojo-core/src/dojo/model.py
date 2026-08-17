@@ -207,3 +207,51 @@ class ProcessedMedia:
 class UploadLimits:
     max_file_bytes: int
     max_package_bytes: int
+
+
+@dataclass(frozen=True)
+class MontageLimits:
+    max_duration_seconds: float
+    photo_duration_seconds: float
+
+
+@dataclass(frozen=True)
+class MontageClip:
+    media_id: str
+    filename: str
+    content_type: str
+    is_video: bool
+    source_duration: float | None = None
+    effective_duration: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "media_id": self.media_id,
+            "filename": self.filename,
+            "content_type": self.content_type,
+            "is_video": self.is_video,
+            "source_duration": self.source_duration,
+            "effective_duration": self.effective_duration,
+        }
+
+
+@dataclass(frozen=True)
+class MontageStatus:
+    order: list[str]
+    trims: dict
+    clips: list[MontageClip]
+    combined_duration: float
+    max_duration_seconds: float
+    over_limit: bool
+    required_action: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "order": self.order,
+            "trims": self.trims,
+            "clips": [c.to_dict() for c in self.clips],
+            "combined_duration": self.combined_duration,
+            "max_duration_seconds": self.max_duration_seconds,
+            "over_limit": self.over_limit,
+            "required_action": self.required_action,
+        }

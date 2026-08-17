@@ -100,3 +100,15 @@ class MediaNotRemovable(DojoError):
 
 class MediaNotRestorable(DojoError):
     pass
+
+
+class MontageOrderInvalid(DojoError):
+    pass
+
+
+class MontageTrimInvalid(DojoError):
+    pass
+
+
+class MontageDurationExceeded(DojoError):
+    pass
