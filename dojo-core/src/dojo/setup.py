@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from dojo.adapters.clock import SystemClock
 from dojo.exceptions import ConsentPolicyDowngrade, NoConsentPolicy
 from dojo.model import (
@@ -9,10 +11,12 @@ from dojo.model import (
     ConsentPolicy,
     SetupItem,
 )
-from dojo.ports import AuditStore, Clock, PairingStore, SetupStore
+from dojo.ports import AuditStore, Clock, PairingStore, SettingsStore, SetupStore
 
 PAIRING_ITEM = "pairing"
 CONSENT_ITEM = "consent"
+LOGO_ITEM = "logo"
+CAPTION_TEMPLATE_ITEM = "caption_template"
 
 
 class DojoSetup:
@@ -31,11 +35,13 @@ class DojoSetup:
         audit: AuditStore,
         pairing: PairingStore,
         clock: Clock | None = None,
+        settings: SettingsStore | None = None,
     ) -> None:
         self._setup = setup
         self._audit = audit
         self._pairing = pairing
         self._clock = clock or SystemClock()
+        self._settings = settings or cast(SettingsStore, setup)
 
     def current_policy(self) -> ConsentPolicy | None:
         """Return the current (highest-version) consent policy, if any."""
@@ -110,9 +116,17 @@ class DojoSetup:
             policy is not None and self._setup.find_acceptance(policy.version) is not None
         )
         pairing_done = any(c.revoked_at is None for c in self._pairing.list_clients())
+        logo_done = self._settings.get("branding.logo_asset") is not None
+        caption_done = self._settings.get("branding.caption_template") is not None
         return [
             SetupItem(key=PAIRING_ITEM, label="Pairing", complete=pairing_done),
             SetupItem(key=CONSENT_ITEM, label="Media consent", complete=consent_done),
+            SetupItem(key=LOGO_ITEM, label="Dojo logo", complete=logo_done),
+            SetupItem(
+                key=CAPTION_TEMPLATE_ITEM,
+                label="Caption template",
+                complete=caption_done,
+            ),
         ]
 
     def checklist_item(self, key: str) -> SetupItem:

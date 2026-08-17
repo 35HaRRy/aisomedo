@@ -14,6 +14,13 @@ def make_setup(store: InMemoryStore) -> DojoSetup:
     return DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock())
 
 
+def configure_branding(store: InMemoryStore) -> None:
+    store.set("branding.logo_asset", "logo.png", updated_at=FakeClock().now())
+    store.set(
+        "branding.caption_template", "Bugün dojoda {{isim}}", updated_at=FakeClock().now()
+    )
+
+
 def make_pairing(store: InMemoryStore) -> DojoPairing:
     return DojoPairing(pairing=store, audit=store, clock=FakeClock())
 
@@ -122,6 +129,20 @@ def test_checklist_consent_requires_current_version_accepted() -> None:
     assert setup.checklist_item("consent").complete is True
 
 
+def test_checklist_branding_tracks_logo_and_caption_template() -> None:
+    store = InMemoryStore()
+    setup = make_setup(store)
+    assert setup.checklist_item("logo").complete is False
+    assert setup.checklist_item("caption_template").complete is False
+    store.set("branding.logo_asset", "logo.png", updated_at=FakeClock().now())
+    assert setup.checklist_item("logo").complete is True
+    assert setup.checklist_item("caption_template").complete is False
+    store.set(
+        "branding.caption_template", "Bugün dojoda", updated_at=FakeClock().now()
+    )
+    assert setup.checklist_item("caption_template").complete is True
+
+
 def test_is_ready_requires_all_items() -> None:
     store = InMemoryStore()
     setup = make_setup(store)
@@ -132,6 +153,8 @@ def test_is_ready_requires_all_items() -> None:
     client = store.find_client_by_id(1)
     assert client is not None
     setup.accept_current_policy(client=client)
+    assert setup.is_ready() is False
+    configure_branding(store)
     assert setup.is_ready() is True
 
 

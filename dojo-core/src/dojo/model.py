@@ -210,6 +210,26 @@ class UploadLimits:
 
 
 @dataclass(frozen=True)
+class BrandingConfig:
+    logo_asset: str | None = None
+    intro_asset: str | None = None
+    intro_duration: float | None = None
+    outro_asset: str | None = None
+    outro_duration: float | None = None
+    caption_template: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "logo_asset": self.logo_asset,
+            "intro_asset": self.intro_asset,
+            "intro_duration": self.intro_duration,
+            "outro_asset": self.outro_asset,
+            "outro_duration": self.outro_duration,
+            "caption_template": self.caption_template,
+        }
+
+
+@dataclass(frozen=True)
 class MontageLimits:
     max_duration_seconds: float
     photo_duration_seconds: float

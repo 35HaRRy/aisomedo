@@ -277,6 +277,10 @@ def test_device_accepts_consent_and_setup_becomes_ready(tmp_path: Path) -> None:
     token = pair_device(client, pairing)
     me = client.get("/api/pairing/me", headers=bearer(token)).json()
     setup.set_policy(version=1, text="Riza metni", requester=str(me["id"]))
+    setup._settings.set("branding.logo_asset", "logo.png", updated_at=FakeClock().now())
+    setup._settings.set(
+        "branding.caption_template", "Bugün dojoda", updated_at=FakeClock().now()
+    )
 
     consent = client.get("/api/setup/consent", headers=bearer(token)).json()
     assert consent["version"] == 1
@@ -296,6 +300,8 @@ def test_device_accepts_consent_and_setup_becomes_ready(tmp_path: Path) -> None:
     body = client.get("/api/setup", headers=bearer(token)).json()
     keys = {item["key"]: item["complete"] for item in body["checklist"]}
     assert keys["consent"] is True
+    assert keys["logo"] is True
+    assert keys["caption_template"] is True
     assert body["ready"] is True
 
 
@@ -734,3 +740,78 @@ def test_get_montage_via_api(tmp_path: Path) -> None:
     body = resp.json()
     assert body["combined_duration"] == 3.0
     assert len(body["clips"]) == 1
+
+
+def test_branding_routes_require_auth(tmp_path: Path) -> None:
+    client, _, _, _ = make_app(tmp_path)
+    assert client.get("/api/packages/active/branding").status_code == 401
+    assert client.put(
+        "/api/packages/active/branding", json={"branding": {}}
+    ).status_code == 401
+    assert client.get("/api/packages/active/caption").status_code == 401
+    assert client.put(
+        "/api/packages/active/caption", json={"caption": "x"}
+    ).status_code == 401
+    assert client.get("/api/settings/branding").status_code == 401
+    assert client.put("/api/settings/branding", json={}).status_code == 401
+
+
+def test_set_and_get_global_branding_defaults_via_api(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+
+    resp = client.put(
+        "/api/settings/branding",
+        headers=bearer(token),
+        json={"logo_asset": "logo.png", "caption_template": "Bugün {{isim}}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["logo_asset"] == "logo.png"
+
+    resp = client.get("/api/settings/branding", headers=bearer(token))
+    assert resp.json()["logo_asset"] == "logo.png"
+    assert resp.json()["caption_template"] == "Bugün {{isim}}"
+
+
+def test_set_and_get_caption_via_api(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    publishing._settings.set("branding.logo_asset", "logo.png", updated_at=FakeClock().now())
+    publishing._settings.set(
+        "branding.caption_template", "Bugün {{isim}}", updated_at=FakeClock().now()
+    )
+    client.get("/api/packages/active", headers=bearer(token))  # create + seed
+
+    resp = client.put(
+        "/api/packages/active/caption",
+        headers=bearer(token),
+        json={"caption": "Özel açıklama"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["caption"] == "Özel açıklama"
+
+    resp = client.get("/api/packages/active/caption", headers=bearer(token))
+    assert resp.json()["caption"] == "Özel açıklama"
+    # global template untouched
+    resp = client.get("/api/settings/branding", headers=bearer(token))
+    assert resp.json()["caption_template"] == "Bugün {{isim}}"
+
+
+def test_set_and_get_branding_via_api(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    publishing._settings.set("branding.logo_asset", "logo.png", updated_at=FakeClock().now())
+    client.get("/api/packages/active", headers=bearer(token))
+
+    resp = client.put(
+        "/api/packages/active/branding",
+        headers=bearer(token),
+        json={"branding": {"intro_asset": "custom.mp4", "outro_duration": 5.0}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["intro_asset"] == "custom.mp4"
+    assert resp.json()["outro_duration"] == 5.0
+    assert resp.json()["logo_asset"] == "logo.png"
+
+    resp = client.get("/api/packages/active/branding", headers=bearer(token))
+    assert resp.json()["intro_asset"] == "custom.mp4"

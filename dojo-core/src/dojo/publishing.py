@@ -15,6 +15,7 @@ from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlSt
 from dojo.exceptions import (
     ActivePackageExists,
     JobNotFound,
+    LogoNotConfigured,
     MediaNotFound,
     MediaNotRemovable,
     MediaNotRestorable,
@@ -41,6 +42,7 @@ from dojo.model import (
     KEEP_TARGET,
     PACKAGE_FOLDER_FORMAT,
     AuditEvent,
+    BrandingConfig,
     Job,
     Manifest,
     MediaEntry,
@@ -184,6 +186,7 @@ class DojoPublishing:
         package = self._packages.create(
             Package(id=0, folder_name=folder_name, created_at=now, status="active")
         )
+        self._seed_draft_defaults(package)
         self._audit.append(
             AuditEvent(
                 action="package.created",
@@ -977,6 +980,108 @@ class DojoPublishing:
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
+    def get_branding_defaults(self) -> BrandingConfig:
+        """Return the installation-wide branding defaults (empty when unset)."""
+        return BrandingConfig(
+            logo_asset=cast(str | None, self._settings.get("branding.logo_asset")),
+            intro_asset=cast(str | None, self._settings.get("branding.intro_asset")),
+            intro_duration=cast(
+                float | None, self._settings.get("branding.intro_duration")
+            ),
+            outro_asset=cast(str | None, self._settings.get("branding.outro_asset")),
+            outro_duration=cast(
+                float | None, self._settings.get("branding.outro_duration")
+            ),
+            caption_template=cast(
+                str | None, self._settings.get("branding.caption_template")
+            ),
+        )
+
+    def set_branding_defaults(
+        self, config: BrandingConfig, requester: str | None = None
+    ) -> BrandingConfig:
+        """Set the installation-wide branding defaults; draft copies keep old values."""
+        now = self._clock.now()
+        for key, value in config.to_dict().items():
+            self._settings.set(f"branding.{key}", value, updated_at=now)
+        self._audit.append(
+            AuditEvent(
+                action="branding.defaults_updated",
+                actor=requester or "system",
+                occurred_at=now,
+                details=config.to_dict(),
+            )
+        )
+        return self.get_branding_defaults()
+
+    def _seed_draft_defaults(self, package: Package) -> None:
+        defaults = self.get_branding_defaults()
+        manifest = self._load_manifest(package)
+        manifest["branding"] = {
+            "logo_asset": defaults.logo_asset,
+            "intro_asset": defaults.intro_asset,
+            "intro_duration": defaults.intro_duration,
+            "outro_asset": defaults.outro_asset,
+            "outro_duration": defaults.outro_duration,
+        }
+        if defaults.caption_template is not None:
+            manifest["caption"] = defaults.caption_template
+        self._write_manifest(package, manifest)
+
+    def get_draft_branding(self) -> dict:
+        package = self._require_active_package()
+        return self._load_manifest(package).get("branding", {})
+
+    def get_draft_caption(self) -> str | None:
+        package = self._require_active_package()
+        return self._load_manifest(package).get("caption")
+
+    def set_branding(self, branding: dict, requester: str | None = None) -> dict:
+        """Override intro/outro (and logo) for one draft without touching globals."""
+        package = self._require_active_package()
+        manifest = self._load_manifest(package)
+        current = dict(manifest.get("branding", {}))
+        current.update(branding)
+        manifest["branding"] = current
+        manifest["render_revision"] = None
+        self._write_manifest(package, manifest)
+        self._audit.append(
+            AuditEvent(
+                action="branding.draft_updated",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"branding": current, "package": package.folder_name},
+            )
+        )
+        return current
+
+    def set_caption(self, caption: str, requester: str | None = None) -> str:
+        """Edit the draft caption copy without changing the global template."""
+        package = self._require_active_package()
+        manifest = self._load_manifest(package)
+        manifest["caption"] = caption
+        manifest["render_revision"] = None
+        self._write_manifest(package, manifest)
+        self._audit.append(
+            AuditEvent(
+                action="caption.draft_updated",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"package": package.folder_name},
+            )
+        )
+        return caption
+
+    def _assert_logo_configured(self) -> None:
+        logo = self.get_branding_defaults().logo_asset
+        package = self._packages.get_active()
+        if package is not None:
+            draft_logo = self._load_manifest(package).get("branding", {}).get("logo_asset")
+            if draft_logo is not None:
+                logo = draft_logo
+        if logo is None:
+            raise LogoNotConfigured("dojo logo watermark asset is not configured")
+
     def get_montage_limits(self) -> MontageLimits:
         max_seconds = (
             self._settings.get("montage.max_duration_seconds")
@@ -1143,12 +1248,6 @@ class DojoPublishing:
         )
         return self.get_montage_status()
 
-    def set_caption(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
-
-    def set_branding(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
-
     def create_review(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
@@ -1165,4 +1264,5 @@ class DojoPublishing:
         raise NotImplementedError
 
     def publish(self, *args: object, **kwargs: object) -> None:
+        self._assert_logo_configured()
         raise NotImplementedError

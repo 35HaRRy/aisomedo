@@ -112,3 +112,7 @@ class MontageTrimInvalid(DojoError):
 
 class MontageDurationExceeded(DojoError):
     pass
+
+
+class LogoNotConfigured(DojoError):
+    pass

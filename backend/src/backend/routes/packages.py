@@ -51,6 +51,14 @@ class TrimsIn(BaseModel):
     trims: dict[str, dict[str, float]]
 
 
+class CaptionIn(BaseModel):
+    caption: str
+
+
+class BrandingIn(BaseModel):
+    branding: dict[str, object]
+
+
 @router.get("/active", response_model=PackageOut)
 def get_active(
     client: Client = Depends(get_current_client),
@@ -171,6 +179,53 @@ def set_trims(
     except MontageDurationExceeded as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return publishing.get_montage_status().to_dict()
+
+
+@router.get("/active/caption", response_model=dict[str, object])
+def get_caption(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return {"caption": publishing.get_draft_caption()}
+    except NoActivePackage as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.put("/active/caption", response_model=dict[str, object])
+def set_caption(
+    body: CaptionIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        caption = publishing.set_caption(body.caption, requester=str(client.id))
+    except NoActivePackage as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"caption": caption}
+
+
+@router.get("/active/branding", response_model=dict[str, object])
+def get_branding(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.get_draft_branding()
+    except NoActivePackage as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.put("/active/branding", response_model=dict[str, object])
+def set_branding(
+    body: BrandingIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.set_branding(body.branding, requester=str(client.id))
+    except NoActivePackage as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("", response_model=list[PackageOut])
