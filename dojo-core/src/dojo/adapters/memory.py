@@ -217,7 +217,12 @@ class InMemoryStore:
         return [
             u
             for u in self._uploads
-            if u.status in ("receiving", "queued") and u.updated_at < cutoff
+            if u.status in ("receiving", "queued", "conflict") and u.updated_at < cutoff
+        ]
+
+    def list_conflicts(self, package_id: int) -> list[Upload]:
+        return [
+            u for u in self._uploads if u.status == "conflict" and u.package_id == package_id
         ]
 
     def get_by_upload(self, upload_pk: int) -> Job | None:

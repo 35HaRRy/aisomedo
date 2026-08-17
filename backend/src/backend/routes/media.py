@@ -8,6 +8,7 @@ from dojo import (
     PackageLimitExceeded,
     UploadChecksumMismatch,
     UploadConflict,
+    UploadDecisionInvalid,
     UploadIncomplete,
     UploadInvalidFilename,
     UploadNotFound,
@@ -40,6 +41,7 @@ class UploadOut(BaseModel):
     status: str
     received_ranges: list[list[int]]
     error_reason: str | None = None
+    conflicts: list[dict[str, object]] = []
 
 
 def _out(status: Any) -> UploadOut:
@@ -144,3 +146,35 @@ def abort_upload(
     except UploadConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "aborted"}
+
+
+class ResolveConflictIn(BaseModel):
+    decision: str
+    target_media_id: str | None = None
+    apply_to_all: bool = False
+    confirmed_overwrite: bool = False
+
+
+@router.post("/{upload_id}/resolve", response_model=UploadOut)
+def resolve_upload_conflict(
+    upload_id: str,
+    body: ResolveConflictIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> UploadOut:
+    try:
+        status = publishing.resolve_conflict(
+            upload_id,
+            body.decision,
+            target_media_id=body.target_media_id,
+            apply_to_all=body.apply_to_all,
+            confirmed_overwrite=body.confirmed_overwrite,
+            requester=str(client.id),
+        )
+    except UploadNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except UploadDecisionInvalid as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UploadConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _out(status)

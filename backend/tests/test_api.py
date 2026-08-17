@@ -438,3 +438,104 @@ def test_missing_upload_404(tmp_path: Path) -> None:
     client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
     assert client.get("/api/media/uploads/nope", headers=bearer(token)).status_code == 404
+
+
+def finalize_via_api(client, publishing, token, *, filename: str) -> str:
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": filename, "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    chunk = b"x" * 100
+    client.put(
+        f"/api/media/uploads/{init['upload_id']}/ranges",
+        headers=bearer(token),
+        content=chunk,
+        params={"offset": 0, "checksum_sha256": hashlib.sha256(chunk).hexdigest()},
+    )
+    client.post(f"/api/media/uploads/{init['upload_id']}/complete", headers=bearer(token))
+    claimed = publishing.claim_next_job()
+    assert claimed is not None
+    publishing.process_job(claimed.job_id)
+    return init["upload_id"]
+
+
+def test_conflicting_upload_listed_with_targets(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "photo.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    assert init["status"] == "conflict"
+    assert len(init["conflicts"]) == 1
+    assert init["conflicts"][0]["filename"] == "photo.jpg"
+
+    listed = client.get("/api/media/uploads", headers=bearer(token)).json()
+    assert any(u["status"] == "conflict" for u in listed)
+
+
+def test_resolve_conflict_keep_both(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "photo.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    assert init["status"] == "conflict"
+
+    resp = client.post(
+        f"/api/media/uploads/{init['upload_id']}/resolve",
+        headers=bearer(token),
+        json={"decision": "keep_both"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "receiving"
+
+
+def test_resolve_conflict_bad_decision_400(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "photo.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    assert init["status"] == "conflict"
+
+    resp = client.post(
+        f"/api/media/uploads/{init['upload_id']}/resolve",
+        headers=bearer(token),
+        json={"decision": "nope"},
+    )
+    assert resp.status_code == 400
+
+
+def test_resolve_keep_selected_without_confirm_400(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    init = client.post(
+        "/api/media/uploads",
+        headers=bearer(token),
+        json={"filename": "photo.jpg", "content_type": "image/jpeg", "declared_size_bytes": 100},
+    ).json()
+    assert init["status"] == "conflict"
+    target = init["conflicts"][0]["media_id"]
+
+    resp = client.post(
+        f"/api/media/uploads/{init['upload_id']}/resolve",
+        headers=bearer(token),
+        json={"decision": "keep_selected", "target_media_id": target},
+    )
+    assert resp.status_code == 400

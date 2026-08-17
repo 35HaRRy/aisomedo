@@ -74,6 +74,10 @@ class UploadInvalidFilename(DojoError):
     pass
 
 
+class UploadDecisionInvalid(DojoError):
+    pass
+
+
 class JobNotFound(DojoError):
     pass
 

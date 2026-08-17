@@ -4,8 +4,9 @@ import hashlib
 import json
 import shutil
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -19,6 +20,7 @@ from dojo.exceptions import (
     PackageLimitExceeded,
     UploadChecksumMismatch,
     UploadConflict,
+    UploadDecisionInvalid,
     UploadIncomplete,
     UploadInvalidFilename,
     UploadNotFound,
@@ -26,6 +28,10 @@ from dojo.exceptions import (
     UploadTooLarge,
 )
 from dojo.model import (
+    CONFLICT_DECISIONS,
+    KEEP_BOTH,
+    KEEP_SELECTED,
+    KEEP_TARGET,
     PACKAGE_FOLDER_FORMAT,
     AuditEvent,
     Job,
@@ -80,6 +86,24 @@ def _ext_for(content_type: str) -> str:
         "video/quicktime": ".mov",
     }
     return mapping.get(content_type, "")
+
+
+def _normalize(filename: str) -> str:
+    """Portable case-insensitive key for a display filename (Unicode-safe)."""
+    return filename.casefold()
+
+
+def _first_free_suffixed_name(
+    media: list[dict], stem: str, ext: str, *, start: int = 1
+) -> str:
+    """Return the first free ``stem (N)ext`` not already used by ``media``."""
+    taken = {_normalize(str(entry.get("filename", ""))) for entry in media}
+    n = start
+    while True:
+        candidate = f"{stem} ({n}){ext}"
+        if _normalize(candidate) not in taken:
+            return candidate
+        n += 1
 
 
 class DojoPublishing:
@@ -213,16 +237,41 @@ class DojoPublishing:
                 f"file {declared_size_bytes} bytes exceeds limit {limits.max_file_bytes}"
             )
         package = self.get_or_create_active_package(requester=requester)
-        used = self._package_used_bytes(package)
-        in_flight = sum(
-            u.declared_size_bytes for u in self._uploads.list_active()
-            if u.package_id == package.id
-        )
-        if used + in_flight + declared_size_bytes > limits.max_package_bytes:
-            raise PackageLimitExceeded(
-                f"package limit {limits.max_package_bytes} would be exceeded"
-            )
+        targets = self._manifest_collisions(package, filename)
         now = self._clock.now()
+        if targets:
+            upload_id = uuid.uuid4().hex
+            upload = self._uploads.create(
+                Upload(
+                    id=0,
+                    upload_id=upload_id,
+                    package_id=package.id,
+                    filename=filename,
+                    content_type=content_type,
+                    declared_size_bytes=declared_size_bytes,
+                    received_ranges=[],
+                    received_bytes=0,
+                    status="conflict",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            self._audit.append(
+                AuditEvent(
+                    action="upload.started",
+                    actor=requester or "system",
+                    occurred_at=now,
+                    details={
+                        "upload_id": upload_id,
+                        "filename": filename,
+                        "content_type": content_type,
+                        "declared_size_bytes": declared_size_bytes,
+                        "conflict": True,
+                    },
+                )
+            )
+            return self._status(upload)
+        self._assert_package_capacity(package, declared_size_bytes)
         upload_id = uuid.uuid4().hex
         staging = self.media_root / "tmp" / upload_id
         staging.mkdir(parents=True, exist_ok=True)
@@ -298,7 +347,13 @@ class DojoPublishing:
         return self._status(upload)
 
     def list_active_uploads(self) -> list[UploadStatus]:
-        return [self._status(u) for u in self._uploads.list_active()]
+        statuses = [self._status(u) for u in self._uploads.list_active()]
+        package = self._packages.get_active()
+        if package is not None:
+            statuses.extend(
+                self._status(u) for u in self._uploads.list_conflicts(package.id)
+            )
+        return statuses
 
     def complete_upload(
         self, upload_id: str, requester: str | None = None
@@ -364,8 +419,44 @@ class DojoPublishing:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         return sum(int(entry.get("size_bytes", 0)) for entry in manifest.get("media", []))
 
-    @staticmethod
-    def _status(upload: Upload) -> UploadStatus:
+    def _manifest_media(self, package: Package) -> list[dict]:
+        manifest_path = self.media_root / package.folder_name / "manifest.json"
+        if not manifest_path.is_file():
+            return []
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return manifest.get("media", [])
+
+    def _manifest_collisions(self, package: Package, filename: str) -> list[dict]:
+        """Finalized manifest entries whose normalized name matches ``filename``."""
+        key = _normalize(filename)
+        return [
+            entry
+            for entry in self._manifest_media(package)
+            if entry.get("status") == "finalized"
+            and _normalize(str(entry.get("filename", ""))) == key
+        ]
+
+    def _assert_package_capacity(
+        self, package: Package, additional_bytes: int
+    ) -> None:
+        used = self._package_used_bytes(package)
+        in_flight = sum(
+            u.declared_size_bytes
+            for u in self._uploads.list_active()
+            if u.package_id == package.id
+        )
+        limits = self.get_upload_limits()
+        if used + in_flight + additional_bytes > limits.max_package_bytes:
+            raise PackageLimitExceeded(
+                f"package limit {limits.max_package_bytes} would be exceeded"
+            )
+
+    def _status(self, upload: Upload) -> UploadStatus:
+        conflicts: list[dict] = []
+        if upload.status == "conflict":
+            package = self._packages.get_active()
+            if package is not None:
+                conflicts = self._manifest_collisions(package, upload.filename)
         return UploadStatus(
             upload_id=upload.upload_id,
             received_bytes=upload.received_bytes,
@@ -373,6 +464,7 @@ class DojoPublishing:
             status=upload.status,
             received_ranges=upload.received_ranges,
             error_reason=upload.error_reason,
+            conflicts=conflicts,
         )
 
     def claim_next_job(self) -> Job | None:
@@ -435,9 +527,37 @@ class DojoPublishing:
         shutil.move(str(processed.original_path), str(original_dst))
         shutil.move(str(processed.processed_path), str(processed_dst))
 
+        manifest_path = self.media_root / package.folder_name / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        display_name = upload.filename
+        overwrite_target: str | None = None
+        if upload.conflict_decision == KEEP_BOTH:
+            display_name = _first_free_suffixed_name(
+                manifest.get("media", []),
+                Path(upload.filename).stem,
+                Path(upload.filename).suffix,
+            )
+        elif (
+            upload.conflict_decision == KEEP_SELECTED
+            and upload.conflict_target_media_id
+        ):
+            overwrite_target = upload.conflict_target_media_id
+            manifest["media"] = [
+                entry
+                for entry in manifest.get("media", [])
+                if entry.get("media_id") != overwrite_target
+            ]
+            manifest["order"] = [
+                mid for mid in manifest.get("order", []) if mid != overwrite_target
+            ]
+            shutil.rmtree(
+                self.media_root / package.folder_name / "media" / overwrite_target,
+                ignore_errors=True,
+            )
+
         entry = MediaEntry(
             media_id=media_id,
-            filename=upload.filename,
+            filename=display_name,
             content_type=upload.content_type,
             size_bytes=upload.declared_size_bytes,
             uploaded_at=upload.created_at,
@@ -449,8 +569,6 @@ class DojoPublishing:
             },
         ).to_dict()
 
-        manifest_path = self.media_root / package.folder_name / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.setdefault("media", []).append(entry)
         manifest.setdefault("order", []).append(media_id)
         manifest_path.write_text(
@@ -471,11 +589,25 @@ class DojoPublishing:
                 details={
                     "media_id": media_id,
                     "upload_id": upload.upload_id,
-                    "filename": upload.filename,
+                    "filename": display_name,
                     "package": package.folder_name,
                 },
             )
         )
+        if overwrite_target is not None:
+            self._audit.append(
+                AuditEvent(
+                    action="media.overwritten",
+                    actor="worker",
+                    occurred_at=now,
+                    details={
+                        "target_media_id": overwrite_target,
+                        "media_id": media_id,
+                        "filename": display_name,
+                        "package": package.folder_name,
+                    },
+                )
+            )
 
     def sweep_stale_uploads(self, ttl: timedelta = STALE_TTL) -> int:
         cutoff = self._clock.now() - ttl
@@ -525,8 +657,163 @@ class DojoPublishing:
     def add_media(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
-    def resolve_conflict(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+    def resolve_conflict(
+        self,
+        upload_id: str,
+        decision: str,
+        target_media_id: str | None = None,
+        apply_to_all: bool = False,
+        confirmed_overwrite: bool = False,
+        requester: str | None = None,
+    ) -> UploadStatus:
+        upload = self._uploads.get(upload_id)
+        if upload is None:
+            raise UploadNotFound(f"upload {upload_id} not found")
+        if upload.status != "conflict":
+            raise UploadConflict(f"upload {upload_id} is {upload.status}")
+        if decision not in CONFLICT_DECISIONS:
+            raise UploadDecisionInvalid(f"unknown conflict decision {decision!r}")
+        package = self._packages.get_active()
+        if package is None:
+            raise UploadConflict("no active package to resolve against")
+        now = self._clock.now()
+        if decision == KEEP_TARGET:
+            return self._resolve_keep_target(
+                upload, package, apply_to_all=apply_to_all, now=now, requester=requester
+            )
+        if decision == KEEP_SELECTED:
+            if not confirmed_overwrite:
+                raise UploadDecisionInvalid(
+                    "keep_selected is a destructive overwrite; pass confirmed_overwrite=True"
+                )
+            targets = self._manifest_collisions(package, upload.filename)
+            if not target_media_id or target_media_id not in {
+                t["media_id"] for t in targets
+            }:
+                raise UploadConflict(
+                    f"target_media_id {target_media_id!r} is not a colliding finalized target"
+                )
+        return self._resolve_to_receiving(
+            upload,
+            package,
+            decision,
+            target_media_id=target_media_id,
+            apply_to_all=apply_to_all,
+            now=now,
+            requester=requester,
+        )
+
+    def _resolve_keep_target(
+        self,
+        upload: Upload,
+        package: Package,
+        *,
+        apply_to_all: bool,
+        now: datetime,
+        requester: str | None,
+    ) -> UploadStatus:
+        def transition(candidate: Upload) -> Upload:
+            return self._uploads.update(
+                replace(candidate, status="aborted", updated_at=now)
+            )
+
+        return self._resolve_candidates(
+            upload,
+            package,
+            decision=KEEP_TARGET,
+            apply_to_all=apply_to_all,
+            now=now,
+            requester=requester,
+            transition=transition,
+        )
+
+    def _resolve_to_receiving(
+        self,
+        upload: Upload,
+        package: Package,
+        decision: str,
+        *,
+        target_media_id: str | None,
+        apply_to_all: bool,
+        now: datetime,
+        requester: str | None,
+    ) -> UploadStatus:
+        def transition(candidate: Upload) -> Upload:
+            cand_target: str | None = None
+            if decision == KEEP_SELECTED:
+                if apply_to_all:
+                    targets = self._manifest_collisions(package, candidate.filename)
+                    cand_target = targets[0]["media_id"] if targets else None
+                else:
+                    cand_target = target_media_id
+            self._assert_package_capacity(package, candidate.declared_size_bytes)
+            staging = self.media_root / "tmp" / candidate.upload_id
+            staging.mkdir(parents=True, exist_ok=True)
+            return self._uploads.update(
+                replace(
+                    candidate,
+                    status="receiving",
+                    conflict_decision=decision,
+                    conflict_target_media_id=cand_target,
+                    updated_at=now,
+                )
+            )
+
+        return self._resolve_candidates(
+            upload,
+            package,
+            decision=decision,
+            apply_to_all=apply_to_all,
+            now=now,
+            requester=requester,
+            transition=transition,
+        )
+
+    def _resolve_candidates(
+        self,
+        upload: Upload,
+        package: Package,
+        *,
+        decision: str,
+        apply_to_all: bool,
+        now: datetime,
+        requester: str | None,
+        transition: Callable[[Upload], Upload],
+    ) -> UploadStatus:
+        """Apply one resolution to the triggering upload (or all compatible conflicts)."""
+        candidates = self._conflict_uploads(package, upload, apply_to_all=apply_to_all)
+        last = upload
+        for candidate in candidates:
+            updated = transition(candidate)
+            self._audit.append(
+                AuditEvent(
+                    action="conflict.resolved",
+                    actor=requester or "system",
+                    occurred_at=now,
+                    details={
+                        "upload_id": candidate.upload_id,
+                        "decision": updated.conflict_decision or decision,
+                        "target_media_id": updated.conflict_target_media_id,
+                        "apply_to_all": apply_to_all,
+                        "filename": candidate.filename,
+                    },
+                )
+            )
+            last = updated
+        return self._status(last)
+
+    def _conflict_uploads(
+        self, package: Package, upload: Upload, *, apply_to_all: bool
+    ) -> list[Upload]:
+        """The triggering upload, or all compatible conflicts when applying to all."""
+        if not apply_to_all:
+            return [upload]
+        key = _normalize(upload.filename)
+        return [
+            candidate
+            for candidate in self._uploads.list_conflicts(package.id)
+            if _normalize(candidate.filename) == key
+        ]
 
     def remove_media(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError

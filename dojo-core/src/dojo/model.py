@@ -6,6 +6,11 @@ from pathlib import Path
 
 PACKAGE_FOLDER_FORMAT = "%d-%m-%Y %H-%M"
 
+KEEP_BOTH = "keep_both"
+KEEP_SELECTED = "keep_selected"
+KEEP_TARGET = "keep_target"
+CONFLICT_DECISIONS = (KEEP_BOTH, KEEP_SELECTED, KEEP_TARGET)
+
 
 @dataclass(frozen=True)
 class Package:
@@ -159,6 +164,8 @@ class Upload:
     created_at: datetime
     updated_at: datetime
     error_reason: str | None = None
+    conflict_decision: str | None = None
+    conflict_target_media_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +176,7 @@ class UploadStatus:
     status: str
     received_ranges: list[list[int]]
     error_reason: str | None = None
+    conflicts: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

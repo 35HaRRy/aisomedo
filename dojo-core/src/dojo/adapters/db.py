@@ -124,6 +124,8 @@ class UploadRow(Base):
     received_bytes: Mapped[int] = mapped_column(nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     error_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    conflict_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    conflict_target_media_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -205,6 +207,8 @@ class PostgresStore:
                 received_bytes=upload.received_bytes,
                 status=upload.status,
                 error_reason=upload.error_reason,
+                conflict_decision=upload.conflict_decision,
+                conflict_target_media_id=upload.conflict_target_media_id,
                 created_at=upload.created_at,
                 updated_at=upload.updated_at,
             )
@@ -298,6 +302,8 @@ class PostgresStore:
             row.received_bytes = upload.received_bytes
             row.status = upload.status
             row.error_reason = upload.error_reason
+            row.conflict_decision = upload.conflict_decision
+            row.conflict_target_media_id = upload.conflict_target_media_id
             row.created_at = upload.created_at
             row.updated_at = upload.updated_at
             session.commit()
@@ -565,8 +571,17 @@ class PostgresStore:
         with self._session() as session:
             rows = session.scalars(
                 select(UploadRow).where(
-                    UploadRow.status.in_(["receiving", "queued"]),
+                    UploadRow.status.in_(["receiving", "queued", "conflict"]),
                     UploadRow.updated_at < cutoff,
+                )
+            ).all()
+            return [self._upload_from_row(r) for r in rows]
+
+    def list_conflicts(self, package_id: int) -> list[Upload]:
+        with self._session() as session:
+            rows = session.scalars(
+                select(UploadRow).where(
+                    UploadRow.status == "conflict", UploadRow.package_id == package_id
                 )
             ).all()
             return [self._upload_from_row(r) for r in rows]
@@ -615,6 +630,8 @@ class PostgresStore:
             received_bytes=row.received_bytes,
             status=row.status,
             error_reason=row.error_reason,
+            conflict_decision=row.conflict_decision,
+            conflict_target_media_id=row.conflict_target_media_id,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
