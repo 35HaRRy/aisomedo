@@ -9,6 +9,9 @@ from dojo import (
     MediaNotFound,
     MediaNotRemovable,
     MediaNotRestorable,
+    MontageDurationExceeded,
+    MontageOrderInvalid,
+    MontageTrimInvalid,
     NoActivePackage,
     PackageCompleted,
 )
@@ -38,6 +41,14 @@ class DownloadIn(BaseModel):
 
 class DownloadOut(BaseModel):
     url: str
+
+
+class OrderIn(BaseModel):
+    order: list[str]
+
+
+class TrimsIn(BaseModel):
+    trims: dict[str, dict[str, float]]
 
 
 @router.get("/active", response_model=PackageOut)
@@ -79,6 +90,9 @@ _MUTATION_STATUS = {
     MediaNotRemovable: 409,
     MediaNotRestorable: 409,
     PackageCompleted: 409,
+    MontageOrderInvalid: 422,
+    MontageTrimInvalid: 422,
+    MontageDurationExceeded: 409,
 }
 
 
@@ -112,6 +126,51 @@ def restore_media(
     except (NoActivePackage, MediaNotFound, MediaNotRestorable, PackageCompleted) as exc:
         _map_mutation_error(exc)
     return {"status": "restored"}
+
+
+@router.get("/active/montage", response_model=dict[str, object])
+def get_montage(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.get_montage_status().to_dict()
+    except NoActivePackage as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.put("/active/order", response_model=dict[str, object])
+def set_order(
+    body: OrderIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.set_order(body.order, requester=str(client.id)).to_dict()
+    except (NoActivePackage, MediaNotFound, PackageCompleted) as exc:
+        _map_mutation_error(exc)
+    except MontageOrderInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except MontageDurationExceeded as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return publishing.get_montage_status().to_dict()
+
+
+@router.put("/active/trims", response_model=dict[str, object])
+def set_trims(
+    body: TrimsIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.set_trims(body.trims, requester=str(client.id)).to_dict()
+    except (NoActivePackage, MediaNotFound, PackageCompleted) as exc:
+        _map_mutation_error(exc)
+    except MontageTrimInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except MontageDurationExceeded as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return publishing.get_montage_status().to_dict()
 
 
 @router.get("", response_model=list[PackageOut])

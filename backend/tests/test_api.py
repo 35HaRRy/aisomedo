@@ -679,3 +679,58 @@ def test_resolve_keep_selected_without_confirm_400(tmp_path: Path) -> None:
         json={"decision": "keep_selected", "target_media_id": target},
     )
     assert resp.status_code == 400
+
+
+def test_montage_routes_require_auth(tmp_path: Path) -> None:
+    client, _, _, _ = make_app(tmp_path)
+    assert client.get("/api/packages/active/montage").status_code == 401
+    assert client.put("/api/packages/active/order", json={"order": []}).status_code == 401
+    assert client.put("/api/packages/active/trims", json={"trims": {}}).status_code == 401
+
+
+def test_set_order_via_api(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="a.jpg")
+    media_id = media_id_of(tmp_path, publishing)
+
+    resp = client.put(
+        "/api/packages/active/order",
+        headers=bearer(token),
+        json={"order": [media_id]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["order"] == [media_id]
+    assert resp.json()["over_limit"] is False
+
+
+def test_set_order_over_limit_409_via_api(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    publishing._settings.set("montage.max_duration_seconds", 2.0, updated_at=FakeClock().now())
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="a.jpg")
+    media_id = media_id_of(tmp_path, publishing)
+
+    resp = client.put(
+        "/api/packages/active/order",
+        headers=bearer(token),
+        json={"order": [media_id]},
+    )
+    assert resp.status_code == 409
+    assert "trim or remove" in resp.json()["detail"]
+
+
+def test_get_montage_via_api(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="a.jpg")
+
+    resp = client.get("/api/packages/active/montage", headers=bearer(token))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["combined_duration"] == 3.0
+    assert len(body["clips"]) == 1
