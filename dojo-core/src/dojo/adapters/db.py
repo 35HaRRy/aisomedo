@@ -245,12 +245,23 @@ class PostgresStore:
             )
             if row is None:
                 return None
-            return Package(
-                id=row.id,
-                folder_name=row.folder_name,
-                created_at=row.created_at,
-                status=row.status,
-            )
+            return self._package_from_row(row)
+
+    def list_completed(self) -> list[Package]:
+        with self._session() as session:
+            rows = session.scalars(
+                select(PackageRow).where(PackageRow.status == "completed").order_by(PackageRow.id)
+            ).all()
+            return [self._package_from_row(row) for row in rows]
+
+    @staticmethod
+    def _package_from_row(row: PackageRow) -> Package:
+        return Package(
+            id=row.id,
+            folder_name=row.folder_name,
+            created_at=row.created_at,
+            status=row.status,
+        )
 
     @overload
     def update(self, obj: Package) -> Package: ...
@@ -281,12 +292,7 @@ class PostgresStore:
                 raise ValueError(f"package {package.id} not found")
             row = session.get(PackageRow, package.id)
             assert row is not None
-            return Package(
-                id=row.id,
-                folder_name=row.folder_name,
-                created_at=row.created_at,
-                status=row.status,
-            )
+            return self._package_from_row(row)
 
     def _update_upload(self, upload: Upload) -> Upload:
         with self._session() as session:

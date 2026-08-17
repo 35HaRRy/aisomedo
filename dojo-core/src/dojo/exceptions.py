@@ -84,3 +84,19 @@ class JobNotFound(DojoError):
 
 class MediaValidationError(DojoError):
     pass
+
+
+class PackageCompleted(DojoError):
+    pass
+
+
+class MediaNotFound(DojoError):
+    pass
+
+
+class MediaNotRemovable(DojoError):
+    pass
+
+
+class MediaNotRestorable(DojoError):
+    pass

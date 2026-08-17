@@ -15,8 +15,12 @@ from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlSt
 from dojo.exceptions import (
     ActivePackageExists,
     JobNotFound,
+    MediaNotFound,
+    MediaNotRemovable,
+    MediaNotRestorable,
     MediaValidationError,
     NoActivePackage,
+    PackageCompleted,
     PackageLimitExceeded,
     UploadChecksumMismatch,
     UploadConflict,
@@ -815,11 +819,148 @@ class DojoPublishing:
             if _normalize(candidate.filename) == key
         ]
 
-    def remove_media(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+    def remove_media(self, media_id: str, requester: str | None = None) -> None:
+        """Exclude ``media_id`` from the active montage without deleting its file.
 
-    def restore_media(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+        The media dir moves to package-local ``removed/`` storage, the manifest
+        entry status becomes ``removed``, and the id leaves ``order``. The source
+        file is never deleted and may be restored while the package is active.
+        """
+        self._toggle_media(
+            media_id,
+            from_status="finalized",
+            to_status="removed",
+            action="media.removed",
+            requester=requester,
+        )
+
+    def restore_media(self, media_id: str, requester: str | None = None) -> None:
+        """Return removed ``media_id`` to the active montage."""
+        self._toggle_media(
+            media_id,
+            from_status="removed",
+            to_status="finalized",
+            action="media.restored",
+            requester=requester,
+        )
+
+    def _toggle_media(
+        self,
+        media_id: str,
+        *,
+        from_status: str,
+        to_status: str,
+        action: str,
+        requester: str | None,
+    ) -> None:
+        package = self._require_active_package()
+        if self._media_in_completed(media_id):
+            raise PackageCompleted(f"media {media_id} belongs to a completed package")
+        manifest = self._load_manifest(package)
+        entry = next((e for e in manifest.get("media", []) if e.get("media_id") == media_id), None)
+        if entry is None:
+            raise MediaNotFound(f"media {media_id} not found in active package")
+        if entry.get("status") != from_status:
+            if from_status == "finalized":
+                raise MediaNotRemovable(f"media {media_id} is {entry.get('status')}")
+            raise MediaNotRestorable(f"media {media_id} is {entry.get('status')}")
+
+        src = self.media_root / package.folder_name / (
+            "media" if from_status == "finalized" else "removed"
+        ) / media_id
+        dst = self.media_root / package.folder_name / (
+            "removed" if from_status == "finalized" else "media"
+        ) / media_id
+        if not src.is_dir():
+            raise MediaNotFound(f"{'media' if from_status == 'finalized' else 'removed'} "
+                                f"storage for media {media_id} missing")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+
+        if from_status == "finalized":
+            order = manifest.get("order", [])
+            entry["removed_position"] = order.index(media_id) if media_id in order else len(order)
+            entry["status"] = "removed"
+            manifest["order"] = [mid for mid in order if mid != media_id]
+        else:
+            entry["status"] = "finalized"
+            position = int(entry.pop("removed_position", len(manifest.get("order", []))))
+            order = manifest.get("order", [])
+            order.insert(min(position, len(order)), media_id)
+            manifest["order"] = order
+        self._write_manifest(package, manifest)
+
+        now = self._clock.now()
+        self._audit.append(
+            AuditEvent(
+                action=action,
+                actor=requester or "system",
+                occurred_at=now,
+                details={"media_id": media_id, "package": package.folder_name},
+            )
+        )
+
+    def _require_active_package(self) -> Package:
+        package = self._packages.get_active()
+        if package is None:
+            raise NoActivePackage("no active package to mutate")
+        return package
+
+    def list_completed_packages(self) -> list[Package]:
+        """Return completed packages (read-only historical packages)."""
+        return self._packages.list_completed()
+
+    def browse_completed_package(self, folder_name: str) -> dict:
+        """Return a read-only manifest view of a completed package."""
+        package = self._get_completed_package(folder_name)
+        manifest = self._load_manifest(package)
+        return {
+            "folder_name": package.folder_name,
+            "media": manifest.get("media", []),
+            "order": manifest.get("order", []),
+            "caption": manifest.get("caption"),
+            "render_revision": manifest.get("render_revision"),
+        }
+
+    def create_download_url(self, folder_name: str, artifact_ref: str) -> str:
+        """Resolve ``artifact_ref`` under a completed package and return a signed URL."""
+        package = self._get_completed_package(folder_name)
+        root = (self.media_root / package.folder_name).resolve()
+        candidate = (root / artifact_ref).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"artifact_ref {artifact_ref!r} escapes package") from exc
+        if not candidate.is_file():
+            raise MediaNotFound(f"artifact {artifact_ref!r} not found")
+        return self._signed_urls.create(candidate)
+
+    def _get_completed_package(self, folder_name: str) -> Package:
+        for package in self._packages.list_completed():
+            if package.folder_name == folder_name:
+                return package
+        raise MediaNotFound(f"completed package {folder_name!r} not found")
+
+    def _media_in_completed(self, media_id: str) -> bool:
+        for package in self._packages.list_completed():
+            if any(
+                e.get("media_id") == media_id
+                for e in self._load_manifest(package).get("media", [])
+            ):
+                return True
+        return False
+
+    def _load_manifest(self, package: Package) -> dict:
+        manifest_path = self.media_root / package.folder_name / "manifest.json"
+        if not manifest_path.is_file():
+            raise MediaNotFound(f"manifest for {package.folder_name} missing")
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    def _write_manifest(self, package: Package, manifest: dict) -> None:
+        manifest_path = self.media_root / package.folder_name / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     def set_order(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError

@@ -460,6 +460,146 @@ def finalize_via_api(client, publishing, token, *, filename: str) -> str:
     return init["upload_id"]
 
 
+def media_id_of(tmp_path: Path, publishing: DojoPublishing) -> str:
+    import json
+
+    package = publishing.get_active_package()
+    assert package is not None
+    manifest = json.loads(
+        (tmp_path / package.folder_name / "manifest.json").read_text(encoding="utf-8")
+    )
+    return manifest["media"][0]["media_id"]
+
+
+def test_remove_media_via_api(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    media_id = media_id_of(tmp_path, publishing)
+
+    resp = client.post(f"/api/packages/active/media/{media_id}/remove", headers=bearer(token))
+
+    assert resp.status_code == 200
+    package = publishing.get_active_package()
+    assert package is not None
+    assert (tmp_path / package.folder_name / "removed" / media_id).is_dir()
+    assert (tmp_path / package.folder_name / "media" / media_id).exists() is False
+
+
+def test_restore_media_via_api(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    media_id = media_id_of(tmp_path, publishing)
+    client.post(f"/api/packages/active/media/{media_id}/remove", headers=bearer(token))
+
+    resp = client.post(f"/api/packages/active/media/{media_id}/restore", headers=bearer(token))
+
+    assert resp.status_code == 200
+    package = publishing.get_active_package()
+    assert package is not None
+    assert (tmp_path / package.folder_name / "media" / media_id).is_dir()
+    assert (tmp_path / package.folder_name / "removed" / media_id).exists() is False
+
+
+def test_remove_media_not_found_404(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+
+    resp = client.post("/api/packages/active/media/nope/remove", headers=bearer(token))
+    assert resp.status_code == 404
+
+
+def test_remove_media_on_completed_409(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    media_id = media_id_of(tmp_path, publishing)
+    client.post("/api/packages/active/complete", headers=bearer(token))
+
+    resp = client.post(f"/api/packages/active/media/{media_id}/remove", headers=bearer(token))
+    assert resp.status_code == 409
+
+
+def test_list_completed_packages(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    client.post("/api/packages/active/complete", headers=bearer(token))
+
+    resp = client.get("/api/packages", headers=bearer(token))
+
+    assert resp.status_code == 200
+    packages = resp.json()
+    assert len(packages) == 1
+    assert packages[0]["status"] == "completed"
+
+
+def test_browse_completed_package(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    client.post("/api/packages/active/complete", headers=bearer(token))
+    completed = client.get("/api/packages", headers=bearer(token)).json()[0]
+
+    resp = client.get(f"/api/packages/{completed['folder_name']}", headers=bearer(token))
+
+    assert resp.status_code == 200
+    view = resp.json()
+    assert view["folder_name"] == completed["folder_name"]
+    assert len(view["media"]) == 1
+
+
+def test_download_completed_artifact(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    media_id = media_id_of(tmp_path, publishing)
+    client.post("/api/packages/active/complete", headers=bearer(token))
+    completed = client.get("/api/packages", headers=bearer(token)).json()[0]
+
+    resp = client.post(
+        f"/api/packages/{completed['folder_name']}/download",
+        headers=bearer(token),
+        json={"artifact_ref": f"media/{media_id}/processed.jpg"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["url"].startswith("https://signed.local/")
+
+
+def test_download_artifact_traversal_400(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    token = pair_device(client, pairing)
+    finalize_via_api(client, publishing, token, filename="photo.jpg")
+    client.post("/api/packages/active/complete", headers=bearer(token))
+    completed = client.get("/api/packages", headers=bearer(token)).json()[0]
+
+    resp = client.post(
+        f"/api/packages/{completed['folder_name']}/download",
+        headers=bearer(token),
+        json={"artifact_ref": "../secret"},
+    )
+
+    assert resp.status_code == 400
+
+
+def test_completed_package_routes_require_auth(tmp_path: Path) -> None:
+    client, _, _, _ = make_app(tmp_path)
+    assert client.get("/api/packages").status_code == 401
+    assert client.get("/api/packages/some-folder").status_code == 401
+    assert client.post("/api/packages/some-folder/download", json={}).status_code == 401
+
+
 def test_conflicting_upload_listed_with_targets(tmp_path: Path) -> None:
     client, publishing, pairing, _ = make_app(tmp_path)
     publishing._media = StubMediaProcessor()

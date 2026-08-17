@@ -66,6 +66,9 @@ class InMemoryStore:
                 return package
         return None
 
+    def list_completed(self) -> list[Package]:
+        return [p for p in self._packages if p.status == "completed"]
+
     @overload
     def update(self, obj: Package) -> Package: ...
     @overload
