@@ -6,6 +6,7 @@ from dojo import (
     ActivePackageExists,
     Client,
     DojoPublishing,
+    LogoNotConfigured,
     MediaNotFound,
     MediaNotRemovable,
     MediaNotRestorable,
@@ -226,6 +227,18 @@ def set_branding(
         return publishing.set_branding(body.branding, requester=str(client.id))
     except NoActivePackage as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/active/publish", response_model=dict[str, str])
+def publish_active(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, str]:
+    try:
+        publishing.publish(requester=str(client.id))
+    except LogoNotConfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "published"}
 
 
 @router.get("", response_model=list[PackageOut])
