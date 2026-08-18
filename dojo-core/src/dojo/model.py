@@ -275,3 +275,26 @@ class MontageStatus:
             "over_limit": self.over_limit,
             "required_action": self.required_action,
         }
+
+
+@dataclass(frozen=True)
+class ReelClip:
+    media_id: str
+    path: Path
+    is_video: bool
+    duration: float
+    trim_start: float = 0.0
+    trim_end: float | None = None
+
+
+@dataclass(frozen=True)
+class ReelBuild:
+    """Immutable snapshot of everything the renderer needs to produce one Reel."""
+
+    clips: list[ReelClip]
+    photo_duration: float
+    logo_asset: Path | None = None
+    intro_asset: Path | None = None
+    intro_duration: float | None = None
+    outro_asset: Path | None = None
+    outro_duration: float | None = None

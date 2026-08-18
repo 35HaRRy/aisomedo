@@ -63,3 +63,22 @@ def test_run_tick_sweeps_when_claims_exhausted() -> None:
     run_tick(spy)
     assert spy.processed_jobs == ["j-1"]
     assert spy.sweeps == 2
+
+
+class RenderSpyPublishing(SpyPublishing):
+    def claim_next_job(self) -> Job | None:
+        return Job(
+            id=2,
+            job_id="r-1",
+            upload_id=0,
+            kind="render",
+            status="queued",
+            payload={"package": "pkg", "digest": "d-1"},
+            created_at=datetime.now(),
+        )
+
+
+def test_run_tick_processes_render_job() -> None:
+    spy = RenderSpyPublishing()
+    run_tick(spy)
+    assert spy.processed_jobs == ["r-1"]

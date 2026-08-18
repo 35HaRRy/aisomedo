@@ -116,3 +116,7 @@ class MontageDurationExceeded(DojoError):
 
 class LogoNotConfigured(DojoError):
     pass
+
+
+class RenderFailed(DojoError):
+    pass

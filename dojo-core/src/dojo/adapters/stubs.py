@@ -4,6 +4,22 @@ import shutil
 from pathlib import Path
 
 
+class StubReelRenderer:
+    def __init__(self, *, fail_reason: str | None = None) -> None:
+        self.calls: list[tuple[object, Path]] = []
+        self.fail_reason = fail_reason
+
+    def render(self, build: object, work_dir: Path, out_path: Path) -> Path:
+        from dojo.exceptions import RenderFailed
+
+        self.calls.append((build, out_path))
+        if self.fail_reason is not None:
+            raise RenderFailed(self.fail_reason)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"fake-reel")
+        return out_path
+
+
 class StubMetaPublisher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []

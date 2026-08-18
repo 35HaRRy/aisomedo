@@ -13,6 +13,7 @@ from dojo.model import (
     Package,
     PairingCode,
     ProcessedMedia,
+    ReelBuild,
     Upload,
 )
 
@@ -121,3 +122,8 @@ class MediaProcessor(Protocol):
     def process(
         self, upload: Upload, original_path: Path, work_dir: Path
     ) -> ProcessedMedia: ...
+
+
+@runtime_checkable
+class ReelRenderer(Protocol):
+    def render(self, build: ReelBuild, work_dir: Path, out_path: Path) -> Path: ...

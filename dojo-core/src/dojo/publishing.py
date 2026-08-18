@@ -26,6 +26,7 @@ from dojo.exceptions import (
     NoActivePackage,
     PackageCompleted,
     PackageLimitExceeded,
+    RenderFailed,
     UploadChecksumMismatch,
     UploadConflict,
     UploadDecisionInvalid,
@@ -51,6 +52,8 @@ from dojo.model import (
     MontageStatus,
     Package,
     ProcessedMedia,
+    ReelBuild,
+    ReelClip,
     Upload,
     UploadLimits,
     UploadStatus,
@@ -63,6 +66,7 @@ from dojo.ports import (
     MetaPublisher,
     Notifier,
     PackageStore,
+    ReelRenderer,
     SettingsStore,
     SignedUrlStore,
     UploadStore,
@@ -143,6 +147,7 @@ class DojoPublishing:
         jobs: JobStore | None = None,
         settings: SettingsStore | None = None,
         media: MediaProcessor | None = None,
+        renderer: ReelRenderer | None = None,
     ) -> None:
         self._packages = packages
         self._audit = audit
@@ -159,6 +164,7 @@ class DojoPublishing:
             settings if settings is not None else cast(SettingsStore, packages)
         )
         self._media = media
+        self._renderer = renderer
 
     def ensure_active_package(self, *, requester: str | None = None) -> Package:
         """Create an active Dojo Paylaşım Paketi; raise if one already exists."""
@@ -492,6 +498,9 @@ class DojoPublishing:
             raise JobNotFound(f"job {job_id} not found")
         if job.status != "processing":
             raise UploadConflict(f"job {job_id} is {job.status}")
+        if job.kind == "render":
+            self._process_render_job(job)
+            return
         upload = self._uploads.get_by_pk(job.upload_id)
         if upload is None:
             self._fail_job(job, "upload missing")
@@ -647,6 +656,27 @@ class DojoPublishing:
                 )
             )
         return len(stale)
+
+    def _process_render_job(self, job: Job) -> None:
+        payload = job.payload or {}
+        try:
+            self._render_job(job, str(payload.get("package", "")))
+        except RenderFailed as exc:
+            now = self._clock.now()
+            self._fail_job(job, str(exc))
+            self._audit.append(
+                AuditEvent(
+                    action="render.rejected",
+                    actor="worker",
+                    occurred_at=now,
+                    details={"job_id": job.job_id, "reason": str(exc)},
+                )
+            )
+            return
+        now = self._clock.now()
+        self._jobs.update(
+            replace(job, status="done", finished_at=now, error_reason=None)
+        )
 
     def _fail_job(self, job: Job, reason: str) -> None:
         upload = self._uploads.get_by_pk(job.upload_id)
@@ -1260,8 +1290,165 @@ class DojoPublishing:
     def reschedule(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
-    def render_preview(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+    def render_preview(self) -> dict:
+        """Render on explicit preview (or when stale) and return the render digest."""
+        package = self._require_active_package()
+        self._assert_logo_configured()
+        status = self.get_montage_status()
+        if status.over_limit:
+            raise MontageDurationExceeded(
+                f"combined duration {status.combined_duration:.1f}s exceeds "
+                f"{status.max_duration_seconds:.1f}s limit; {status.required_action}"
+            )
+        manifest = self._load_manifest(package)
+        digest = self._render_digest(package, manifest)
+        stale = manifest.get("render_revision") != digest
+        if stale:
+            self._enqueue_render(package, digest)
+        return {"stale": stale, "render_revision": digest}
+
+    def render_if_stale(self) -> bool:
+        """Trigger a render only when inputs changed; no-op when fresh."""
+        return bool(self.render_preview()["stale"])
+
+    def _finalized_in_order(self, manifest: dict) -> list[tuple[str, dict]]:
+        """Finalized manifest entries in explicit order, as (media_id, entry)."""
+        order = manifest.get("order", [])
+        by_id = {e.get("media_id"): e for e in manifest.get("media", [])}
+        result = []
+        for media_id in order:
+            entry = by_id.get(media_id)
+            if entry is None or entry.get("status") != "finalized":
+                continue
+            result.append((media_id, entry))
+        return result
+
+    def _render_digest(self, package: Package, manifest: dict) -> str:
+        """SHA-256 over every immutable render input; preview and publish share it."""
+        limits = self.get_montage_limits()
+        clips = []
+        for media_id, entry in self._finalized_in_order(manifest):
+            clips.append(
+                {
+                    "media_id": media_id,
+                    "filename": entry.get("filename"),
+                    "content_type": entry.get("content_type"),
+                    "duration": entry.get("processed", {}).get("duration"),
+                    "is_video": str(entry.get("content_type", "")).startswith("video/"),
+                }
+            )
+        inputs = {
+            "order": clips,
+            "trims": manifest.get("trims", {}),
+            "branding": manifest.get("branding", {}),
+            "caption": manifest.get("caption"),
+            "photo_duration": limits.photo_duration_seconds,
+        }
+        canonical = json.dumps(inputs, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _enqueue_render(self, package: Package, digest: str) -> None:
+        now = self._clock.now()
+        self._jobs.create(
+            Job(
+                id=0,
+                job_id=uuid.uuid4().hex,
+                upload_id=0,
+                kind="render",
+                status="queued",
+                payload={"package": package.folder_name, "digest": digest},
+                created_at=now,
+            )
+        )
+        self._audit.append(
+            AuditEvent(
+                action="render.queued",
+                actor="system",
+                occurred_at=now,
+                details={"package": package.folder_name, "digest": digest},
+            )
+        )
+
+    def _render_job(self, job: Job, package_folder: str) -> None:
+        package: Package | None = None
+        for candidate in [self._packages.get_active(), *self._packages.list_completed()]:
+            if candidate is not None and candidate.folder_name == package_folder:
+                package = candidate
+                break
+        if package is None:
+            raise RenderFailed(f"package {package_folder} not found")
+        manifest = self._load_manifest(package)
+        digest = self._render_digest(package, manifest)
+        build = self._build_reel(package, manifest)
+        renderer = self._renderer
+        if renderer is None:
+            from dojo.adapters.render import FfmpegReelRenderer
+
+            renderer = FfmpegReelRenderer()
+        out = self.media_root / package.folder_name / "render" / "reel.mp4"
+        work = self.media_root / "tmp" / f"render-{job.job_id}"
+        renderer.render(build, work, out)
+        manifest["render_revision"] = digest
+        self._write_manifest(package, manifest)
+        now = self._clock.now()
+        self._audit.append(
+            AuditEvent(
+                action="render.completed",
+                actor="worker",
+                occurred_at=now,
+                details={
+                    "package": package.folder_name,
+                    "digest": digest,
+                    "path": "render/reel.mp4",
+                },
+            )
+        )
+
+    def _build_reel(self, package: Package, manifest: dict) -> ReelBuild:
+        limits = self.get_montage_limits()
+        trims = manifest.get("trims", {})
+        clips: list[ReelClip] = []
+        for media_id, entry in self._finalized_in_order(manifest):
+            processed = entry.get("processed", {})
+            path = self.media_root / package.folder_name / str(processed.get("path", ""))
+            is_video = str(entry.get("content_type", "")).startswith("video/")
+            trim = trims.get(media_id)
+            clips.append(
+                ReelClip(
+                    media_id=media_id,
+                    path=path,
+                    is_video=is_video,
+                    duration=(
+                        float(processed.get("duration") or 0.0)
+                        if is_video
+                        else limits.photo_duration_seconds
+                    ),
+                    trim_start=float(trim["start"]) if trim else 0.0,
+                    trim_end=float(trim["end"]) if trim else None,
+                )
+            )
+        branding = dict(manifest.get("branding", {}))
+        logo = branding.get("logo_asset") or self.get_branding_defaults().logo_asset
+        logo_path = self._resolve_asset(logo)
+        if logo_path is None:
+            raise RenderFailed("dojo logo watermark asset is required")
+        return ReelBuild(
+            clips=clips,
+            photo_duration=limits.photo_duration_seconds,
+            logo_asset=logo_path,
+            intro_asset=self._resolve_asset(branding.get("intro_asset")),
+            intro_duration=branding.get("intro_duration"),
+            outro_asset=self._resolve_asset(branding.get("outro_asset")),
+            outro_duration=branding.get("outro_duration"),
+        )
+
+    def _resolve_asset(self, value: str | None) -> Path | None:
+        if value is None:
+            return None
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return self.media_root / path
 
     def publish(self, *args: object, **kwargs: object) -> None:
         self._assert_logo_configured()
