@@ -120,3 +120,11 @@ class LogoNotConfigured(DojoError):
 
 class RenderFailed(DojoError):
     pass
+
+
+class PlanInvalid(DojoError):
+    pass
+
+
+class ManualPublishConflict(DojoError):
+    pass

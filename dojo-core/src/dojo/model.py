@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 PACKAGE_FOLDER_FORMAT = "%d-%m-%Y %H-%M"
@@ -298,3 +298,29 @@ class ReelBuild:
     intro_duration: float | None = None
     outro_asset: Path | None = None
     outro_duration: float | None = None
+
+
+@dataclass(frozen=True)
+class SchedulePlan:
+    anchor_date: date | None = None
+    anchor_time: time | None = None
+    enabled: bool = True
+    timezone: str = "Europe/Istanbul"
+
+    def to_dict(self) -> dict:
+        return {
+            "anchor_date": self.anchor_date.isoformat() if self.anchor_date else None,
+            "anchor_time": self.anchor_time.isoformat() if self.anchor_time else None,
+            "enabled": self.enabled,
+            "timezone": self.timezone,
+        }
+
+
+@dataclass(frozen=True)
+class YayinZamani:
+    id: int
+    kind: str
+    due_at: datetime
+    status: str
+    created_at: datetime
+    resolved_at: datetime | None = None
