@@ -279,7 +279,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from dojo import InMemoryStore, YayinZamani
-from dojo.testing import FIXED_AT, ISTANBUL
+from dojo.testing import FIXED_AT
 
 
 def make_occ(store: InMemoryStore, *, kind: str, due: datetime, status: str = "pending") -> YayinZamani:
@@ -504,7 +504,6 @@ Create `dojo-core/tests/test_schedule.py`:
 ```python
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, time, timedelta
 
 import pytest
@@ -520,7 +519,7 @@ from dojo.adapters.stubs import (
     StubNotifier,
     StubSignedUrlStore,
 )
-from dojo.testing import FIXED_AT, FakeClock, ISTANBUL
+from dojo.testing import FakeClock, ISTANBUL
 
 
 def make_seam(tmp_path):
@@ -900,13 +899,18 @@ Expected: FAIL — routes missing (404).
 
 - [ ] **Step 3: Add routes to `settings.py`**
 
-Replace the contents of `backend/src/backend/routes/settings.py`:
+**Keep the existing branding routes and `BrandingDefaultsIn`/`BrandingDefaultsOut` definitions intact — they are covered by tests (`test_set_and_get_global_branding_defaults_via_api`, `test_branding_routes_require_auth`).** Only add new imports, Pydantic models, and routes.
+
+Edit `backend/src/backend/routes/settings.py`:
+
+- Extend the imports to:
 ```python
 from __future__ import annotations
 
 from datetime import date, time
 
 from dojo import (
+    BrandingConfig,
     Client,
     DojoPublishing,
     ManualPublishConflict,
@@ -917,12 +921,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
+```
 
-
-def get_publishing(request: Request) -> DojoPublishing:
-    return request.app.state.publishing
-
-
+- Add these models after the existing `BrandingDefaultsOut` (the `router` already exists in the file — do NOT re-declare it):
+```python
 class PlanIn(BaseModel):
     anchor_date: str | None = None
     anchor_time: str | None = None
@@ -941,11 +943,10 @@ class OccurrenceOut(BaseModel):
     kind: str
     due_at: str
     status: str
+```
 
-
-router = APIRouter(prefix="/api/settings", tags=["settings"])
-
-
+- Add the routes after the existing `set_branding_defaults` route:
+```python
 @router.get("/plan", response_model=PlanOut)
 def get_plan(
     _client: Client = Depends(get_current_client),
@@ -988,7 +989,7 @@ def manual_publish(
         status=occurrence.status,
     )
 ```
-Note: this file previously defined branding routes. The task removes the branding routes; that is intentional ONLY if branding routes are unused. Verify first — if `settings.py` currently defines `BrandingDefaultsIn`/`get_branding_defaults`/`set_branding_defaults` (it does, per the file read), and nothing else references them, replace the whole file. If a test references branding routes, instead **append** the three new routes and keep the existing branding definitions; do not delete them.
+Note: **append** the new models and routes to `settings.py`; the existing branding models and routes (`BrandingDefaultsIn`, `get_branding_defaults`, `set_branding_defaults`, `GET/PUT /api/settings/branding`) are covered by tests and MUST be kept. Do not delete them.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
