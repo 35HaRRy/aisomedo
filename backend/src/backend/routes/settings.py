@@ -1,7 +1,16 @@
 from __future__ import annotations
 
-from dojo import BrandingConfig, Client, DojoPublishing
-from fastapi import APIRouter, Depends, Request
+from datetime import date, time
+
+from dojo import (
+    BrandingConfig,
+    Client,
+    DojoPublishing,
+    ManualPublishConflict,
+    PlanInvalid,
+    SchedulePlan,
+)
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
@@ -29,6 +38,26 @@ class BrandingDefaultsOut(BaseModel):
     caption_template: str | None
 
 
+class PlanIn(BaseModel):
+    anchor_date: str | None = None
+    anchor_time: str | None = None
+    enabled: bool = True
+
+
+class PlanOut(BaseModel):
+    anchor_date: str | None
+    anchor_time: str | None
+    enabled: bool
+    timezone: str
+
+
+class OccurrenceOut(BaseModel):
+    id: int
+    kind: str
+    due_at: str
+    status: str
+
+
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
@@ -50,3 +79,46 @@ def set_branding_defaults(
         BrandingConfig(**body.model_dump()), requester=str(client.id)
     )
     return BrandingDefaultsOut(**config.to_dict())
+
+
+@router.get("/plan", response_model=PlanOut)
+def get_plan(
+    _client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> PlanOut:
+    return PlanOut(**publishing.get_plan().to_dict())
+
+
+@router.put("/plan", response_model=PlanOut)
+def set_plan(
+    body: PlanIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> PlanOut:
+    plan = SchedulePlan(
+        anchor_date=date.fromisoformat(body.anchor_date) if body.anchor_date else None,
+        anchor_time=time.fromisoformat(body.anchor_time) if body.anchor_time else None,
+        enabled=body.enabled,
+    )
+    try:
+        updated = publishing.set_plan(plan, requester=str(client.id))
+    except PlanInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PlanOut(**updated.to_dict())
+
+
+@router.post("/manual-publish", response_model=OccurrenceOut)
+def manual_publish(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> OccurrenceOut:
+    try:
+        occurrence = publishing.manual_publish(requester=str(client.id))
+    except ManualPublishConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return OccurrenceOut(
+        id=occurrence.id,
+        kind=occurrence.kind,
+        due_at=occurrence.due_at.isoformat(),
+        status=occurrence.status,
+    )

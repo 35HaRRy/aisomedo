@@ -815,3 +815,52 @@ def test_set_and_get_branding_via_api(tmp_path: Path) -> None:
 
     resp = client.get("/api/packages/active/branding", headers=bearer(token))
     assert resp.json()["intro_asset"] == "custom.mp4"
+
+
+def test_plan_routes_require_auth(tmp_path: Path) -> None:
+    client, _, _, _ = make_app(tmp_path)
+    assert client.get("/api/settings/plan").status_code == 401
+    assert client.put("/api/settings/plan", json={}).status_code == 401
+    assert client.post("/api/settings/manual-publish").status_code == 401
+
+
+def test_plan_roundtrip_via_api(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    resp = client.put(
+        "/api/settings/plan",
+        headers=bearer(token),
+        json={"anchor_date": "2026-08-03", "anchor_time": "10:00", "enabled": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["anchor_date"] == "2026-08-03"
+    assert body["anchor_time"] == "10:00:00"
+    assert body["enabled"] is True
+    assert body["timezone"] == "Europe/Istanbul"
+
+    fetched = client.get("/api/settings/plan", headers=bearer(token)).json()
+    assert fetched["anchor_date"] == "2026-08-03"
+
+
+def test_set_plan_non_monday_422_via_api(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    resp = client.put(
+        "/api/settings/plan",
+        headers=bearer(token),
+        json={"anchor_date": "2026-08-04", "anchor_time": "10:00"},
+    )
+    assert resp.status_code == 422
+
+
+def test_manual_publish_via_api(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    resp = client.post("/api/settings/manual-publish", headers=bearer(token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "manual"
+    assert body["status"] == "pending"
+    # second manual while pending is a conflict
+    assert client.post("/api/settings/manual-publish", headers=bearer(token)).status_code == 409
