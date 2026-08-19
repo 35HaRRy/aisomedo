@@ -6,7 +6,7 @@ import shutil
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +16,7 @@ from dojo.exceptions import (
     ActivePackageExists,
     JobNotFound,
     LogoNotConfigured,
+    ManualPublishConflict,
     MediaNotFound,
     MediaNotRemovable,
     MediaNotRestorable,
@@ -26,6 +27,7 @@ from dojo.exceptions import (
     NoActivePackage,
     PackageCompleted,
     PackageLimitExceeded,
+    PlanInvalid,
     RenderFailed,
     UploadChecksumMismatch,
     UploadConflict,
@@ -54,9 +56,11 @@ from dojo.model import (
     ProcessedMedia,
     ReelBuild,
     ReelClip,
+    SchedulePlan,
     Upload,
     UploadLimits,
     UploadStatus,
+    YayinZamani,
 )
 from dojo.ports import (
     AuditStore,
@@ -67,6 +71,7 @@ from dojo.ports import (
     Notifier,
     PackageStore,
     ReelRenderer,
+    ScheduleStore,
     SettingsStore,
     SignedUrlStore,
     UploadStore,
@@ -148,6 +153,7 @@ class DojoPublishing:
         settings: SettingsStore | None = None,
         media: MediaProcessor | None = None,
         renderer: ReelRenderer | None = None,
+        schedule: ScheduleStore | None = None,
     ) -> None:
         self._packages = packages
         self._audit = audit
@@ -162,6 +168,9 @@ class DojoPublishing:
         self._jobs: JobStore = jobs if jobs is not None else cast(JobStore, packages)
         self._settings: SettingsStore = (
             settings if settings is not None else cast(SettingsStore, packages)
+        )
+        self._schedule: ScheduleStore = (
+            schedule if schedule is not None else cast(ScheduleStore, packages)
         )
         self._media = media
         self._renderer = renderer
@@ -700,8 +709,11 @@ class DojoPublishing:
         )
 
     def evaluate_due_work(self) -> None:
-        """Scheduler trigger; no due-work emission in the foundation ticket."""
-        return None
+        """Scheduler trigger: materialize due and next Yayın Zamanı slots.
+
+        Review creation from a due slot is handled by #14.
+        """
+        self.ensure_schedule_upto()
 
     def list_audit(self, limit: int = 50) -> list[AuditEvent]:
         return self._audit.list_recent(limit=limit)
@@ -1009,6 +1021,99 @@ class DojoPublishing:
         manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+
+    def get_plan(self) -> SchedulePlan:
+        enabled = self._settings.get("schedule.enabled")
+        anchor_date_raw = self._settings.get("schedule.anchor_date")
+        anchor_time_raw = self._settings.get("schedule.anchor_time")
+        anchor_date = None
+        anchor_time = None
+        if isinstance(anchor_date_raw, str) and anchor_date_raw:
+            anchor_date = date.fromisoformat(anchor_date_raw)
+        if isinstance(anchor_time_raw, str) and anchor_time_raw:
+            anchor_time = time.fromisoformat(anchor_time_raw)
+        return SchedulePlan(
+            anchor_date=anchor_date,
+            anchor_time=anchor_time,
+            enabled=bool(enabled) if enabled is not None else False,
+        )
+
+    def set_plan(
+        self, plan: SchedulePlan, requester: str | None = None
+    ) -> SchedulePlan:
+        if plan.anchor_date is None or plan.anchor_time is None:
+            raise PlanInvalid("anchor date and time are required")
+        if plan.anchor_date.weekday() != 0:
+            raise PlanInvalid(f"anchor must be a Monday, got {plan.anchor_date}")
+        now = self._clock.now()
+        self._settings.set("schedule.enabled", plan.enabled, updated_at=now)
+        self._settings.set("schedule.anchor_date", plan.anchor_date.isoformat(), updated_at=now)
+        self._settings.set("schedule.anchor_time", plan.anchor_time.isoformat(), updated_at=now)
+        self._audit.append(
+            AuditEvent(
+                action="plan.updated",
+                actor=requester or "system",
+                occurred_at=now,
+                details=plan.to_dict(),
+            )
+        )
+        return self.get_plan()
+
+    def manual_publish(self, requester: str | None = None) -> YayinZamani:
+        if self._schedule.has_pending_manual():
+            raise ManualPublishConflict("a manual publish slot is already pending")
+        now = self._clock.now().astimezone(ISTANBUL)
+        occurrence = self._schedule.create(
+            YayinZamani(
+                id=0, kind="manual", due_at=now, status="pending", created_at=now
+            )
+        )
+        self._audit.append(
+            AuditEvent(
+                action="schedule.manual_created",
+                actor=requester or "system",
+                occurred_at=now,
+                details={
+                    "occurrence_id": occurrence.id,
+                    "due_at": occurrence.due_at.isoformat(),
+                },
+            )
+        )
+        return occurrence
+
+    def ensure_schedule_upto(self, now: datetime | None = None) -> None:
+        plan = self.get_plan()
+        if not plan.enabled or plan.anchor_date is None or plan.anchor_time is None:
+            return
+        now = (now or self._clock.now()).astimezone(ISTANBUL)
+        created_now = self._clock.now().astimezone(ISTANBUL)
+        anchor_dt = datetime.combine(
+            plan.anchor_date, plan.anchor_time, tzinfo=ISTANBUL
+        )
+        occ_dt = anchor_dt
+        while occ_dt <= now:
+            if not self._schedule.has_regular_at(occ_dt):
+                self._schedule.create(
+                    YayinZamani(
+                        id=0, kind="regular", due_at=occ_dt,
+                        status="pending", created_at=created_now,
+                    )
+                )
+            occ_dt += timedelta(days=14)
+        next_dt = anchor_dt
+        while next_dt <= now:
+            next_dt += timedelta(days=14)
+        if not self._schedule.has_regular_at(next_dt):
+            self._schedule.create(
+                YayinZamani(
+                    id=0, kind="regular", due_at=next_dt,
+                    status="pending", created_at=created_now,
+                )
+            )
+
+    def list_due_occurrences(self, now: datetime | None = None) -> list[YayinZamani]:
+        now = (now or self._clock.now()).astimezone(ISTANBUL)
+        return self._schedule.list_due(now)
 
     def get_branding_defaults(self) -> BrandingConfig:
         """Return the installation-wide branding defaults (empty when unset)."""
