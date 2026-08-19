@@ -28,7 +28,6 @@ from dojo.model import (
     Package,
     PairingCode,
     Upload,
-    YayinZamani,
 )
 
 
