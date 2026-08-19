@@ -39,8 +39,8 @@ class BrandingDefaultsOut(BaseModel):
 
 
 class PlanIn(BaseModel):
-    anchor_date: str | None = None
-    anchor_time: str | None = None
+    anchor_date: date | None = None
+    anchor_time: time | None = None
     enabled: bool = True
 
 
@@ -96,8 +96,8 @@ def set_plan(
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> PlanOut:
     plan = SchedulePlan(
-        anchor_date=date.fromisoformat(body.anchor_date) if body.anchor_date else None,
-        anchor_time=time.fromisoformat(body.anchor_time) if body.anchor_time else None,
+        anchor_date=body.anchor_date,
+        anchor_time=body.anchor_time,
         enabled=body.enabled,
     )
     try:

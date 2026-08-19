@@ -854,6 +854,19 @@ def test_set_plan_non_monday_422_via_api(tmp_path: Path) -> None:
     assert resp.status_code == 422
 
 
+def test_set_plan_malformed_input_422_via_api(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    for payload in (
+        {"anchor_date": "not-a-date", "anchor_time": "10:00"},
+        {"anchor_date": "2026-08-03", "anchor_time": "oops"},
+    ):
+        resp = client.put(
+            "/api/settings/plan", headers=bearer(token), json=payload
+        )
+        assert resp.status_code == 422
+
+
 def test_manual_publish_via_api(tmp_path: Path) -> None:
     client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
