@@ -28,6 +28,7 @@ from dojo.model import (
     Package,
     PairingCode,
     Upload,
+    YayinZamani,
 )
 
 
@@ -151,6 +152,18 @@ class SettingRow(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[object] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class YayinZamaniRow(Base):
+    __tablename__ = "yayin_zamani"
+    __table_args__ = (Index("ix_yayin_zamani_status_due", "status", "due_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PostgresStore:
