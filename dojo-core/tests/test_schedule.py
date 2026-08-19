@@ -127,6 +127,30 @@ def test_plan_edit_reflected_in_future_rows(tmp_path) -> None:
     assert future == [new_anchor]
 
 
+def test_forward_anchor_edit_prunes_stale_future_row(tmp_path) -> None:
+    store, seam = make_seam(tmp_path)
+    old = monday_dt()
+    seam.set_plan(
+        SchedulePlan(anchor_date=old.date(), anchor_time=old.time(), enabled=True)
+    )
+    now = old + timedelta(days=21)
+    seam._clock = FakeClock(now)
+    seam.ensure_schedule_upto(now)
+    # old anchor produced a future row at old + 28
+    assert store.has_regular_at(old + timedelta(days=28))
+
+    # move the anchor forward beyond that future row
+    new_anchor = old + timedelta(days=56)
+    seam.set_plan(
+        SchedulePlan(anchor_date=new_anchor.date(), anchor_time=new_anchor.time(), enabled=True)
+    )
+    seam.ensure_schedule_upto(now)
+
+    reg = [o.due_at for o in store.list_all() if o.kind == "regular"]
+    future = [d for d in reg if d > now]
+    assert future == [new_anchor]  # stale old future row pruned
+
+
 def test_manual_publish_creates_due_slot_without_shifting(tmp_path) -> None:
     store, seam = make_seam(tmp_path)
     anchor = monday_dt()

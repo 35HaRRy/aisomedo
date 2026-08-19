@@ -170,6 +170,7 @@ git commit -m "feat(dojo-core): schedule models and exceptions (#13)"
   - `ScheduleStore` protocol with methods:
     - `create(occurrence: YayinZamani) -> YayinZamani`
     - `max_regular_due_at() -> datetime | None`
+    - `prune_regular_future(now: datetime) -> int`
     - `has_regular_at(due_at: datetime) -> bool`
     - `has_pending_manual() -> bool`
     - `list_due(now: datetime) -> list[YayinZamani]`
@@ -183,6 +184,7 @@ In `dojo-core/src/dojo/ports.py`, add `YayinZamani` to the `from dojo.model impo
 class ScheduleStore(Protocol):
     def create(self, occurrence: YayinZamani) -> YayinZamani: ...
     def max_regular_due_at(self) -> datetime | None: ...
+    def prune_regular_future(self, now: datetime) -> int: ...
     def has_regular_at(self, due_at: datetime) -> bool: ...
     def has_pending_manual(self) -> bool: ...
     def list_due(self, now: datetime) -> list[YayinZamani]: ...
@@ -366,6 +368,12 @@ In `dojo-core/src/dojo/adapters/memory.py`:
         dates = [o.due_at for o in self._occurrences if o.kind == "regular"]
         return max(dates) if dates else None
 
+    def prune_regular_future(self, now: datetime) -> int:
+        kept = [o for o in self._occurrences if not (o.kind == "regular" and o.due_at > now)]
+        removed = len(self._occurrences) - len(kept)
+        self._occurrences = kept
+        return removed
+
     def has_regular_at(self, due_at: datetime) -> bool:
         return any(o.kind == "regular" and o.due_at == due_at for o in self._occurrences)
 
@@ -391,7 +399,7 @@ Expected: PASS.
 - [ ] **Step 5: Implement `PostgresStore`**
 
 In `dojo-core/src/dojo/adapters/db.py`:
-- Add `func` to the `from sqlalchemy import (...)` block.
+- Add `func`, `delete` to the `from sqlalchemy import (...)` block.
 - Add `YayinZamani` to the `from dojo.model import (...)` block.
 - Add a `YayinZamani` overload and branch to `create`:
 ```python
@@ -425,6 +433,20 @@ In `dojo-core/src/dojo/adapters/db.py`:
             return session.scalar(
                 select(func.max(YayinZamaniRow.due_at)).where(YayinZamaniRow.kind == "regular")
             )
+
+    def prune_regular_future(self, now: datetime) -> int:
+        with self._session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    delete(YayinZamaniRow).where(
+                        YayinZamaniRow.kind == "regular",
+                        YayinZamaniRow.due_at > now,
+                    )
+                ),
+            )
+            session.commit()
+            return result.rowcount or 0
 
     def has_regular_at(self, due_at: datetime) -> bool:
         with self._session() as session:
@@ -631,6 +653,30 @@ def test_plan_edit_reflected_in_future_rows(tmp_path) -> None:
     assert future == [new_anchor]
 
 
+def test_forward_anchor_edit_prunes_stale_future_row(tmp_path) -> None:
+    store, seam = make_seam(tmp_path)
+    old = monday_dt()
+    seam.set_plan(
+        SchedulePlan(anchor_date=old.date(), anchor_time=old.time(), enabled=True)
+    )
+    now = old + timedelta(days=21)
+    seam._clock = FakeClock(now)
+    seam.ensure_schedule_upto(now)
+    # old anchor produced a future row at old + 28
+    assert store.has_regular_at(old + timedelta(days=28))
+
+    # move the anchor forward beyond that future row
+    new_anchor = old + timedelta(days=56)
+    seam.set_plan(
+        SchedulePlan(anchor_date=new_anchor.date(), anchor_time=new_anchor.time(), enabled=True)
+    )
+    seam.ensure_schedule_upto(now)
+
+    reg = [o.due_at for o in store.list_all() if o.kind == "regular"]
+    future = [d for d in reg if d > now]
+    assert future == [new_anchor]  # stale old future row pruned
+
+
 def test_manual_publish_creates_due_slot_without_shifting(tmp_path) -> None:
     store, seam = make_seam(tmp_path)
     anchor = monday_dt()
@@ -777,6 +823,7 @@ In `dojo-core/src/dojo/publishing.py`:
         anchor_dt = datetime.combine(
             plan.anchor_date, plan.anchor_time, tzinfo=ISTANBUL
         )
+        self._schedule.prune_regular_future(now)
         occ_dt = anchor_dt
         while occ_dt <= now:
             if not self._schedule.has_regular_at(occ_dt):

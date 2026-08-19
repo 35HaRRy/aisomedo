@@ -258,6 +258,12 @@ class InMemoryStore:
         dates = [o.due_at for o in self._occurrences if o.kind == "regular"]
         return max(dates) if dates else None
 
+    def prune_regular_future(self, now: datetime) -> int:
+        kept = [o for o in self._occurrences if not (o.kind == "regular" and o.due_at > now)]
+        removed = len(self._occurrences) - len(kept)
+        self._occurrences = kept
+        return removed
+
     def has_regular_at(self, due_at: datetime) -> bool:
         return any(o.kind == "regular" and o.due_at == due_at for o in self._occurrences)
 

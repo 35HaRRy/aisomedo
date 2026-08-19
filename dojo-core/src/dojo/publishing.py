@@ -1090,6 +1090,7 @@ class DojoPublishing:
         anchor_dt = datetime.combine(
             plan.anchor_date, plan.anchor_time, tzinfo=ISTANBUL
         )
+        self._schedule.prune_regular_future(now)
         occ_dt = anchor_dt
         while occ_dt <= now:
             if not self._schedule.has_regular_at(occ_dt):

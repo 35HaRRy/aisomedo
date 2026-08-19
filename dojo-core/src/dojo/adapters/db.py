@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     String,
     create_engine,
+    delete,
     func,
     select,
     text,
@@ -662,6 +663,20 @@ class PostgresStore:
             return session.scalar(
                 select(func.max(YayinZamaniRow.due_at)).where(YayinZamaniRow.kind == "regular")
             )
+
+    def prune_regular_future(self, now: datetime) -> int:
+        with self._session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    delete(YayinZamaniRow).where(
+                        YayinZamaniRow.kind == "regular",
+                        YayinZamaniRow.due_at > now,
+                    )
+                ),
+            )
+            session.commit()
+            return result.rowcount or 0
 
     def has_regular_at(self, due_at: datetime) -> bool:
         with self._session() as session:
