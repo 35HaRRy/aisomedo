@@ -13,6 +13,7 @@ from dojo.model import (
     Package,
     PairingCode,
     Upload,
+    YayinZamani,
 )
 
 
@@ -36,6 +37,8 @@ class InMemoryStore:
         self._settings: dict[str, object] = {}
         self._next_upload_id = 1
         self._next_job_id = 1
+        self._occurrences: list[YayinZamani] = []
+        self._next_occ_id = 1
 
     @overload
     def create(self, obj: Package) -> Package: ...
@@ -43,8 +46,17 @@ class InMemoryStore:
     def create(self, obj: Upload) -> Upload: ...
     @overload
     def create(self, obj: Job) -> Job: ...
+    @overload
+    def create(self, obj: YayinZamani) -> YayinZamani: ...
 
-    def create(self, obj: Package | Upload | Job) -> Package | Upload | Job:
+    def create(
+        self, obj: Package | Upload | Job | YayinZamani
+    ) -> Package | Upload | Job | YayinZamani:
+        if isinstance(obj, YayinZamani):
+            created_occ = replace(obj, id=self._next_occ_id)
+            self._next_occ_id += 1
+            self._occurrences.append(created_occ)
+            return created_occ
         if isinstance(obj, Upload):
             created_upload = replace(obj, id=self._next_upload_id)
             self._next_upload_id += 1
@@ -241,3 +253,22 @@ class InMemoryStore:
 
     def set(self, key: str, value: object, *, updated_at: datetime) -> None:
         self._settings[key] = value
+
+    def max_regular_due_at(self) -> datetime | None:
+        dates = [o.due_at for o in self._occurrences if o.kind == "regular"]
+        return max(dates) if dates else None
+
+    def has_regular_at(self, due_at: datetime) -> bool:
+        return any(o.kind == "regular" and o.due_at == due_at for o in self._occurrences)
+
+    def has_pending_manual(self) -> bool:
+        return any(o.kind == "manual" and o.status == "pending" for o in self._occurrences)
+
+    def list_due(self, now: datetime) -> list[YayinZamani]:
+        return [
+            o for o in self._occurrences
+            if o.status == "pending" and o.due_at <= now
+        ]
+
+    def list_all(self) -> list[YayinZamani]:
+        return list(self._occurrences)

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     String,
     create_engine,
+    func,
     select,
     text,
     update,
@@ -28,6 +29,7 @@ from dojo.model import (
     Package,
     PairingCode,
     Upload,
+    YayinZamani,
 )
 
 
@@ -182,8 +184,14 @@ class PostgresStore:
     def create(self, obj: Upload) -> Upload: ...
     @overload
     def create(self, obj: Job) -> Job: ...
+    @overload
+    def create(self, obj: YayinZamani) -> YayinZamani: ...
 
-    def create(self, obj: Package | Upload | Job) -> Package | Upload | Job:
+    def create(
+        self, obj: Package | Upload | Job | YayinZamani
+    ) -> Package | Upload | Job | YayinZamani:
+        if isinstance(obj, YayinZamani):
+            return self._create_occurrence(obj)
         if isinstance(obj, Upload):
             return self._create_upload(obj)
         if isinstance(obj, Job):
@@ -634,6 +642,67 @@ class PostgresStore:
             )
             session.execute(stmt)
             session.commit()
+
+    def _create_occurrence(self, occ: YayinZamani) -> YayinZamani:
+        with self._session() as session:
+            row = YayinZamaniRow(
+                kind=occ.kind,
+                due_at=occ.due_at,
+                status=occ.status,
+                created_at=occ.created_at,
+                resolved_at=occ.resolved_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return self._occ_from_row(row)
+
+    def max_regular_due_at(self) -> datetime | None:
+        with self._session() as session:
+            return session.scalar(
+                select(func.max(YayinZamaniRow.due_at)).where(YayinZamaniRow.kind == "regular")
+            )
+
+    def has_regular_at(self, due_at: datetime) -> bool:
+        with self._session() as session:
+            return session.scalar(
+                select(YayinZamaniRow.id)
+                .where(YayinZamaniRow.kind == "regular", YayinZamaniRow.due_at == due_at)
+                .limit(1)
+            ) is not None
+
+    def has_pending_manual(self) -> bool:
+        with self._session() as session:
+            return session.scalar(
+                select(YayinZamaniRow.id)
+                .where(YayinZamaniRow.kind == "manual", YayinZamaniRow.status == "pending")
+                .limit(1)
+            ) is not None
+
+    def list_due(self, now: datetime) -> list[YayinZamani]:
+        with self._session() as session:
+            rows = session.scalars(
+                select(YayinZamaniRow)
+                .where(YayinZamaniRow.status == "pending", YayinZamaniRow.due_at <= now)
+                .order_by(YayinZamaniRow.id)
+            ).all()
+            return [self._occ_from_row(r) for r in rows]
+
+    def list_all(self) -> list[YayinZamani]:
+        with self._session() as session:
+            rows = session.scalars(select(YayinZamaniRow).order_by(YayinZamaniRow.id)).all()
+            return [self._occ_from_row(r) for r in rows]
+
+    @staticmethod
+    def _occ_from_row(row: YayinZamaniRow) -> YayinZamani:
+        return YayinZamani(
+            id=row.id,
+            kind=row.kind,
+            due_at=row.due_at,
+            status=row.status,
+            created_at=row.created_at,
+            resolved_at=row.resolved_at,
+        )
 
     @staticmethod
     def _upload_from_row(row: UploadRow) -> Upload:
