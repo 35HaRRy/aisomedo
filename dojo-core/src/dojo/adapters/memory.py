@@ -232,7 +232,9 @@ class InMemoryStore:
                 return j
         return self._settings.get(key)
 
-    def get_by_pk(self, upload_pk: int) -> Upload | None:
+    def get_by_pk(self, upload_pk: int | None) -> Upload | None:
+        if upload_pk is None:
+            return None
         return next((u for u in self._uploads if u.id == upload_pk), None)
 
     def list_active(self) -> list[Upload]:

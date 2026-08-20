@@ -153,6 +153,8 @@ def test_render_job_failure_marks_job_failed(tmp_path):
     renderer.fail_reason = "boom"
     job = seam.claim_next_job()
     assert job is not None
+    work_dir = tmp_path / "tmp" / f"render-{job.job_id}"
+    work_dir.mkdir(parents=True, exist_ok=True)
     seam.process_job(job.job_id)
 
     failed = seam._jobs.get(job.job_id)
@@ -161,6 +163,42 @@ def test_render_job_failure_marks_job_failed(tmp_path):
     manifest = load_manifest(tmp_path, seam)
     assert manifest["render_revision"] is None
     assert "render.rejected" in [e.action for e in seam.list_audit()]
+    assert not work_dir.exists()
+
+
+def test_failed_render_does_not_reenqueue_same_digest(tmp_path):
+    store, seam, renderer = make_seam(tmp_path)
+    set_logo(store, "logo.png")
+    finalize_media(tmp_path, seam)
+    preview = seam.render_preview()
+    renderer.fail_reason = "boom"
+    job = seam.claim_next_job()
+    assert job is not None
+    seam.process_job(job.job_id)
+
+    result = seam.render_preview()
+    assert result["stale"] is True
+    assert seam.claim_next_job() is None
+    manifest = load_manifest(tmp_path, seam)
+    assert manifest["recovery"]["render_failed_digest"] == preview["render_revision"]
+
+
+def test_input_change_reenqueues_after_failure(tmp_path):
+    store, seam, renderer = make_seam(tmp_path)
+    set_logo(store, "logo.png")
+    finalize_media(tmp_path, seam, filename="a.jpg")
+    seam.render_preview()
+    renderer.fail_reason = "boom"
+    job = seam.claim_next_job()
+    assert job is not None
+    seam.process_job(job.job_id)
+
+    finalize_media(tmp_path, seam, filename="b.jpg")
+    result = seam.render_preview()
+    assert result["stale"] is True
+    new_job = seam.claim_next_job()
+    assert new_job is not None and new_job.kind == "render"
+    assert new_job.payload["digest"] != job.payload["digest"]
 
 
 def test_digest_changes_on_input_edit(tmp_path):

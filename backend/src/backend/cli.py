@@ -17,6 +17,36 @@ def mint_code(pairing: DojoPairing) -> PairingCodeIssued:
     return pairing.create_pairing_code(requester="cli")
 
 
+def render_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="dojo-render")
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("DATABASE_URL", DEFAULT_URL),
+    )
+    parser.add_argument(
+        "--media-root",
+        default=os.environ.get("MEDIA_ROOT", "media"),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("render-preview")
+    args = parser.parse_args(argv)
+
+    store = PostgresStore(args.database_url)
+    store.create_all()
+    publishing = DojoPublishing(
+        packages=store,
+        audit=store,
+        uploads=store,
+        jobs=store,
+        settings=store,
+        media_root=Path(args.media_root),
+    )
+    result = publishing.render_preview()
+    print(f"stale: {result['stale']}")
+    print(f"render_revision: {result['render_revision']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dojo-create-pairing-code")
     parser.add_argument(

@@ -687,6 +687,7 @@ class DojoPublishing:
                     details={"job_id": job.job_id, "reason": str(exc)},
                 )
             )
+            self._record_render_failure(job, payload)
             return
         now = self._clock.now()
         self._jobs.update(
@@ -713,6 +714,29 @@ class DojoPublishing:
                 details={"job_id": job.job_id, "reason": reason},
             )
         )
+
+    def _render_failed_digest(self, package: Package) -> str | None:
+        try:
+            manifest = self._load_manifest(package)
+        except MediaNotFound:
+            return None
+        return manifest.get("recovery", {}).get("render_failed_digest")
+
+    def _record_render_failure(self, job: Job, payload: dict) -> None:
+        package: Package | None = None
+        package_folder = str(payload.get("package", ""))
+        for candidate in [self._packages.get_active(), *self._packages.list_completed()]:
+            if candidate is not None and candidate.folder_name == package_folder:
+                package = candidate
+                break
+        if package is None:
+            return
+        manifest = self._load_manifest(package)
+        manifest.setdefault("recovery", {})["render_failed_digest"] = self._render_digest(
+            package, manifest
+        )
+        self._write_manifest(package, manifest)
+        shutil.rmtree(self.media_root / "tmp" / f"render-{job.job_id}", ignore_errors=True)
 
     def evaluate_due_work(self) -> None:
         """Scheduler trigger: materialize due slots, then create durable reviews."""
@@ -1524,12 +1548,14 @@ class DojoPublishing:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _enqueue_render(self, package: Package, digest: str) -> None:
+        if self._render_failed_digest(package) == digest:
+            return
         now = self._clock.now()
         self._jobs.create(
             Job(
                 id=0,
                 job_id=uuid.uuid4().hex,
-                upload_id=0,
+                upload_id=None,
                 kind="render",
                 status="queued",
                 payload={"package": package.folder_name, "digest": digest},

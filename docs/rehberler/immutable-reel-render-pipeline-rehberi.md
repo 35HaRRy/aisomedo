@@ -128,39 +128,125 @@ Beklenen: hepsi temiz. (mypy doğrudan engellenirse `uvx mypy ...` ile deneyin.)
 
 ## 4. Manuel Deneme (Uçtan Uca)
 
-Render işlemini el ile görmek için medya içeren bir aktif paket kurun (yükleme akışı
-`#7`'de yapıldı) ve aşağıdaki seam davranışını test edin.
+Render işlemini el ile görmek için yığını ayağa kaldırın, bir cihaz token'ı alın, medya
+yükleyin, logoyu ayarlayın ve preview'i CLI üzerinden tetikleyin. Tüm adımlar PowerShell
+komutudur; Python kodu içermez. Not: `render_preview` seam'i HTTP'ye açık değildir; bu
+yüzden preview, `dojo-render` CLI'ı ile çağrılır (bu rehberle birlikte eklenmiştir).
+Render işleminin kendisini Docker'daki **worker** yapar; host üzerinden yalnızca job
+kuyruğa alınır.
 
-1. **Aktif paketi oluşturun ve logo ayarını koyun** (test ayar deposu üzerinden
-   yapılır; bu komutlar `test_render.py`'nin davranışını taklit eder):
+1. **Yığını ayağa kaldırın ve ortamı kurun** (db + backend + worker; worker, `media` ve
+   `render` job'larını işler):
 ```powershell
-# Logoyu ayar deposuna yaz (örnek; gerçek değer senin logo yolun)
-# Bu adım kod üzerinden yapılır; manuel HTTP ile ayar değiştirilemez.
+# POSTGRES_PASSWORD, ops/.env'dekiyle aynı olmalı
+docker compose -f ops/docker-compose.yml up -d --build db backend worker
+
+$base = "http://localhost:8000"
+$env:MEDIA_ROOT = (Resolve-Path "ops/media-data").Path
+$env:DATABASE_URL = "postgresql+psycopg://dojo:$env:POSTGRES_PASSWORD@localhost:5433/dojo"
 ```
 
-2. **Bir fotoğraf ve bir video yükleyip sonlandırın** (upload API'siyle). Sonlandırma
-   ardından ikisi de `order`'a eklenir ve `render_revision` `null` olur.
-
-3. **Preview isteyin** — render job'ı kuyruğa alınır:
+2. **Logoyu koyun** (zorunlu watermark; logo yoksa render reddedilir):
 ```powershell
-# Preview, seam/API üzerinden çağrılır; dönen cevap şunları içerir:
-#   stale = true | false
-#   render_revision = "<sha256-digest>"
+# Logoyu ops/media-data altına kopyala (docker worker ile aynı klasör)
+Copy-Item "C:\yol\logo.png" "$env:MEDIA_ROOT\logo.png"
+uv run --project backend dojo-settings set-branding --logo-asset "logo.png"
 ```
 
-4. **Worker'ın job'ı işlemesini bekleyin** — `render/reel.mp4` oluşur ve
-   `manifest.json` içindeki `render_revision` digest'le dolar.
-
-5. **Manifest'te sonucu doğrulayın**:
+3. **Cihaz token'ı alın**:
 ```powershell
-# Aktif paketin klasöründe manifest.json ve render/reel.mp4 olup olmadığına bak
+$out = uv run --project backend dojo-create-pairing-code create-code
+$code = ($out | Where-Object { $_ -like 'Pairing code:*' }) -replace '^Pairing code:\s*',''
+$pair = Invoke-RestMethod -Method Post -Uri "$base/api/pairing/validate" `
+    -ContentType 'application/json' -Body (@{ code=$code; kind='device'; name='PS' } | ConvertTo-Json)
+$H = @{ Authorization = "Bearer $($pair.token)" }
+```
+
+4. **Aktif paketi oluşturup klasörünü not edin**:
+```powershell
+$pkg = Invoke-RestMethod -Method Get -Uri "$base/api/packages/active" -Headers $H
+$pkg.folder_name
+$manifest = Join-Path $env:MEDIA_ROOT "$($pkg.folder_name)\manifest.json"
+```
+
+5. **Bir fotoğraf ve bir video yükleyin** (tek parça, 8 MiB altı):
+```powershell
+function Push-Upload($file, $contentType) {
+    $init = @{ filename=(Split-Path $file -Leaf); content_type=$contentType;
+               declared_size_bytes=(Get-Item $file).Length } | ConvertTo-Json
+    $up = Invoke-RestMethod -Method Post -Uri "$base/api/media/uploads" -Headers $H `
+        -ContentType 'application/json' -Body $init
+    $hash = (Get-FileHash -Algorithm SHA256 -Path $file).Hash.ToLower()
+    $bytes = [System.IO.File]::ReadAllBytes($file)
+    $up = Invoke-RestMethod -Method Put `
+        -Uri "$base/api/media/uploads/$($up.upload_id)/ranges?offset=0&checksum_sha256=$hash" `
+        -Headers $H -ContentType 'application/octet-stream' -Body $bytes
+    Invoke-RestMethod -Method Post -Uri "$base/api/media/uploads/$($up.upload_id)/complete" -Headers $H
+}
+
+$photo = Push-Upload "C:\yol\foto.jpg" "image/jpeg"
+$video = Push-Upload "C:\yol\video.mp4" "video/mp4"
+$photo | Format-List upload_id, status, received_bytes
+$video | Format-List upload_id, status, received_bytes
+```
+   Worker ikisini işler, `order`'a ekler ve `render_revision` `null` olur. (Video kırpma
+   bilgisi `montage` sırasında yoksa tam süre kullanılır.)
+
+6. **Montage durumunu görün** (sıra, toplam süre, limit):
+```powershell
+Invoke-RestMethod -Method Get -Uri "$base/api/packages/active/montage" -Headers $H | Format-List
+```
+   `clips` boşsa medya henüz worker tarafından işlenmemiştir; işlenmesi için birkaç
+   saniye bekleyip tekrar bakın (video işlenmeden render'a girmez).
+
+7. **Preview tetikleyin** — `render` job'ı kuyruğa alınır:
+```powershell
+uv run --project backend dojo-render render-preview
+```
+   Çıktı:
+```
+stale: True
+render_revision: <sha256-digest>
+```
+   `stale: True` demek job kuyruğa alındı. Worker job'ı işleyip digest'i yazdıktan sonra
+   tekrar çağırırsanız `stale: False` döner (taze; yeni job üretilmez).
+
+8. **Worker'ın job'ı işlemesini bekleyin ve doğrulayın** (docker worker 10 sn'de bir
+   tick atar):
+```powershell
+Start-Sleep -Seconds 15
 Get-ChildItem -Recurse -Path "$env:MEDIA_ROOT" -Filter "reel.mp4" | Select-Object FullName, Length
+(Get-Content $manifest -Raw | ConvertFrom-Json).render_revision
 ```
+   Beklenen: `render/reel.mp4` 1080x1920, ses kanallı; manifest içindeki
+   `render_revision` 7. adımdaki digest ile aynı.
 
-6. **Bir düzenleme yapıp bayatlamayı görün** (ör. sıra veya kırpma değiştirin):
+9. **Bir düzenleme yapıp bayatlamayı görün** (sırayı tersine çevirin):
 ```powershell
-# Düzenleme sonrası manifest.json içinde render_revision = null olur (render bayat).
-# Bir sonraki preview yalnızca bu durumda yeni job üretir.
+$order = (Invoke-RestMethod -Method Get -Uri "$base/api/packages/active/montage" -Headers $H).order
+$body = @{ order = @($order[1], $order[0]) } | ConvertTo-Json
+Invoke-RestMethod -Method Put -Uri "$base/api/packages/active/order" -Headers $H `
+    -ContentType 'application/json' -Body $body | Out-Null
+
+# render bayat: manifest içinde render_revision null
+(Get-Content $manifest -Raw | ConvertFrom-Json).render_revision
+
+# Yeni preview yalnızca bayatken job üretir
+uv run --project backend dojo-render render-preview
+```
+   Beklenen: düzenleme sonrası `render_revision` `null` olur; preview yeni digest ile
+   `stale: True` döner.
+
+10. **Logo kaldırılırsa render reddedilir** (zorunlu watermark; `--logo-asset` vermeyin
+    çünkü boş string `None` değil, render'ı reddetmez):
+```powershell
+uv run --project backend dojo-settings set-branding
+uv run --project backend dojo-render render-preview
+```
+    Beklenen: `LogoNotConfigured` / "dojo logo watermark asset is not configured". Sonra
+    logoyu geri koyun:
+```powershell
+uv run --project backend dojo-settings set-branding --logo-asset "logo.png"
 ```
 
 ## 5. Git Geçmişi

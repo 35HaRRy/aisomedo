@@ -13,6 +13,7 @@ dependencies = [
 dojo-create-pairing-code = "backend.cli:main"
 dojo-consent = "backend.cli:consent_main"
 dojo-settings = "backend.cli:settings_main"
+dojo-render = "backend.cli:render_main"
 
 [dependency-groups]
 dev = [

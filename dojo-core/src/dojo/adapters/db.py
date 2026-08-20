@@ -141,7 +141,7 @@ class JobRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
-    upload_id: Mapped[int] = mapped_column(ForeignKey("uploads.id"), nullable=False)
+    upload_id: Mapped[int | None] = mapped_column(ForeignKey("uploads.id"), nullable=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -607,7 +607,9 @@ class PostgresStore:
             setting_row = session.get(SettingRow, key)
             return setting_row.value if setting_row is not None else None
 
-    def get_by_pk(self, upload_pk: int) -> Upload | None:
+    def get_by_pk(self, upload_pk: int | None) -> Upload | None:
+        if upload_pk is None:
+            return None
         with self._session() as session:
             row = session.get(UploadRow, upload_pk)
             return self._upload_from_row(row) if row is not None else None

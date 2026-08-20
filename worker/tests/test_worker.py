@@ -70,7 +70,7 @@ class RenderSpyPublishing(SpyPublishing):
         return Job(
             id=2,
             job_id="r-1",
-            upload_id=0,
+            upload_id=None,
             kind="render",
             status="queued",
             payload={"package": "pkg", "digest": "d-1"},

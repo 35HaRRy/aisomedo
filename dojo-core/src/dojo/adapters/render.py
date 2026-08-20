@@ -6,6 +6,10 @@ from pathlib import Path
 from dojo.exceptions import RenderFailed
 from dojo.model import ReelBuild
 
+import logging
+
+logger = logging.getLogger("render: ")
+
 CANVAS_W = 1080
 CANVAS_H = 1920
 FPS = 25
@@ -148,21 +152,22 @@ class FfmpegReelRenderer:
         out_chain = "[base]"
         if logo_args:
             filter_complex += (
-                ";[1:v]overlay=W-w-48:H-h-48:format=auto[vout]"
+                ";[base][1:v]overlay=W-w-48:H-h-48:format=auto[vout]"
             )
             out_chain = "[vout]"
         command = ["ffmpeg", "-y"]
+        command += [*input_args, "-i", str(source), *logo_args]
         if not has_audio:
             command += ["-f", "lavfi", "-t", f"{duration:.3f}", "-i",
                         f"anullsrc=channel_layout=stereo:sample_rate={AUDIO_RATE}"]
-        command += [*input_args, "-i", str(source), *logo_args,
-                    "-filter_complex", filter_complex,
+        command += ["-filter_complex", filter_complex,
                     "-map", out_chain, *audio_map,
                     "-r", str(FPS), *duration_args,
                     "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac",
                     "-movflags", "+faststart", str(seg)]
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0 or not seg.is_file():
+            logger.info(result.stderr.strip())
             raise RenderFailed(
                 f"segment render failed: {result.stderr.strip()[:200]}"
             )

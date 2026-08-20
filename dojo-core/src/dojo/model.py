@@ -183,7 +183,7 @@ class UploadStatus:
 class Job:
     id: int
     job_id: str
-    upload_id: int
+    upload_id: int | None
     kind: str
     status: str
     payload: dict
