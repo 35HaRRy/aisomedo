@@ -335,3 +335,13 @@ class YayinIncelemesi:
     caption: str | None
     status: str
     created_at: datetime
+    version: int = 1
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None
+    oneoff_occurrence_id: int | None = None
+
+
+@dataclass(frozen=True)
+class SkipResult:
+    review: YayinIncelemesi
+    next_regular_at: datetime | None

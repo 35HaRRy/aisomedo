@@ -128,3 +128,25 @@ class PlanInvalid(DojoError):
 
 class ManualPublishConflict(DojoError):
     pass
+
+
+class SkipRequiresConfirmation(DojoError):
+    pass
+
+
+class RescheduleTimeInvalid(DojoError):
+    pass
+
+
+class ReviewStale(DojoError):
+    pass
+
+
+class ReviewAlreadyHandled(DojoError):
+    def __init__(self, message: str, review: object | None = None) -> None:
+        super().__init__(message)
+        self.review = review
+
+
+class ReviewNotFound(DojoError):
+    pass

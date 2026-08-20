@@ -97,8 +97,14 @@ class InMemoryStore:
     def update(self, obj: Upload) -> Upload: ...
     @overload
     def update(self, obj: Job) -> Job: ...
+    @overload
+    def update(self, obj: YayinZamani) -> YayinZamani: ...
+    @overload
+    def update(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
-    def update(self, obj: Package | Upload | Job) -> Package | Upload | Job:
+    def update(
+        self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
+    ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
         if isinstance(obj, Upload):
             for i, existing_upload in enumerate(self._uploads):
                 if existing_upload.id == obj.id:
@@ -111,6 +117,18 @@ class InMemoryStore:
                     self._jobs[i] = obj
                     return obj
             raise ValueError(f"job {obj.id} not found")
+        if isinstance(obj, YayinZamani):
+            for i, existing_occ in enumerate(self._occurrences):
+                if existing_occ.id == obj.id:
+                    self._occurrences[i] = obj
+                    return obj
+            raise ValueError(f"occurrence {obj.id} not found")
+        if isinstance(obj, YayinIncelemesi):
+            for i, existing_review in enumerate(self._reviews):
+                if existing_review.id == obj.id:
+                    self._reviews[i] = obj
+                    return obj
+            raise ValueError(f"review {obj.id} not found")
         for i, existing_package in enumerate(self._packages):
             if existing_package.id == obj.id:
                 self._packages[i] = obj
@@ -222,8 +240,12 @@ class InMemoryStore:
     def get(self, key: str) -> Job | None: ...  # type: ignore[overload-cannot-match]
     @overload
     def get(self, key: str) -> object | None: ...  # type: ignore[overload-cannot-match]
+    @overload
+    def get(self, key: int) -> YayinIncelemesi | None: ...
 
-    def get(self, key: str) -> Upload | Job | object | None:
+    def get(self, key: str | int) -> Upload | Job | object | YayinIncelemesi | None:
+        if isinstance(key, int):
+            return next((r for r in self._reviews if r.id == key), None)
         for u in self._uploads:
             if u.upload_id == key:
                 return u
@@ -291,6 +313,13 @@ class InMemoryStore:
     def list_all(self) -> list[YayinZamani]:
         return list(self._occurrences)
 
+    def next_regular_after(self, now: datetime) -> YayinZamani | None:
+        candidates = [
+            o for o in self._occurrences
+            if o.kind == "regular" and o.status == "pending" and o.due_at > now
+        ]
+        return min(candidates, key=lambda o: o.due_at, default=None)
+
     def get_by_occurrence_revision(
         self, occurrence_id: int, revision_digest: str
     ) -> YayinIncelemesi | None:
@@ -306,3 +335,24 @@ class InMemoryStore:
 
     def list_pending(self) -> list[YayinIncelemesi]:
         return [r for r in self._reviews if r.status == "pending"]
+
+    def resolve_if_pending(
+        self,
+        review_id: int,
+        version: int,
+        status: str,
+        resolved_at: datetime,
+        resolved_by: str | None,
+    ) -> YayinIncelemesi | None:
+        for i, review in enumerate(self._reviews):
+            if review.id == review_id and review.status == "pending" and review.version == version:
+                updated = replace(
+                    review,
+                    status=status,
+                    version=review.version + 1,
+                    resolved_at=resolved_at,
+                    resolved_by=resolved_by,
+                )
+                self._reviews[i] = updated
+                return updated
+        return None

@@ -100,7 +100,7 @@ def test_ensure_active_package_attributed_to_requester(tmp_path):
 
 def test_stubbed_methods_raise_not_implemented(tmp_path):
     _, seam = make_seam(tmp_path)
-    for method in ("add_media", "approve"):
+    for method in ("add_media", "create_review"):
         with pytest.raises(NotImplementedError):
             getattr(seam, method)()
     with pytest.raises(LogoNotConfigured):

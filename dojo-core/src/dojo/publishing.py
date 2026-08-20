@@ -29,6 +29,11 @@ from dojo.exceptions import (
     PackageLimitExceeded,
     PlanInvalid,
     RenderFailed,
+    RescheduleTimeInvalid,
+    ReviewAlreadyHandled,
+    ReviewNotFound,
+    ReviewStale,
+    SkipRequiresConfirmation,
     UploadChecksumMismatch,
     UploadConflict,
     UploadDecisionInvalid,
@@ -57,6 +62,7 @@ from dojo.model import (
     ReelBuild,
     ReelClip,
     SchedulePlan,
+    SkipResult,
     Upload,
     UploadLimits,
     UploadStatus,
@@ -1481,14 +1487,202 @@ class DojoPublishing:
     def create_review(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
-    def approve(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+    def approve(
+        self,
+        review_id: int,
+        version: int,
+        requester: str | None = None,
+    ) -> YayinIncelemesi:
+        return self._resolve_review(
+            review_id,
+            version,
+            to_status="approved",
+            requester=requester,
+        )
 
-    def skip(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+    def skip(
+        self,
+        review_id: int,
+        version: int,
+        confirmed: bool,
+        requester: str | None = None,
+    ) -> SkipResult:
+        if not confirmed:
+            raise SkipRequiresConfirmation("skip requires explicit confirmation")
+        review = self._resolve_review(
+            review_id,
+            version,
+            to_status="skipped",
+            requester=requester,
+        )
+        now = self._clock.now()
+        next_regular = self._schedule.next_regular_after(now)
+        return SkipResult(
+            review=review,
+            next_regular_at=next_regular.due_at if next_regular is not None else None,
+        )
 
-    def reschedule(self, *args: object, **kwargs: object) -> None:
-        raise NotImplementedError
+    def reschedule(
+        self,
+        review_id: int,
+        version: int,
+        new_due_at: datetime,
+        requester: str | None = None,
+    ) -> YayinIncelemesi:
+        now = self._clock.now().astimezone(ISTANBUL)
+        if new_due_at.tzinfo is None:
+            new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
+        if new_due_at <= now:
+            raise RescheduleTimeInvalid(
+                f"reschedule time {new_due_at} must be in the future"
+            )
+        review = self._resolve_review(
+            review_id,
+            version,
+            to_status="rescheduled",
+            requester=requester,
+            finalize_resolution=False,
+            audit=False,
+        )
+        return self._apply_reschedule_oneoff(
+            review, new_due_at, requester=requester
+        )
+
+    def _resolve_review(
+        self,
+        review_id: int,
+        version: int,
+        *,
+        to_status: str,
+        requester: str | None,
+        finalize_resolution: bool = True,
+        audit: bool = True,
+    ) -> YayinIncelemesi:
+        """Resolve one review with atomic CAS; reject stale or already-handled."""
+        review = self._reviews.get(review_id)
+        if review is None:
+            raise ReviewNotFound(f"review {review_id} not found")
+        package = self._packages.get_active()
+        manifest = self._load_manifest(package) if package is not None else None
+        current_revision = (
+            manifest.get("render_revision") if manifest is not None else None
+        )
+        if (
+            current_revision is not None
+            and current_revision != review.revision_digest
+        ):
+            raise ReviewStale(
+                f"review {review_id} is stale; content changed since it was created"
+            )
+        now = self._clock.now()
+        resolved = self._reviews.resolve_if_pending(
+            review_id, version, to_status, now, requester
+        )
+        if resolved is None:
+            current = self._reviews.get(review_id)
+            raise ReviewAlreadyHandled(
+                f"review {review_id} was already handled by another device",
+                review=current,
+            )
+        if finalize_resolution:
+            self._resolve_occurrence(resolved.occurrence_id, now)
+        if audit:
+            self._audit.append(
+                AuditEvent(
+                    action=f"review.{to_status}",
+                    actor=requester or "system",
+                    occurred_at=now,
+                    details={
+                        "review_id": resolved.id,
+                        "occurrence_id": resolved.occurrence_id,
+                        "package": resolved.package_folder,
+                        "revision_digest": resolved.revision_digest,
+                        "status": resolved.status,
+                    },
+                )
+            )
+        return resolved
+
+    def _resolve_occurrence(self, occurrence_id: int, at: datetime) -> None:
+        occurrence = next(
+            (o for o in self._schedule.list_all() if o.id == occurrence_id), None
+        )
+        if occurrence is None or occurrence.status == "resolved":
+            return
+        self._schedule.update(
+            replace(
+                occurrence,
+                status="resolved",
+                resolved_at=at,
+            )
+        )
+
+    def _apply_reschedule_oneoff(
+        self,
+        review: YayinIncelemesi,
+        new_due_at: datetime,
+        *,
+        requester: str | None,
+    ) -> YayinIncelemesi:
+        """Create a pending oneoff occurrence; replace any prior one for this review.
+
+        Returns the review with ``oneoff_occurrence_id`` set.
+        """
+        now = self._clock.now()
+        prior = next(
+            (
+                o
+                for o in self._schedule.list_all()
+                if (
+                    (
+                        review.oneoff_occurrence_id is not None
+                        and o.id == review.oneoff_occurrence_id
+                    )
+                    or (o.id == review.occurrence_id and o.kind == "oneoff")
+                )
+            ),
+            None,
+        )
+        if prior is not None and prior.status == "pending":
+            updated = self._schedule.update(
+                replace(prior, due_at=new_due_at)
+            )
+            resolved_review = self._reviews.update(
+                replace(review, oneoff_occurrence_id=updated.id)
+            )
+        else:
+            if review.oneoff_occurrence_id is None:
+                self._resolve_occurrence(review.occurrence_id, now)
+            created = self._schedule.create(
+                YayinZamani(
+                    id=0,
+                    kind="oneoff",
+                    due_at=new_due_at,
+                    status="pending",
+                    created_at=now,
+                )
+            )
+            resolved_review = self._reviews.update(
+                replace(review, oneoff_occurrence_id=created.id)
+            )
+            updated = created
+        self._audit.append(
+            AuditEvent(
+                action="review.rescheduled",
+                actor=requester or "system",
+                occurred_at=now,
+                details={
+                    "review_id": resolved_review.id,
+                    "occurrence_id": updated.id,
+                    "package": resolved_review.package_folder,
+                    "revision_digest": resolved_review.revision_digest,
+                    "status": resolved_review.status,
+                    "due_at": updated.due_at.isoformat(),
+                    "replaced_oneoff": updated.id != review.occurrence_id,
+                },
+            )
+        )
+        return resolved_review
 
     def render_preview(self) -> dict:
         """Render on explicit preview (or when stale) and return the render digest."""

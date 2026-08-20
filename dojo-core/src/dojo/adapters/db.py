@@ -187,6 +187,10 @@ class YayinIncelemesiRow(Base):
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    oneoff_occurrence_id: Mapped[int | None] = mapped_column(nullable=True)
 
 
 class PostgresStore:
@@ -315,13 +319,82 @@ class PostgresStore:
     def update(self, obj: Upload) -> Upload: ...
     @overload
     def update(self, obj: Job) -> Job: ...
+    @overload
+    def update(self, obj: YayinZamani) -> YayinZamani: ...
+    @overload
+    def update(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
-    def update(self, obj: Package | Upload | Job) -> Package | Upload | Job:
+    def update(
+        self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
+    ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
         if isinstance(obj, Upload):
             return self._update_upload(obj)
         if isinstance(obj, Job):
             return self._update_job(obj)
+        if isinstance(obj, YayinZamani):
+            return self._update_occurrence(obj)
+        if isinstance(obj, YayinIncelemesi):
+            return self._update_review(obj)
         return self._update_package(obj)
+
+    def _update_review(self, review: YayinIncelemesi) -> YayinIncelemesi:
+        with self._session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    update(YayinIncelemesiRow)
+                    .where(YayinIncelemesiRow.id == review.id)
+                    .values(
+                        status=review.status,
+                        version=review.version,
+                        resolved_at=review.resolved_at,
+                        resolved_by=review.resolved_by,
+                        oneoff_occurrence_id=review.oneoff_occurrence_id,
+                    )
+                ),
+            )
+            session.commit()
+            if result.rowcount != 1:
+                raise ValueError(f"review {review.id} not found")
+            row = session.get(YayinIncelemesiRow, review.id)
+            assert row is not None
+            return self._review_from_row(row)
+
+    def _update_occurrence(self, occ: YayinZamani) -> YayinZamani:
+        with self._session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    update(YayinZamaniRow)
+                    .where(YayinZamaniRow.id == occ.id)
+                    .values(
+                        kind=occ.kind,
+                        due_at=occ.due_at,
+                        status=occ.status,
+                        resolved_at=occ.resolved_at,
+                    )
+                ),
+            )
+            session.commit()
+            if result.rowcount != 1:
+                raise ValueError(f"occurrence {occ.id} not found")
+            row = session.get(YayinZamaniRow, occ.id)
+            assert row is not None
+            return self._occ_from_row(row)
+
+    def next_regular_after(self, now: datetime) -> YayinZamani | None:
+        with self._session() as session:
+            row = session.scalar(
+                select(YayinZamaniRow)
+                .where(
+                    YayinZamaniRow.kind == "regular",
+                    YayinZamaniRow.status == "pending",
+                    YayinZamaniRow.due_at > now,
+                )
+                .order_by(YayinZamaniRow.due_at)
+                .limit(1)
+            )
+            return self._occ_from_row(row) if row is not None else None
 
     def _update_package(self, package: Package) -> Package:
         with self._session() as session:
@@ -595,9 +668,14 @@ class PostgresStore:
     def get(self, key: str) -> Job | None: ...  # type: ignore[overload-cannot-match]
     @overload
     def get(self, key: str) -> object | None: ...  # type: ignore[overload-cannot-match]
+    @overload
+    def get(self, key: int) -> YayinIncelemesi | None: ...
 
-    def get(self, key: str) -> Upload | Job | object | None:
+    def get(self, key: str | int) -> Upload | Job | object | YayinIncelemesi | None:
         with self._session() as session:
+            if isinstance(key, int):
+                row = session.get(YayinIncelemesiRow, key)
+                return self._review_from_row(row) if row is not None else None
             upload_row = session.scalar(select(UploadRow).where(UploadRow.upload_id == key))
             if upload_row is not None:
                 return self._upload_from_row(upload_row)
@@ -755,6 +833,10 @@ class PostgresStore:
                 caption=review.caption,
                 status=review.status,
                 created_at=review.created_at,
+                version=review.version,
+                resolved_at=review.resolved_at,
+                resolved_by=review.resolved_by,
+                oneoff_occurrence_id=review.oneoff_occurrence_id,
             )
             session.add(row)
             session.commit()
@@ -784,6 +866,39 @@ class PostgresStore:
             ).all()
             return [self._review_from_row(r) for r in rows]
 
+    def resolve_if_pending(
+        self,
+        review_id: int,
+        version: int,
+        status: str,
+        resolved_at: datetime,
+        resolved_by: str | None,
+    ) -> YayinIncelemesi | None:
+        with self._session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    update(YayinIncelemesiRow)
+                    .where(
+                        YayinIncelemesiRow.id == review_id,
+                        YayinIncelemesiRow.status == "pending",
+                        YayinIncelemesiRow.version == version,
+                    )
+                    .values(
+                        status=status,
+                        version=YayinIncelemesiRow.version + 1,
+                        resolved_at=resolved_at,
+                        resolved_by=resolved_by,
+                    )
+                ),
+            )
+            session.commit()
+            if result.rowcount != 1:
+                return None
+            row = session.get(YayinIncelemesiRow, review_id)
+            assert row is not None
+            return self._review_from_row(row)
+
     @staticmethod
     def _review_from_row(row: YayinIncelemesiRow) -> YayinIncelemesi:
         return YayinIncelemesi(
@@ -794,6 +909,10 @@ class PostgresStore:
             caption=row.caption,
             status=row.status,
             created_at=row.created_at,
+            version=row.version,
+            resolved_at=row.resolved_at,
+            resolved_by=row.resolved_by,
+            oneoff_occurrence_id=row.oneoff_occurrence_id,
         )
 
     @staticmethod

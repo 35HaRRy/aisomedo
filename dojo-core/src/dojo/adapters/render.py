@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 
 from dojo.exceptions import RenderFailed
 from dojo.model import ReelBuild
-
-import logging
 
 logger = logging.getLogger("render: ")
 
