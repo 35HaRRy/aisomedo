@@ -60,6 +60,7 @@ from dojo.model import (
     Upload,
     UploadLimits,
     UploadStatus,
+    YayinIncelemesi,
     YayinZamani,
 )
 from dojo.ports import (
@@ -71,6 +72,7 @@ from dojo.ports import (
     Notifier,
     PackageStore,
     ReelRenderer,
+    ReviewStore,
     ScheduleStore,
     SettingsStore,
     SignedUrlStore,
@@ -154,6 +156,7 @@ class DojoPublishing:
         media: MediaProcessor | None = None,
         renderer: ReelRenderer | None = None,
         schedule: ScheduleStore | None = None,
+        reviews: ReviewStore | None = None,
     ) -> None:
         self._packages = packages
         self._audit = audit
@@ -171,6 +174,9 @@ class DojoPublishing:
         )
         self._schedule: ScheduleStore = (
             schedule if schedule is not None else cast(ScheduleStore, packages)
+        )
+        self._reviews: ReviewStore = (
+            reviews if reviews is not None else cast(ReviewStore, packages)
         )
         self._media = media
         self._renderer = renderer
@@ -709,11 +715,75 @@ class DojoPublishing:
         )
 
     def evaluate_due_work(self) -> None:
-        """Scheduler trigger: materialize due and next Yayın Zamanı slots.
-
-        Review creation from a due slot is handled by #14.
-        """
+        """Scheduler trigger: materialize due slots, then create durable reviews."""
         self.ensure_schedule_upto()
+        self._ensure_reviews_for_due()
+
+    def _ensure_reviews_for_due(self) -> None:
+        """Create at most one durable review per due occurrence for the active revision.
+
+        A review is only created once a render is materialized. For a non-empty package
+        we enqueue a render when stale (the render job's completion hook creates the
+        review) or, when the render is already current, create it directly. An empty
+        active package creates no review and leaves the occurrence pending.
+        """
+        package = self._packages.get_active()
+        if package is None:
+            return
+        manifest = self._load_manifest(package)
+        if not self._finalized_in_order(manifest):
+            return
+        digest = self._render_digest(package, manifest)
+        if manifest.get("render_revision") == digest:
+            self._create_review_if_due(package, digest)
+        else:
+            self._enqueue_render(package, digest)
+
+    def _create_review_if_due(self, package: Package, digest: str) -> None:
+        """Create a durable review for each due pending occurrence lacking one.
+
+        Idempotent: a review already recorded for ``(occurrence_id, revision_digest)``
+        is never duplicated, so scheduler re-runs and restarts add nothing.
+        """
+        due = self._schedule.list_due(self._clock.now())
+        if not due:
+            return
+        manifest = self._load_manifest(package)
+        caption = manifest.get("caption")
+        now = self._clock.now()
+        for occurrence in due:
+            if (
+                self._reviews.get_by_occurrence_revision(occurrence.id, digest)
+                is not None
+            ):
+                continue
+            review = self._reviews.create(
+                YayinIncelemesi(
+                    id=0,
+                    occurrence_id=occurrence.id,
+                    package_folder=package.folder_name,
+                    revision_digest=digest,
+                    caption=caption,
+                    status="pending",
+                    created_at=now,
+                )
+            )
+            self._audit.append(
+                AuditEvent(
+                    action="review.created",
+                    actor="worker",
+                    occurred_at=now,
+                    details={
+                        "review_id": review.id,
+                        "occurrence_id": occurrence.id,
+                        "package": package.folder_name,
+                        "revision_digest": digest,
+                    },
+                )
+            )
+
+    def list_pending_reviews(self) -> list[YayinIncelemesi]:
+        return self._reviews.list_pending()
 
     def list_audit(self, limit: int = 50) -> list[AuditEvent]:
         return self._audit.list_recent(limit=limit)
@@ -1496,6 +1566,7 @@ class DojoPublishing:
         renderer.render(build, work, out)
         manifest["render_revision"] = digest
         self._write_manifest(package, manifest)
+        self._create_review_if_due(package, digest)
         now = self._clock.now()
         self._audit.append(
             AuditEvent(

@@ -15,6 +15,7 @@ from dojo.model import (
     ProcessedMedia,
     ReelBuild,
     Upload,
+    YayinIncelemesi,
     YayinZamani,
 )
 
@@ -127,6 +128,15 @@ class ScheduleStore(Protocol):
     def has_pending_manual(self) -> bool: ...
     def list_due(self, now: datetime) -> list[YayinZamani]: ...
     def list_all(self) -> list[YayinZamani]: ...
+
+
+@runtime_checkable
+class ReviewStore(Protocol):
+    def create(self, review: YayinIncelemesi) -> YayinIncelemesi: ...
+    def get_by_occurrence_revision(
+        self, occurrence_id: int, revision_digest: str
+    ) -> YayinIncelemesi | None: ...
+    def list_pending(self) -> list[YayinIncelemesi]: ...
 
 
 @runtime_checkable

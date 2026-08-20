@@ -35,6 +35,10 @@ publish immediately without a new folder or review.
 6. **No new routes in #14.** Client-facing review display is #25; resolution is #15;
    reminders/notifications are #16. The worker already calls `evaluate_due_work` each tick,
    so no worker change is required beyond the facade.
+7. **Render-job dedup is out of scope.** If a render job is queued but not yet processed,
+   a re-run may enqueue another render job; review idempotency (AC1) still holds because
+   the durable key prevents duplicate reviews. This mirrors the existing
+   `render_preview` behaviour.
 
 ## Domain model (`dojo/model.py`)
 
@@ -55,16 +59,17 @@ class YayinIncelemesi:
 New `ReviewStore(Protocol)`:
 
 - `create(review: YayinIncelemesi) -> YayinIncelemesi`
-- `get_by_occurrence(occurrence_id: int) -> YayinIncelemesi | None`
-- `list_pending() -> list[YayinIncelemesi]`
+- `get_by_occurrence_revision(occurrence_id: int, revision_digest: str) -> YayinIncelemesi | None`
+  — the idempotency check keyed on `(occurrence_id, revision_digest)`.
+- `list_pending() -> list[YayinIncelemesi]` — pending reviews for tests and later #15/#25.
 
 Implemented by `InMemoryStore` (test seam) and `PostgresStore` (`dojo/adapters/db.py`).
 
 ## Facade (`dojo/publishing.py`)
 
-- `_create_review_if_due(package, digest) -> YayinIncelemesi | None` — find a due,
-  `pending` occurrence; if no review exists for `(occurrence_id, digest)`, create it with
-  the manifest caption snapshot and audit `review.created`. Idempotent otherwise.
+- `_create_review_if_due(package, digest) -> None` — find due, `pending` occurrences; for
+  any without a review for `(occurrence_id, digest)`, create one with the manifest caption
+  snapshot and audit `review.created`. Idempotent otherwise.
 - `_render_job` — after writing `render_revision = digest`, call `_create_review_if_due`.
 - `evaluate_due_work()` — after `ensure_schedule_upto()`, for each due `pending`
   occurrence: non-empty package → enqueue render if stale, else call

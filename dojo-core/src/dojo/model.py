@@ -324,3 +324,14 @@ class YayinZamani:
     status: str
     created_at: datetime
     resolved_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class YayinIncelemesi:
+    id: int
+    occurrence_id: int
+    package_folder: str
+    revision_digest: str
+    caption: str | None
+    status: str
+    created_at: datetime

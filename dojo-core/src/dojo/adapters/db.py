@@ -9,6 +9,8 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     String,
+    Text,
+    UniqueConstraint,
     create_engine,
     delete,
     func,
@@ -30,6 +32,7 @@ from dojo.model import (
     Package,
     PairingCode,
     Upload,
+    YayinIncelemesi,
     YayinZamani,
 )
 
@@ -168,6 +171,24 @@ class YayinZamaniRow(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class YayinIncelemesiRow(Base):
+    __tablename__ = "yayin_incelemesi"
+    __table_args__ = (
+        UniqueConstraint(
+            "occurrence_id", "revision_digest", name="uq_yayin_incelemesi_occ_rev"
+        ),
+        Index("ix_yayin_incelemesi_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    occurrence_id: Mapped[int] = mapped_column(nullable=False)
+    package_folder: Mapped[str] = mapped_column(Text, nullable=False)
+    revision_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class PostgresStore:
     def __init__(self, url: str) -> None:
         self._engine = create_engine(url)
@@ -187,10 +208,14 @@ class PostgresStore:
     def create(self, obj: Job) -> Job: ...
     @overload
     def create(self, obj: YayinZamani) -> YayinZamani: ...
+    @overload
+    def create(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
     def create(
-        self, obj: Package | Upload | Job | YayinZamani
-    ) -> Package | Upload | Job | YayinZamani:
+        self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
+    ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
+        if isinstance(obj, YayinIncelemesi):
+            return self._create_review(obj)
         if isinstance(obj, YayinZamani):
             return self._create_occurrence(obj)
         if isinstance(obj, Upload):
@@ -717,6 +742,56 @@ class PostgresStore:
             status=row.status,
             created_at=row.created_at,
             resolved_at=row.resolved_at,
+        )
+
+    def _create_review(self, review: YayinIncelemesi) -> YayinIncelemesi:
+        with self._session() as session:
+            row = YayinIncelemesiRow(
+                occurrence_id=review.occurrence_id,
+                package_folder=review.package_folder,
+                revision_digest=review.revision_digest,
+                caption=review.caption,
+                status=review.status,
+                created_at=review.created_at,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return self._review_from_row(row)
+
+    def get_by_occurrence_revision(
+        self, occurrence_id: int, revision_digest: str
+    ) -> YayinIncelemesi | None:
+        with self._session() as session:
+            row = session.scalar(
+                select(YayinIncelemesiRow)
+                .where(
+                    YayinIncelemesiRow.occurrence_id == occurrence_id,
+                    YayinIncelemesiRow.revision_digest == revision_digest,
+                )
+                .limit(1)
+            )
+            return self._review_from_row(row) if row is not None else None
+
+    def list_pending(self) -> list[YayinIncelemesi]:
+        with self._session() as session:
+            rows = session.scalars(
+                select(YayinIncelemesiRow)
+                .where(YayinIncelemesiRow.status == "pending")
+                .order_by(YayinIncelemesiRow.id)
+            ).all()
+            return [self._review_from_row(r) for r in rows]
+
+    @staticmethod
+    def _review_from_row(row: YayinIncelemesiRow) -> YayinIncelemesi:
+        return YayinIncelemesi(
+            id=row.id,
+            occurrence_id=row.occurrence_id,
+            package_folder=row.package_folder,
+            revision_digest=row.revision_digest,
+            caption=row.caption,
+            status=row.status,
+            created_at=row.created_at,
         )
 
     @staticmethod

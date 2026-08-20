@@ -72,6 +72,7 @@ from dojo.model import (
     Upload,
     UploadLimits,
     UploadStatus,
+    YayinIncelemesi,
     YayinZamani,
 )
 from dojo.pairing import DojoPairing
@@ -149,6 +150,7 @@ __all__ = [
     "UploadNotReceiving",
     "UploadStatus",
     "UploadTooLarge",
+    "YayinIncelemesi",
     "YayinZamani",
     "PlanInvalid",
     "ManualPublishConflict",

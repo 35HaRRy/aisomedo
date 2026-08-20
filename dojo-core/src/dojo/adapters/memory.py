@@ -13,6 +13,7 @@ from dojo.model import (
     Package,
     PairingCode,
     Upload,
+    YayinIncelemesi,
     YayinZamani,
 )
 
@@ -39,6 +40,8 @@ class InMemoryStore:
         self._next_job_id = 1
         self._occurrences: list[YayinZamani] = []
         self._next_occ_id = 1
+        self._reviews: list[YayinIncelemesi] = []
+        self._next_review_id = 1
 
     @overload
     def create(self, obj: Package) -> Package: ...
@@ -48,10 +51,17 @@ class InMemoryStore:
     def create(self, obj: Job) -> Job: ...
     @overload
     def create(self, obj: YayinZamani) -> YayinZamani: ...
+    @overload
+    def create(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
     def create(
-        self, obj: Package | Upload | Job | YayinZamani
-    ) -> Package | Upload | Job | YayinZamani:
+        self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
+    ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
+        if isinstance(obj, YayinIncelemesi):
+            created_review = replace(obj, id=self._next_review_id)
+            self._next_review_id += 1
+            self._reviews.append(created_review)
+            return created_review
         if isinstance(obj, YayinZamani):
             created_occ = replace(obj, id=self._next_occ_id)
             self._next_occ_id += 1
@@ -278,3 +288,19 @@ class InMemoryStore:
 
     def list_all(self) -> list[YayinZamani]:
         return list(self._occurrences)
+
+    def get_by_occurrence_revision(
+        self, occurrence_id: int, revision_digest: str
+    ) -> YayinIncelemesi | None:
+        return next(
+            (
+                r
+                for r in self._reviews
+                if r.occurrence_id == occurrence_id
+                and r.revision_digest == revision_digest
+            ),
+            None,
+        )
+
+    def list_pending(self) -> list[YayinIncelemesi]:
+        return [r for r in self._reviews if r.status == "pending"]

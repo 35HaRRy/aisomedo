@@ -6,7 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from dojo.adapters.db import Base, PostgresStore
-from dojo.model import AuditEvent, Package
+from dojo.model import AuditEvent, Package, YayinIncelemesi, YayinZamani
 from dojo.testing import FIXED_AT
 from sqlalchemy import inspect
 
@@ -76,3 +76,49 @@ def test_alembic_upgrade_head_creates_schema(pg_store: PostgresStore, tmp_path: 
             "uploads", "jobs", "settings"} <= set(inspector.get_table_names())
     package_indexes = {i["name"] for i in inspector.get_indexes("packages")}
     assert "ix_packages_status_active" in package_indexes
+
+
+def _review(
+    pg_store: PostgresStore, occurrence_id: int, digest: str, status: str = "pending"
+) -> YayinIncelemesi:
+    return pg_store.create(
+        YayinIncelemesi(
+            id=0,
+            occurrence_id=occurrence_id,
+            package_folder="06-08-2026 14-30",
+            revision_digest=digest,
+            caption=None,
+            status=status,
+            created_at=FIXED_AT,
+        )
+    )
+
+
+def test_review_create_get_by_occurrence_and_pending(pg_store: PostgresStore) -> None:
+    occ = pg_store.create(
+        YayinZamani(id=0, kind="regular", due_at=FIXED_AT, status="pending", created_at=FIXED_AT)
+    )
+    review = _review(pg_store, occ.id, "digest-a")
+
+    assert review.id > 0
+    assert pg_store.get_by_occurrence_revision(occ.id, "digest-a") == review
+    assert pg_store.list_pending() == [review]
+
+
+def test_review_unique_occurrence_revision(pg_store: PostgresStore) -> None:
+    occ = pg_store.create(
+        YayinZamani(id=0, kind="regular", due_at=FIXED_AT, status="pending", created_at=FIXED_AT)
+    )
+    _review(pg_store, occ.id, "digest-a")
+    with pytest.raises(Exception):  # sqlalchemy IntegrityError on unique constraint
+        _review(pg_store, occ.id, "digest-a")
+
+
+def test_review_different_revision_allowed(pg_store: PostgresStore) -> None:
+    occ = pg_store.create(
+        YayinZamani(id=0, kind="regular", due_at=FIXED_AT, status="pending", created_at=FIXED_AT)
+    )
+    _review(pg_store, occ.id, "digest-a")
+    _review(pg_store, occ.id, "digest-b")
+    assert pg_store.list_pending()[0].occurrence_id == occ.id
+    assert len(pg_store.list_pending()) == 2
