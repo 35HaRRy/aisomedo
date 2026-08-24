@@ -164,7 +164,7 @@ registration, written to audit details, or logged.
 
 ## Persistence
 
-Migration `0011_pending_review_notifications` adds:
+Migration `0011_pending_review_notify` adds:
 
 - `yayin_incelemesi.last_reminded_at`, nullable timezone-aware timestamp;
 - `push_registrations.client_id`, primary key and foreign key to `clients.id`;

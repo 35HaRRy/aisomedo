@@ -25,7 +25,7 @@
 - Create: `dojo-core/src/dojo/exceptions.py` — add `ReminderPolicyInvalid`, `PushTokenInvalid` if needed
 - Modify: `dojo-core/src/dojo/adapters/memory.py` — implement new store methods + timestamp
 - Modify: `dojo-core/src/dojo/adapters/db.py` — add `PushRegistrationRow`, `last_reminded_at` column, store methods
-- Create: `dojo-core/migrations/versions/0011_pending_review_notifications.py`
+- Create: `dojo-core/migrations/versions/0011_pending_review_notify.py`
 - Modify: `dojo-core/tests/conftest.py` — truncate `push_registrations`
 
 **Interfaces:**
@@ -57,7 +57,7 @@ class ReminderPolicy:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add dojo-core/src/dojo/model.py dojo-core/src/dojo/ports.py dojo-core/src/dojo/adapters/memory.py dojo-core/src/dojo/adapters/db.py dojo-core/migrations/versions/0011_pending_review_notifications.py
+git add dojo-core/src/dojo/model.py dojo-core/src/dojo/ports.py dojo-core/src/dojo/adapters/memory.py dojo-core/src/dojo/adapters/db.py dojo-core/migrations/versions/0011_pending_review_notify.py
 git commit -m "feat(core): add reminder policy, push registration, and cadence persistence"
 ```
 
