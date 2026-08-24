@@ -10,6 +10,8 @@ from dojo.model import (
     ConsentAcceptance,
     ConsentPolicy,
     Job,
+    MetaCandidate,
+    MetaConnectionStatus,
     Package,
     PairingCode,
     PushRegistration,
@@ -45,6 +47,10 @@ class InMemoryStore:
         self._next_review_id = 1
         self._push_regs: dict[int, PushRegistration] = {}
         self._push_by_token: dict[str, int] = {}
+        self._meta_conn: MetaConnectionStatus | None = None
+        self._meta_enc_token: str | None = None
+        self._meta_expires_at: datetime | None = None
+        self._meta_attempts: dict[str, dict] = {}
 
     @overload
     def create(self, obj: Package) -> Package: ...
@@ -402,3 +408,118 @@ class InMemoryStore:
                 continue
             active.append(reg)
         return active
+
+    # Meta connection store
+    def get_meta_status(self) -> MetaConnectionStatus | None:
+        return self._meta_conn
+
+    def upsert_active(
+        self,
+        *,
+        ig_user_id: str,
+        ig_username: str,
+        page_id: str,
+        page_name: str,
+        encrypted_token: str,
+        token_expires_at: datetime,
+        health: str,
+        last_checked_at: datetime | None,
+        last_refreshed_at: datetime | None,
+        last_error: str | None,
+    ) -> MetaConnectionStatus:
+        self._meta_enc_token = encrypted_token
+        self._meta_expires_at = token_expires_at
+        self._meta_conn = MetaConnectionStatus(
+            health=health,
+            ig_user_id=ig_user_id,
+            ig_username=ig_username,
+            page_id=page_id,
+            page_name=page_name,
+            expires_at=token_expires_at,
+            last_checked_at=last_checked_at,
+            last_refreshed_at=last_refreshed_at,
+            last_error=last_error,
+        )
+        return self._meta_conn
+
+    def get_raw_active(self) -> tuple[str, datetime] | None:
+        if self._meta_enc_token and self._meta_expires_at:
+            return self._meta_enc_token, self._meta_expires_at
+        return None
+
+    def update_health(
+        self, health: str, last_checked_at: datetime | None, last_error: str | None
+    ) -> MetaConnectionStatus | None:
+        if self._meta_conn is None:
+            return None
+        self._meta_conn = MetaConnectionStatus(
+            health=health,
+            ig_user_id=self._meta_conn.ig_user_id,
+            ig_username=self._meta_conn.ig_username,
+            page_id=self._meta_conn.page_id,
+            page_name=self._meta_conn.page_name,
+            expires_at=self._meta_conn.expires_at,
+            last_checked_at=last_checked_at,
+            last_refreshed_at=self._meta_conn.last_refreshed_at,
+            last_error=last_error,
+        )
+        return self._meta_conn
+
+    def update_token(
+        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime
+    ) -> MetaConnectionStatus | None:
+        if self._meta_conn is None:
+            return None
+        self._meta_enc_token = encrypted_token
+        self._meta_expires_at = token_expires_at
+        self._meta_conn = MetaConnectionStatus(
+            health=self._meta_conn.health,
+            ig_user_id=self._meta_conn.ig_user_id,
+            ig_username=self._meta_conn.ig_username,
+            page_id=self._meta_conn.page_id,
+            page_name=self._meta_conn.page_name,
+            expires_at=token_expires_at,
+            last_checked_at=self._meta_conn.last_checked_at,
+            last_refreshed_at=last_refreshed_at,
+            last_error=self._meta_conn.last_error,
+        )
+        return self._meta_conn
+
+    def get_meta_attempt(self, attempt_id: str) -> dict | None:
+        return self._meta_attempts.get(attempt_id)
+
+    def find_attempt_by_state_hash(self, state_hash: str) -> dict | None:
+        for rec in self._meta_attempts.values():
+            if rec.get("state_hash") == state_hash:
+                return rec
+        return None
+
+    def create_attempt(self, attempt: dict) -> dict:
+        self._meta_attempts[attempt["id"]] = attempt
+        return attempt
+
+    def mark_attempt_completed(
+        self,
+        attempt_id: str,
+        candidates: list[MetaCandidate],
+        encrypted_temp_token: str | None,
+        temp_token_expires_at: datetime | None,
+    ) -> None:
+        rec = self._meta_attempts.get(attempt_id)
+        if rec is None:
+            return
+        rec["status"] = "completed"
+        rec["candidates"] = [c.to_dict() if hasattr(c, "to_dict") else c for c in candidates]
+        rec["encrypted_temp_token"] = encrypted_temp_token
+        rec["temp_token_expires_at"] = temp_token_expires_at
+
+    def mark_attempt_failed(self, attempt_id: str, error: str) -> None:
+        rec = self._meta_attempts.get(attempt_id)
+        if rec is None:
+            return
+        rec["status"] = "failed"
+        rec["last_error"] = error
+
+    def consume_attempt(self, attempt_id: str) -> dict | None:
+        rec = self._meta_attempts.pop(attempt_id, None)
+        return rec

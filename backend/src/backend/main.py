@@ -4,11 +4,12 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup
+from dojo import DojoActivity, DojoMetaConnection, DojoPairing, DojoPublishing, DojoSetup
 from fastapi import Depends, FastAPI
 
 from backend.deps import (
     build_activity,
+    build_meta,
     build_pairing,
     build_publishing,
     build_setup,
@@ -17,6 +18,7 @@ from backend.deps import (
 from backend.routes import activity as activity_router
 from backend.routes import health, packages
 from backend.routes import media as media_router
+from backend.routes import meta as meta_router
 from backend.routes import pairing as pairing_router
 from backend.routes import settings as settings_router
 from backend.routes import setup as setup_router
@@ -33,6 +35,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         app.state.activity = build_activity()
     if not hasattr(app.state, "setup"):
         app.state.setup = build_setup()
+    if not hasattr(app.state, "meta"):
+        app.state.meta = build_meta()
     yield
 
 
@@ -41,6 +45,7 @@ def create_app(
     pairing: DojoPairing | None = None,
     activity: DojoActivity | None = None,
     setup: DojoSetup | None = None,
+    meta: DojoMetaConnection | None = None,
     cookie_secure: bool | None = None,
 ) -> FastAPI:
     app = FastAPI(
@@ -59,6 +64,8 @@ def create_app(
         app.state.activity = activity
     if setup is not None:
         app.state.setup = setup
+    if meta is not None:
+        app.state.meta = meta
     if cookie_secure is None:
         cookie_secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
     app.state.cookie_secure = cookie_secure
@@ -70,6 +77,7 @@ def create_app(
     app.include_router(setup_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(media_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(settings_router.router, dependencies=[Depends(get_current_client)])
+    app.include_router(meta_router.router)
     return app
 
 

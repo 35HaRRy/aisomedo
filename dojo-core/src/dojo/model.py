@@ -379,3 +379,69 @@ class NotificationResult:
 
 REVIEW_REQUIRED_TITLE = "Yayın İncelemesi Bekliyor"
 REVIEW_REQUIRED_BODY = "Paketiniz incelemeyi bekliyor. Lütfen onaylayın, atlayın veya yeniden planlayın."
+
+
+META_HEALTH_NOT_CONNECTED = "not_connected"
+META_HEALTH_HEALTHY = "healthy"
+META_HEALTH_REFRESH_DUE = "refresh_due"
+META_HEALTH_RECONNECT_REQUIRED = "reconnect_required"
+
+
+@dataclass(frozen=True)
+class MetaCandidate:
+    ig_user_id: str
+    ig_username: str
+    page_id: str
+    page_name: str
+
+    def to_dict(self) -> dict:
+        return {
+            "ig_user_id": self.ig_user_id,
+            "ig_username": self.ig_username,
+            "page_id": self.page_id,
+            "page_name": self.page_name,
+        }
+
+
+@dataclass(frozen=True)
+class MetaConnectionStatus:
+    health: str
+    ig_user_id: str | None = None
+    ig_username: str | None = None
+    page_id: str | None = None
+    page_name: str | None = None
+    expires_at: datetime | None = None
+    last_checked_at: datetime | None = None
+    last_refreshed_at: datetime | None = None
+    last_error: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "health": self.health,
+            "ig_user_id": self.ig_user_id,
+            "ig_username": self.ig_username,
+            "page_id": self.page_id,
+            "page_name": self.page_name,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
+            "last_refreshed_at": self.last_refreshed_at.isoformat() if self.last_refreshed_at else None,
+            "last_error": self.last_error,
+        }
+
+
+@dataclass(frozen=True)
+class MetaOAuthAttempt:
+    id: str
+    status: str
+    candidates: list[MetaCandidate] = field(default_factory=list)
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "status": self.status,
+            "candidates": [c.to_dict() for c in self.candidates],
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+        }

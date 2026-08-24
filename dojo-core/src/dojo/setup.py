@@ -17,6 +17,7 @@ PAIRING_ITEM = "pairing"
 CONSENT_ITEM = "consent"
 LOGO_ITEM = "logo"
 CAPTION_TEMPLATE_ITEM = "caption_template"
+INSTAGRAM_ITEM = "instagram"
 
 
 class DojoSetup:
@@ -36,12 +37,14 @@ class DojoSetup:
         pairing: PairingStore,
         clock: Clock | None = None,
         settings: SettingsStore | None = None,
+        meta: object | None = None,
     ) -> None:
         self._setup = setup
         self._audit = audit
         self._pairing = pairing
         self._clock = clock or SystemClock()
         self._settings = settings or cast(SettingsStore, setup)
+        self._meta = meta
 
     def current_policy(self) -> ConsentPolicy | None:
         """Return the current (highest-version) consent policy, if any."""
@@ -118,7 +121,14 @@ class DojoSetup:
         pairing_done = any(c.revoked_at is None for c in self._pairing.list_clients())
         logo_done = self._settings.get("branding.logo_asset") is not None
         caption_done = self._settings.get("branding.caption_template") is not None
-        return [
+        instagram_done = False
+        if self._meta is not None:
+            try:
+                status = self._meta.get_status()  # type: ignore[attr-defined]
+                instagram_done = status.health in ("healthy", "refresh_due")
+            except Exception:
+                instagram_done = False
+        items = [
             SetupItem(key=PAIRING_ITEM, label="Pairing", complete=pairing_done),
             SetupItem(key=CONSENT_ITEM, label="Media consent", complete=consent_done),
             SetupItem(key=LOGO_ITEM, label="Dojo logo", complete=logo_done),
@@ -128,6 +138,9 @@ class DojoSetup:
                 complete=caption_done,
             ),
         ]
+        if self._meta is not None:
+            items.append(SetupItem(key=INSTAGRAM_ITEM, label="Instagram", complete=instagram_done))
+        return items
 
     def checklist_item(self, key: str) -> SetupItem:
         return next(item for item in self.checklist() if item.key == key)

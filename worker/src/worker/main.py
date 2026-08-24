@@ -36,7 +36,41 @@ def build_publishing() -> DojoPublishing:
     return DojoPublishing(packages=store, audit=store, media_root=media_root)
 
 
-def run_tick(publishing: DojoPublishing) -> None:
+def build_meta() -> object | None:
+    try:
+        from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
+        from dojo.meta_connection import DojoMetaConnection
+
+        url = os.environ.get("DATABASE_URL", "postgresql+psycopg://dojo:dojo@localhost:5432/dojo")
+        store = PostgresStore(url)
+        store.create_all()
+        key = os.environ.get("META_TOKEN_ENCRYPTION_KEY", "")
+        if not key:
+            raise RuntimeError("META_TOKEN_ENCRYPTION_KEY is required")
+        cipher = FernetCipher(key)
+        provider = StubMetaOAuthProvider()
+        return DojoMetaConnection(
+            store=store,
+            provider=provider,
+            cipher=cipher,
+            audit=store,
+            app_id=os.environ.get("META_APP_ID", "dev_app_id"),
+            app_secret=os.environ.get("META_APP_SECRET", "dev_secret"),
+            redirect_uri=os.environ.get("META_REDIRECT_URI", "http://localhost:8000/api/meta/oauth/callback"),
+            graph_version=os.environ.get("META_GRAPH_VERSION", "v19.0"),
+            allowed_return_uris=[u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",") if u.strip()],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("meta connection not configured: %s", exc)
+        return None
+
+
+def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
+    if meta is not None:
+        try:
+            meta.maintain()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            logger.exception("meta maintain failed")
     publishing.evaluate_due_work()
     job = publishing.claim_next_job()
     if job is not None:
@@ -51,6 +85,7 @@ def run_tick(publishing: DojoPublishing) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     publishing = build_publishing()
+    meta = build_meta()
     interval = float(os.environ.get("WORKER_INTERVAL_SECONDS", "10"))
 
     running = True
@@ -63,7 +98,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _stop)
 
     while running:
-        run_tick(publishing)
+        run_tick(publishing, meta)
         time.sleep(interval)
 
     logger.info("worker stopped")

@@ -29,6 +29,8 @@ from dojo.model import (
     ConsentAcceptance,
     ConsentPolicy,
     Job,
+    MetaCandidate,
+    MetaConnectionStatus,
     Package,
     PairingCode,
     PushRegistration,
@@ -201,6 +203,38 @@ class PushRegistrationRow(Base):
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), primary_key=True)
     token: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MetaConnectionRow(Base):
+    __tablename__ = "meta_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ig_user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    ig_username: Mapped[str] = mapped_column(Text, nullable=False)
+    page_id: Mapped[str] = mapped_column(Text, nullable=False)
+    page_name: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_token: Mapped[str] = mapped_column(Text, nullable=False)
+    token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    health: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MetaOAuthAttemptRow(Base):
+    __tablename__ = "meta_oauth_attempts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    initiated_by_client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False)
+    return_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    encrypted_temp_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    temp_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PostgresStore:
@@ -981,6 +1015,237 @@ class PostgresStore:
                     continue
                 result.append(PushRegistration(client_id=r.client_id, token=r.token, updated_at=r.updated_at))
             return result
+
+    # Meta connection store
+    def get_meta_status(self) -> MetaConnectionStatus | None:
+        with self._session() as session:
+            row = session.get(MetaConnectionRow, 1)
+            if row is None:
+                return None
+            return MetaConnectionStatus(
+                health=row.health,
+                ig_user_id=row.ig_user_id,
+                ig_username=row.ig_username,
+                page_id=row.page_id,
+                page_name=row.page_name,
+                expires_at=row.token_expires_at,
+                last_checked_at=row.last_checked_at,
+                last_refreshed_at=row.last_refreshed_at,
+                last_error=row.last_error,
+            )
+
+    def upsert_active(
+        self,
+        *,
+        ig_user_id: str,
+        ig_username: str,
+        page_id: str,
+        page_name: str,
+        encrypted_token: str,
+        token_expires_at: datetime,
+        health: str,
+        last_checked_at: datetime | None,
+        last_refreshed_at: datetime | None,
+        last_error: str | None,
+    ) -> MetaConnectionStatus:
+        with self._session() as session:
+            row = session.get(MetaConnectionRow, 1)
+            if row is None:
+                row = MetaConnectionRow(
+                    id=1,
+                    ig_user_id=ig_user_id,
+                    ig_username=ig_username,
+                    page_id=page_id,
+                    page_name=page_name,
+                    encrypted_token=encrypted_token,
+                    token_expires_at=token_expires_at,
+                    health=health,
+                    last_checked_at=last_checked_at,
+                    last_refreshed_at=last_refreshed_at,
+                    last_error=last_error,
+                )
+                session.add(row)
+            else:
+                row.ig_user_id = ig_user_id
+                row.ig_username = ig_username
+                row.page_id = page_id
+                row.page_name = page_name
+                row.encrypted_token = encrypted_token
+                row.token_expires_at = token_expires_at
+                row.health = health
+                row.last_checked_at = last_checked_at
+                row.last_refreshed_at = last_refreshed_at
+                row.last_error = last_error
+            session.commit()
+            return MetaConnectionStatus(
+                health=row.health,
+                ig_user_id=row.ig_user_id,
+                ig_username=row.ig_username,
+                page_id=row.page_id,
+                page_name=row.page_name,
+                expires_at=row.token_expires_at,
+                last_checked_at=row.last_checked_at,
+                last_refreshed_at=row.last_refreshed_at,
+                last_error=row.last_error,
+            )
+
+    def get_raw_active(self) -> tuple[str, datetime] | None:
+        with self._session() as session:
+            row = session.get(MetaConnectionRow, 1)
+            if row is None:
+                return None
+            return row.encrypted_token, row.token_expires_at
+
+    def update_health(
+        self, health: str, last_checked_at: datetime | None, last_error: str | None
+    ) -> MetaConnectionStatus | None:
+        with self._session() as session:
+            row = session.get(MetaConnectionRow, 1)
+            if row is None:
+                return None
+            row.health = health
+            row.last_checked_at = last_checked_at
+            row.last_error = last_error
+            session.commit()
+            return MetaConnectionStatus(
+                health=row.health,
+                ig_user_id=row.ig_user_id,
+                ig_username=row.ig_username,
+                page_id=row.page_id,
+                page_name=row.page_name,
+                expires_at=row.token_expires_at,
+                last_checked_at=row.last_checked_at,
+                last_refreshed_at=row.last_refreshed_at,
+                last_error=row.last_error,
+            )
+
+    def update_token(
+        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime
+    ) -> MetaConnectionStatus | None:
+        with self._session() as session:
+            row = session.get(MetaConnectionRow, 1)
+            if row is None:
+                return None
+            row.encrypted_token = encrypted_token
+            row.token_expires_at = token_expires_at
+            row.last_refreshed_at = last_refreshed_at
+            session.commit()
+            return MetaConnectionStatus(
+                health=row.health,
+                ig_user_id=row.ig_user_id,
+                ig_username=row.ig_username,
+                page_id=row.page_id,
+                page_name=row.page_name,
+                expires_at=row.token_expires_at,
+                last_checked_at=row.last_checked_at,
+                last_refreshed_at=row.last_refreshed_at,
+                last_error=row.last_error,
+            )
+
+    def get_meta_attempt(self, attempt_id: str) -> dict | None:
+        with self._session() as session:
+            row = session.get(MetaOAuthAttemptRow, attempt_id)
+            if row is None:
+                return None
+            return {
+                "id": row.id,
+                "state_hash": row.state_hash,
+                "initiated_by_client_id": row.initiated_by_client_id,
+                "return_uri": row.return_uri,
+                "status": row.status,
+                "created_at": row.created_at,
+                "expires_at": row.expires_at,
+                "candidates": row.candidates,
+                "encrypted_temp_token": row.encrypted_temp_token,
+                "temp_token_expires_at": row.temp_token_expires_at,
+                "last_error": row.last_error,
+            }
+
+    def find_attempt_by_state_hash(self, state_hash: str) -> dict | None:
+        with self._session() as session:
+            row = session.scalar(select(MetaOAuthAttemptRow).where(MetaOAuthAttemptRow.state_hash == state_hash))
+            if row is None:
+                return None
+            return {
+                "id": row.id,
+                "state_hash": row.state_hash,
+                "initiated_by_client_id": row.initiated_by_client_id,
+                "return_uri": row.return_uri,
+                "status": row.status,
+                "created_at": row.created_at,
+                "expires_at": row.expires_at,
+                "candidates": row.candidates,
+                "encrypted_temp_token": row.encrypted_temp_token,
+                "temp_token_expires_at": row.temp_token_expires_at,
+                "last_error": row.last_error,
+            }
+
+    def create_attempt(self, attempt: dict) -> dict:
+        with self._session() as session:
+            row = MetaOAuthAttemptRow(
+                id=attempt["id"],
+                state_hash=attempt["state_hash"],
+                initiated_by_client_id=attempt["initiated_by_client_id"],
+                return_uri=attempt.get("return_uri"),
+                status=attempt["status"],
+                created_at=attempt["created_at"],
+                expires_at=attempt["expires_at"],
+                candidates=attempt.get("candidates"),
+                encrypted_temp_token=attempt.get("encrypted_temp_token"),
+                temp_token_expires_at=attempt.get("temp_token_expires_at"),
+                last_error=attempt.get("last_error"),
+            )
+            session.add(row)
+            session.commit()
+            return attempt
+
+    def mark_attempt_completed(
+        self,
+        attempt_id: str,
+        candidates: list[MetaCandidate],
+        encrypted_temp_token: str | None,
+        temp_token_expires_at: datetime | None,
+    ) -> None:
+        with self._session() as session:
+            row = session.get(MetaOAuthAttemptRow, attempt_id)
+            if row is None:
+                return
+            row.status = "completed"
+            row.candidates = [c.to_dict() for c in candidates]
+            row.encrypted_temp_token = encrypted_temp_token
+            row.temp_token_expires_at = temp_token_expires_at
+            session.commit()
+
+    def mark_attempt_failed(self, attempt_id: str, error: str) -> None:
+        with self._session() as session:
+            row = session.get(MetaOAuthAttemptRow, attempt_id)
+            if row is None:
+                return
+            row.status = "failed"
+            row.last_error = error
+            session.commit()
+
+    def consume_attempt(self, attempt_id: str) -> dict | None:
+        with self._session() as session:
+            row = session.get(MetaOAuthAttemptRow, attempt_id)
+            if row is None:
+                return None
+            data = {
+                "id": row.id,
+                "state_hash": row.state_hash,
+                "initiated_by_client_id": row.initiated_by_client_id,
+                "return_uri": row.return_uri,
+                "status": row.status,
+                "created_at": row.created_at,
+                "expires_at": row.expires_at,
+                "candidates": row.candidates,
+                "encrypted_temp_token": row.encrypted_temp_token,
+                "temp_token_expires_at": row.temp_token_expires_at,
+                "last_error": row.last_error,
+            }
+            session.delete(row)
+            session.commit()
+            return data
 
     @staticmethod
     def _upload_from_row(row: UploadRow) -> Upload:

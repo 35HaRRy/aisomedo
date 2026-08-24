@@ -158,3 +158,31 @@ class ReminderPolicyInvalid(DojoError):
 
 class PushTokenInvalid(DojoError):
     pass
+
+
+class MetaConnectionError(DojoError):
+    pass
+
+
+class MetaOAuthStateInvalid(MetaConnectionError):
+    pass
+
+
+class MetaOAuthFailed(MetaConnectionError):
+    pass
+
+
+class MetaAccountInvalid(MetaConnectionError):
+    pass
+
+
+class MetaNotConnected(MetaConnectionError):
+    pass
+
+
+class MetaReturnUriInvalid(MetaConnectionError):
+    pass
+
+
+class MetaTokenEncryptionError(MetaConnectionError):
+    pass

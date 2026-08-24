@@ -10,6 +10,9 @@ from dojo.model import (
     ConsentAcceptance,
     ConsentPolicy,
     Job,
+    MetaCandidate,
+    MetaConnectionStatus,
+    MetaOAuthAttempt,
     Notification,
     NotificationResult,
     Package,
@@ -177,3 +180,58 @@ class MediaProcessor(Protocol):
 @runtime_checkable
 class ReelRenderer(Protocol):
     def render(self, build: ReelBuild, work_dir: Path, out_path: Path) -> Path: ...
+
+
+@runtime_checkable
+class MetaConnectionStore(Protocol):
+    def get_meta_status(self) -> MetaConnectionStatus | None: ...
+    def upsert_active(
+        self,
+        *,
+        ig_user_id: str,
+        ig_username: str,
+        page_id: str,
+        page_name: str,
+        encrypted_token: str,
+        token_expires_at: datetime,
+        health: str,
+        last_checked_at: datetime | None,
+        last_refreshed_at: datetime | None,
+        last_error: str | None,
+    ) -> MetaConnectionStatus: ...
+    def get_raw_active(self) -> tuple[str, datetime] | None: ...  # (encrypted_token, expires_at)
+    def update_health(
+        self, health: str, last_checked_at: datetime | None, last_error: str | None
+    ) -> MetaConnectionStatus | None: ...
+    def update_token(
+        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime
+    ) -> MetaConnectionStatus | None: ...
+
+    def get_meta_attempt(self, attempt_id: str) -> dict | None: ...
+    def find_attempt_by_state_hash(self, state_hash: str) -> dict | None: ...
+    def create_attempt(self, attempt: dict) -> dict: ...
+    def mark_attempt_completed(
+        self,
+        attempt_id: str,
+        candidates: list[MetaCandidate],
+        encrypted_temp_token: str | None,
+        temp_token_expires_at: datetime | None,
+    ) -> None: ...
+    def mark_attempt_failed(self, attempt_id: str, error: str) -> None: ...
+    def consume_attempt(self, attempt_id: str) -> dict | None: ...
+
+
+@runtime_checkable
+class MetaOAuthProvider(Protocol):
+    def build_auth_url(self, state: str, redirect_uri: str) -> str: ...
+    def exchange_code(self, code: str, redirect_uri: str) -> tuple[str, datetime]: ...
+    def exchange_long_lived(self, short_token: str) -> tuple[str, datetime]: ...
+    def list_eligible_accounts(self, long_token: str) -> list[MetaCandidate]: ...
+    def refresh_token(self, long_token: str) -> tuple[str, datetime]: ...
+    def inspect_token(self, token: str) -> tuple[bool, datetime | None]: ...
+
+
+@runtime_checkable
+class TokenCipher(Protocol):
+    def encrypt(self, plaintext: str) -> str: ...
+    def decrypt(self, ciphertext: str) -> str: ...
