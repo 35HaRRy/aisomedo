@@ -10,9 +10,12 @@ from dojo.model import (
     ConsentAcceptance,
     ConsentPolicy,
     Job,
+    Notification,
+    NotificationResult,
     Package,
     PairingCode,
     ProcessedMedia,
+    PushRegistration,
     ReelBuild,
     Upload,
     YayinIncelemesi,
@@ -48,7 +51,9 @@ class MetaPublisher(Protocol):
 
 @runtime_checkable
 class Notifier(Protocol):
-    def notify(self, title: str, body: str) -> None: ...
+    def send(self, notification: Notification, tokens: list[str]) -> NotificationResult: ...
+
+    def notify(self, title: str, body: str) -> None: ...  # deprecated, for backward compat
 
 
 @runtime_checkable
@@ -149,6 +154,17 @@ class ReviewStore(Protocol):
         resolved_at: datetime,
         resolved_by: str | None,
     ) -> YayinIncelemesi | None: ...
+    def update_last_reminded_at(
+        self, review_id: int, at: datetime
+    ) -> YayinIncelemesi | None: ...
+
+
+@runtime_checkable
+class PushRegistrationStore(Protocol):
+    def register_token(self, client_id: int, token: str, at: datetime) -> PushRegistration: ...
+    def remove_by_client(self, client_id: int) -> None: ...
+    def remove_by_token(self, token: str) -> None: ...
+    def list_active_device_tokens(self) -> list[PushRegistration]: ...
 
 
 @runtime_checkable

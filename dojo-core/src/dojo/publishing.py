@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import uuid
 from collections.abc import Callable
@@ -28,6 +29,8 @@ from dojo.exceptions import (
     PackageCompleted,
     PackageLimitExceeded,
     PlanInvalid,
+    PushTokenInvalid,
+    ReminderPolicyInvalid,
     RenderFailed,
     RescheduleTimeInvalid,
     ReviewAlreadyHandled,
@@ -49,6 +52,8 @@ from dojo.model import (
     KEEP_SELECTED,
     KEEP_TARGET,
     PACKAGE_FOLDER_FORMAT,
+    REVIEW_REQUIRED_BODY,
+    REVIEW_REQUIRED_TITLE,
     AuditEvent,
     BrandingConfig,
     Job,
@@ -57,10 +62,13 @@ from dojo.model import (
     MontageClip,
     MontageLimits,
     MontageStatus,
+    Notification,
     Package,
     ProcessedMedia,
+    PushRegistration,
     ReelBuild,
     ReelClip,
+    ReminderPolicy,
     SchedulePlan,
     SkipResult,
     Upload,
@@ -77,6 +85,8 @@ from dojo.ports import (
     MetaPublisher,
     Notifier,
     PackageStore,
+    PairingStore,
+    PushRegistrationStore,
     ReelRenderer,
     ReviewStore,
     ScheduleStore,
@@ -91,6 +101,11 @@ STALE_TTL = timedelta(hours=24)
 
 DEFAULT_MAX_MONTAGE_SECONDS = 90.0
 DEFAULT_PHOTO_SECONDS = 3.0
+
+REMINDER_INTERVAL_KEY = "reminders.interval_minutes"
+REMINDER_START_KEY = "reminders.delivery_start"
+REMINDER_END_KEY = "reminders.delivery_end"
+REMINDER_TZ_KEY = "reminders.timezone"
 
 
 def merge_ranges(existing: list[list[int]], new_start: int, new_end: int) -> list[list[int]]:
@@ -163,6 +178,8 @@ class DojoPublishing:
         renderer: ReelRenderer | None = None,
         schedule: ScheduleStore | None = None,
         reviews: ReviewStore | None = None,
+        pairing: PairingStore | None = None,
+        push_regs: PushRegistrationStore | None = None,
     ) -> None:
         self._packages = packages
         self._audit = audit
@@ -183,6 +200,12 @@ class DojoPublishing:
         )
         self._reviews: ReviewStore = (
             reviews if reviews is not None else cast(ReviewStore, packages)
+        )
+        self._pairing: PairingStore = (
+            pairing if pairing is not None else cast(PairingStore, packages)
+        )
+        self._push_regs: PushRegistrationStore = (
+            push_regs if push_regs is not None else cast(PushRegistrationStore, packages)
         )
         self._media = media
         self._renderer = renderer
@@ -817,6 +840,177 @@ class DojoPublishing:
 
     def list_audit(self, limit: int = 50) -> list[AuditEvent]:
         return self._audit.list_recent(limit=limit)
+
+    # --- reminder policy & push registrations ---
+
+    def get_reminder_policy(self) -> ReminderPolicy:
+        interval = self._settings.get(REMINDER_INTERVAL_KEY)
+        start_raw = self._settings.get(REMINDER_START_KEY)
+        end_raw = self._settings.get(REMINDER_END_KEY)
+        tz = self._settings.get(REMINDER_TZ_KEY)
+        default = ReminderPolicy()
+        interval_minutes = int(cast(int, interval)) if interval is not None else default.interval_minutes
+        delivery_start = time.fromisoformat(str(start_raw)) if isinstance(start_raw, str) and start_raw else default.delivery_start
+        delivery_end = time.fromisoformat(str(end_raw)) if isinstance(end_raw, str) and end_raw else default.delivery_end
+        timezone = str(tz) if isinstance(tz, str) and tz else default.timezone
+        return ReminderPolicy(
+            interval_minutes=interval_minutes,
+            delivery_start=delivery_start,
+            delivery_end=delivery_end,
+            timezone=timezone,
+        )
+
+    def set_reminder_policy(
+        self, policy: ReminderPolicy, requester: str | None = None
+    ) -> ReminderPolicy:
+        if policy.interval_minutes <= 0:
+            raise ReminderPolicyInvalid("interval must be positive")
+        if policy.delivery_start == policy.delivery_end:
+            raise ReminderPolicyInvalid("delivery window start and end must differ")
+        if policy.timezone != "Europe/Istanbul":
+            raise ReminderPolicyInvalid("only Europe/Istanbul timezone is supported")
+        now = self._clock.now()
+        self._settings.set(REMINDER_INTERVAL_KEY, policy.interval_minutes, updated_at=now)
+        self._settings.set(REMINDER_START_KEY, policy.delivery_start.isoformat(), updated_at=now)
+        self._settings.set(REMINDER_END_KEY, policy.delivery_end.isoformat(), updated_at=now)
+        self._settings.set(REMINDER_TZ_KEY, policy.timezone, updated_at=now)
+        self._audit.append(
+            AuditEvent(
+                action="reminders.policy_updated",
+                actor=requester or "system",
+                occurred_at=now,
+                details={
+                    "interval_minutes": policy.interval_minutes,
+                    "delivery_start": policy.delivery_start.isoformat(),
+                    "delivery_end": policy.delivery_end.isoformat(),
+                    "timezone": policy.timezone,
+                },
+            )
+        )
+        return policy
+
+    def register_push_token(self, client_id: int, token: str) -> None:
+        cleaned = token.strip()
+        if not cleaned:
+            raise PushTokenInvalid("push token is required")
+        client = self._pairing.find_client_by_id(client_id)
+        if client is None:
+            raise PushTokenInvalid("unknown client")
+        if client.kind != "device":
+            raise PushTokenInvalid("only device clients can register push tokens")
+        if client.revoked_at is not None:
+            raise PushTokenInvalid("revoked client cannot register push token")
+        now = self._clock.now()
+        self._push_regs.register_token(client_id, cleaned, now)
+        self._audit.append(
+            AuditEvent(
+                action="push.token_registered",
+                actor=str(client_id),
+                occurred_at=now,
+                details={"client_id": client_id},
+            )
+        )
+
+    def remove_push_token(self, client_id: int) -> None:
+        now = self._clock.now()
+        self._push_regs.remove_by_client(client_id)
+        self._audit.append(
+            AuditEvent(
+                action="push.token_removed",
+                actor=str(client_id),
+                occurred_at=now,
+                details={"client_id": client_id},
+            )
+        )
+
+    @staticmethod
+    def _in_delivery_window(now_t: time, start: time, end: time) -> bool:
+        if start < end:
+            return start <= now_t < end
+        # crosses midnight
+        return now_t >= start or now_t < end
+
+    def send_due_reminders(self) -> None:
+        logger = logging.getLogger(__name__)
+        policy = self.get_reminder_policy()
+        now = self._clock.now()
+        now_local = now.astimezone(ISTANBUL)
+        if not self._in_delivery_window(now_local.time(), policy.delivery_start, policy.delivery_end):
+            return
+        pending = self._reviews.list_pending()
+        if not pending:
+            return
+        # select eligible by interval
+        eligible: list[YayinIncelemesi] = []
+        interval = timedelta(minutes=policy.interval_minutes)
+        for review in pending:
+            if review.last_reminded_at is None:
+                eligible.append(review)
+            elif now - review.last_reminded_at >= interval:
+                eligible.append(review)
+        if not eligible:
+            return
+        regs = self._push_regs.list_active_device_tokens()
+        if not regs:
+            return
+        tokens = [r.token for r in regs]
+        for review in eligible:
+            notification = Notification(
+                title=REVIEW_REQUIRED_TITLE,
+                body=REVIEW_REQUIRED_BODY,
+                data={
+                    "type": "review_required",
+                    "review_id": str(review.id),
+                    "review_version": str(review.version),
+                    "package_folder": review.package_folder,
+                },
+            )
+            try:
+                result = self._notifier.send(notification, tokens)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("reminder send failed for review %s", review.id)
+                self._audit.append(
+                    AuditEvent(
+                        action="notification.failed",
+                        actor="worker",
+                        occurred_at=now,
+                        details={"review_id": review.id, "error": str(exc)},
+                    )
+                )
+                continue
+            # handle invalid tokens
+            for tok in getattr(result, "invalid_tokens", []):
+                try:
+                    self._push_regs.remove_by_token(tok)
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to remove invalid token")
+            # audit sent
+            delivered = len(getattr(result, "delivered", []))
+            invalid = len(getattr(result, "invalid_tokens", []))
+            transient = len(getattr(result, "transient_failures", []))
+            self._audit.append(
+                AuditEvent(
+                    action="notification.sent",
+                    actor="worker",
+                    occurred_at=now,
+                    details={
+                        "review_id": review.id,
+                        "delivered": delivered,
+                        "invalid": invalid,
+                        "transient": transient,
+                    },
+                )
+            )
+            # persist timestamp after completed batch
+            try:
+                if hasattr(self._reviews, "update_last_reminded_at"):
+                    self._reviews.update_last_reminded_at(review.id, now)  # type: ignore[attr-defined]
+                else:
+                    # fallback via generic update
+                    updated = replace(review, last_reminded_at=now)
+                    self._reviews.update(updated)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to persist last_reminded_at for %s", review.id)
 
     def add_media(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
@@ -1568,8 +1762,7 @@ class DojoPublishing:
             manifest.get("render_revision") if manifest is not None else None
         )
         if (
-            current_revision is not None
-            and current_revision != review.revision_digest
+            current_revision is not None and current_revision != review.revision_digest
         ):
             raise ReviewStale(
                 f"review {review_id} is stale; content changed since it was created"

@@ -8,6 +8,8 @@ from dojo import (
     DojoPublishing,
     ManualPublishConflict,
     PlanInvalid,
+    ReminderPolicy,
+    ReminderPolicyInvalid,
     SchedulePlan,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -56,6 +58,20 @@ class OccurrenceOut(BaseModel):
     kind: str
     due_at: str
     status: str
+
+
+class ReminderPolicyIn(BaseModel):
+    interval_minutes: int
+    delivery_start: time
+    delivery_end: time
+    timezone: str = "Europe/Istanbul"
+
+
+class ReminderPolicyOut(BaseModel):
+    interval_minutes: int
+    delivery_start: str
+    delivery_end: str
+    timezone: str
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -121,4 +137,42 @@ def manual_publish(
         kind=occurrence.kind,
         due_at=occurrence.due_at.isoformat(),
         status=occurrence.status,
+    )
+
+
+@router.get("/reminders", response_model=ReminderPolicyOut)
+def get_reminders(
+    _client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> ReminderPolicyOut:
+    policy = publishing.get_reminder_policy()
+    return ReminderPolicyOut(
+        interval_minutes=policy.interval_minutes,
+        delivery_start=policy.delivery_start.isoformat(),
+        delivery_end=policy.delivery_end.isoformat(),
+        timezone=policy.timezone,
+    )
+
+
+@router.put("/reminders", response_model=ReminderPolicyOut)
+def set_reminders(
+    body: ReminderPolicyIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> ReminderPolicyOut:
+    policy = ReminderPolicy(
+        interval_minutes=body.interval_minutes,
+        delivery_start=body.delivery_start,
+        delivery_end=body.delivery_end,
+        timezone=body.timezone,
+    )
+    try:
+        updated = publishing.set_reminder_policy(policy, requester=str(client.id))
+    except ReminderPolicyInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ReminderPolicyOut(
+        interval_minutes=updated.interval_minutes,
+        delivery_start=updated.delivery_start.isoformat(),
+        delivery_end=updated.delivery_end.isoformat(),
+        timezone=updated.timezone,
     )

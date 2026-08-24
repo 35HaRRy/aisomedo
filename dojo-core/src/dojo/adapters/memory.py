@@ -12,6 +12,7 @@ from dojo.model import (
     Job,
     Package,
     PairingCode,
+    PushRegistration,
     Upload,
     YayinIncelemesi,
     YayinZamani,
@@ -42,6 +43,8 @@ class InMemoryStore:
         self._next_occ_id = 1
         self._reviews: list[YayinIncelemesi] = []
         self._next_review_id = 1
+        self._push_regs: dict[int, PushRegistration] = {}
+        self._push_by_token: dict[str, int] = {}
 
     @overload
     def create(self, obj: Package) -> Package: ...
@@ -356,3 +359,46 @@ class InMemoryStore:
                 self._reviews[i] = updated
                 return updated
         return None
+
+    def update_last_reminded_at(self, review_id: int, at: datetime) -> YayinIncelemesi | None:
+        for i, review in enumerate(self._reviews):
+            if review.id == review_id:
+                updated = replace(review, last_reminded_at=at)
+                self._reviews[i] = updated
+                return updated
+        return None
+
+    def register_token(self, client_id: int, token: str, at: datetime) -> PushRegistration:
+        # transfer if token already owned
+        owner = self._push_by_token.get(token)
+        if owner is not None and owner != client_id:
+            self._push_regs.pop(owner, None)
+        # remove old token for this client if different
+        old = self._push_regs.get(client_id)
+        if old is not None and old.token != token:
+            self._push_by_token.pop(old.token, None)
+        reg = PushRegistration(client_id=client_id, token=token, updated_at=at)
+        self._push_regs[client_id] = reg
+        self._push_by_token[token] = client_id
+        return reg
+
+    def remove_by_client(self, client_id: int) -> None:
+        reg = self._push_regs.pop(client_id, None)
+        if reg is not None:
+            self._push_by_token.pop(reg.token, None)
+
+    def remove_by_token(self, token: str) -> None:
+        owner = self._push_by_token.pop(token, None)
+        if owner is not None:
+            self._push_regs.pop(owner, None)
+
+    def list_active_device_tokens(self) -> list[PushRegistration]:
+        active: list[PushRegistration] = []
+        for reg in self._push_regs.values():
+            client = self.find_client_by_id(reg.client_id)
+            if client is None or client.revoked_at is not None:
+                continue
+            if client.kind != "device":
+                continue
+            active.append(reg)
+        return active

@@ -339,9 +339,43 @@ class YayinIncelemesi:
     resolved_at: datetime | None = None
     resolved_by: str | None = None
     oneoff_occurrence_id: int | None = None
+    last_reminded_at: datetime | None = None
 
 
 @dataclass(frozen=True)
 class SkipResult:
     review: YayinIncelemesi
     next_regular_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ReminderPolicy:
+    interval_minutes: int = 360
+    delivery_start: time = time(8, 0)
+    delivery_end: time = time(22, 0)
+    timezone: str = "Europe/Istanbul"
+
+
+@dataclass(frozen=True)
+class PushRegistration:
+    client_id: int
+    token: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class Notification:
+    title: str
+    body: str
+    data: dict[str, str]
+
+
+@dataclass(frozen=True)
+class NotificationResult:
+    delivered: list[str]
+    invalid_tokens: list[str]
+    transient_failures: list[str]
+
+
+REVIEW_REQUIRED_TITLE = "Yayın İncelemesi Bekliyor"
+REVIEW_REQUIRED_BODY = "Paketiniz incelemeyi bekliyor. Lütfen onaylayın, atlayın veya yeniden planlayın."

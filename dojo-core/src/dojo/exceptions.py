@@ -150,3 +150,11 @@ class ReviewAlreadyHandled(DojoError):
 
 class ReviewNotFound(DojoError):
     pass
+
+
+class ReminderPolicyInvalid(DojoError):
+    pass
+
+
+class PushTokenInvalid(DojoError):
+    pass

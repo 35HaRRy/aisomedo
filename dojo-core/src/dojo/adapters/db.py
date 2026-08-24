@@ -31,6 +31,7 @@ from dojo.model import (
     Job,
     Package,
     PairingCode,
+    PushRegistration,
     Upload,
     YayinIncelemesi,
     YayinZamani,
@@ -191,6 +192,15 @@ class YayinIncelemesiRow(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     oneoff_occurrence_id: Mapped[int | None] = mapped_column(nullable=True)
+    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PushRegistrationRow(Base):
+    __tablename__ = "push_registrations"
+
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), primary_key=True)
+    token: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class PostgresStore:
@@ -350,6 +360,7 @@ class PostgresStore:
                         resolved_at=review.resolved_at,
                         resolved_by=review.resolved_by,
                         oneoff_occurrence_id=review.oneoff_occurrence_id,
+                        last_reminded_at=review.last_reminded_at,
                     )
                 ),
             )
@@ -357,6 +368,23 @@ class PostgresStore:
             if result.rowcount != 1:
                 raise ValueError(f"review {review.id} not found")
             row = session.get(YayinIncelemesiRow, review.id)
+            assert row is not None
+            return self._review_from_row(row)
+
+    def update_last_reminded_at(self, review_id: int, at: datetime) -> YayinIncelemesi | None:
+        with self._session() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    update(YayinIncelemesiRow)
+                    .where(YayinIncelemesiRow.id == review_id)
+                    .values(last_reminded_at=at)
+                ),
+            )
+            session.commit()
+            if result.rowcount != 1:
+                return None
+            row = session.get(YayinIncelemesiRow, review_id)
             assert row is not None
             return self._review_from_row(row)
 
@@ -837,6 +865,7 @@ class PostgresStore:
                 resolved_at=review.resolved_at,
                 resolved_by=review.resolved_by,
                 oneoff_occurrence_id=review.oneoff_occurrence_id,
+                last_reminded_at=review.last_reminded_at,
             )
             session.add(row)
             session.commit()
@@ -913,7 +942,45 @@ class PostgresStore:
             resolved_at=row.resolved_at,
             resolved_by=row.resolved_by,
             oneoff_occurrence_id=row.oneoff_occurrence_id,
+            last_reminded_at=row.last_reminded_at,
         )
+
+    def register_token(self, client_id: int, token: str, at: datetime) -> PushRegistration:
+        with self._session() as session:
+            # remove previous owner of this token
+            session.execute(delete(PushRegistrationRow).where(PushRegistrationRow.token == token))
+            # upsert for client_id
+            existing = session.get(PushRegistrationRow, client_id)
+            if existing is not None:
+                existing.token = token
+                existing.updated_at = at
+            else:
+                session.add(PushRegistrationRow(client_id=client_id, token=token, updated_at=at))
+            session.commit()
+            row = session.get(PushRegistrationRow, client_id)
+            assert row is not None
+            return PushRegistration(client_id=row.client_id, token=row.token, updated_at=row.updated_at)
+
+    def remove_by_client(self, client_id: int) -> None:
+        with self._session() as session:
+            session.execute(delete(PushRegistrationRow).where(PushRegistrationRow.client_id == client_id))
+            session.commit()
+
+    def remove_by_token(self, token: str) -> None:
+        with self._session() as session:
+            session.execute(delete(PushRegistrationRow).where(PushRegistrationRow.token == token))
+            session.commit()
+
+    def list_active_device_tokens(self) -> list[PushRegistration]:
+        with self._session() as session:
+            rows = session.scalars(select(PushRegistrationRow)).all()
+            result: list[PushRegistration] = []
+            for r in rows:
+                client = session.get(ClientRow, r.client_id)
+                if client is None or client.revoked_at is not None or client.kind != "device":
+                    continue
+                result.append(PushRegistration(client_id=r.client_id, token=r.token, updated_at=r.updated_at))
+            return result
 
     @staticmethod
     def _upload_from_row(row: UploadRow) -> Upload:

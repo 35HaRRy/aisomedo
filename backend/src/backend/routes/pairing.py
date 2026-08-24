@@ -6,7 +6,7 @@ from datetime import datetime
 from threading import Lock
 from typing import Literal
 
-from dojo import Client, ClientNotFound, DojoPairing, PairingError
+from dojo import Client, ClientNotFound, DojoPairing, DojoPublishing, PairingError, PushTokenInvalid, ReminderPolicyInvalid
 from dojo.pairing import CODE_TTL
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -133,3 +133,33 @@ def revoke_client(
 @router.get("/me", response_model=ClientOut)
 def me(client: Client = Depends(get_current_client)) -> ClientOut:
     return ClientOut(**vars(client))
+
+
+def get_publishing(request: Request) -> DojoPublishing:
+    return request.app.state.publishing
+
+
+class PushTokenIn(BaseModel):
+    token: str
+
+
+@router.put("/me/push-token")
+def put_push_token(
+    body: PushTokenIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, bool]:
+    try:
+        publishing.register_push_token(client.id, body.token)
+    except PushTokenInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.delete("/me/push-token")
+def delete_push_token(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, bool]:
+    publishing.remove_push_token(client.id)
+    return {"ok": True}

@@ -31,9 +31,26 @@ class StubMetaPublisher:
 class StubNotifier:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
+        self.sent: list[tuple[object, list[str]]] = []
+        self.fail_next: Exception | None = None
+        self.invalid_tokens: set[str] = set()
+        self.transient_tokens: set[str] = set()
 
     def notify(self, title: str, body: str) -> None:
         self.messages.append((title, body))
+
+    def send(self, notification: object, tokens: list[str]) -> object:
+        from dojo.model import NotificationResult
+
+        if self.fail_next is not None:
+            exc = self.fail_next
+            self.fail_next = None
+            raise exc
+        self.sent.append((notification, list(tokens)))
+        delivered = [t for t in tokens if t not in self.invalid_tokens and t not in self.transient_tokens]
+        invalid = [t for t in tokens if t in self.invalid_tokens]
+        transient = [t for t in tokens if t in self.transient_tokens]
+        return NotificationResult(delivered=delivered, invalid_tokens=invalid, transient_failures=transient)
 
 
 class StubSignedUrlStore:
