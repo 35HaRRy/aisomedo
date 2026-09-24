@@ -172,6 +172,14 @@ class MetaOAuthFailed(MetaConnectionError):
     pass
 
 
+class MetaTokenInvalid(MetaOAuthFailed):
+    pass
+
+
+class MetaProviderUnavailable(MetaOAuthFailed):
+    pass
+
+
 class MetaAccountInvalid(MetaConnectionError):
     pass
 

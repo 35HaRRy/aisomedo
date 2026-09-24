@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from dojo import Client
+from dojo.exceptions import (
+    MetaAccountInvalid,
+    MetaOAuthFailed,
+    MetaOAuthStateInvalid,
+    MetaProviderUnavailable,
+    MetaReturnUriInvalid,
+    MetaTokenInvalid,
+)
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-
-from dojo import Client
-from dojo.exceptions import MetaAccountInvalid, MetaOAuthFailed, MetaOAuthStateInvalid, MetaReturnUriInvalid
 
 from backend.deps import get_current_client
 
@@ -33,6 +39,7 @@ class AttemptOut(BaseModel):
 
 class StatusOut(BaseModel):
     health: str
+    connection_type: str = "facebook_login"
     ig_user_id: str | None = None
     ig_username: str | None = None
     page_id: str | None = None
@@ -48,6 +55,29 @@ class SelectIn(BaseModel):
 
 
 router = APIRouter(prefix="/api/meta", tags=["meta"])
+
+
+@router.post("/instagram/token", response_model=StatusOut)
+def connect_instagram_token(
+    body: Any = Body(default=None),
+    client: Client = Depends(get_current_client),
+    meta: Any = Depends(get_meta),
+) -> StatusOut:
+    # Validate here so validation errors cannot echo the submitted secret as `input`.
+    token = body.get("access_token") if isinstance(body, dict) else None
+    if not isinstance(token, str) or not token.strip() or len(token) > 16384:
+        raise HTTPException(status_code=422, detail="A valid Instagram access_token is required")
+    try:
+        status = meta.connect_instagram_token(client.id, token)
+    except MetaTokenInvalid:
+        raise HTTPException(
+            status_code=422, detail="Instagram token invalid or required permissions missing"
+        ) from None
+    except MetaProviderUnavailable:
+        raise HTTPException(
+            status_code=502, detail="Instagram verification unavailable; retry later"
+        ) from None
+    return StatusOut(**status.to_dict())
 
 
 @router.post("/oauth/start", response_model=StartOut)
@@ -118,6 +148,7 @@ def select_account(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return StatusOut(
         health=status.health,
+        connection_type=status.connection_type,
         ig_user_id=status.ig_user_id,
         ig_username=status.ig_username,
         page_id=status.page_id,
@@ -137,6 +168,7 @@ def get_status(
     status = meta.get_status()  # type: ignore[attr-defined]
     return StatusOut(
         health=status.health,
+        connection_type=status.connection_type,
         ig_user_id=status.ig_user_id,
         ig_username=status.ig_username,
         page_id=status.page_id,

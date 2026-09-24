@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dojo import Client, DojoActivity, DojoMetaConnection, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
+from dojo.adapters.meta import FernetCipher, HttpInstagramTokenProvider, StubMetaOAuthProvider
 from fastapi import HTTPException, Request, Response
 
 DEFAULT_URL = "postgresql+psycopg://dojo:dojo@localhost:5434/dojo"
@@ -54,12 +54,15 @@ def build_meta() -> DojoMetaConnection:
     return DojoMetaConnection(
         store=store,
         provider=provider,
+        instagram_provider=HttpInstagramTokenProvider(
+            graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
+        ),
         cipher=cipher,
         audit=store,
         app_id=os.environ.get("META_APP_ID", "dev_app_id"),
         app_secret=os.environ.get("META_APP_SECRET", "dev_secret"),
         redirect_uri=os.environ.get("META_REDIRECT_URI", "http://localhost:8000/api/meta/oauth/callback"),
-        graph_version=os.environ.get("META_GRAPH_VERSION", "v19.0"),
+        graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
         allowed_return_uris=[u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",") if u.strip()],
     )
 

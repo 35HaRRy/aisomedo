@@ -391,8 +391,8 @@ META_HEALTH_RECONNECT_REQUIRED = "reconnect_required"
 class MetaCandidate:
     ig_user_id: str
     ig_username: str
-    page_id: str
-    page_name: str
+    page_id: str | None
+    page_name: str | None
 
     def to_dict(self) -> dict:
         return {
@@ -414,6 +414,7 @@ class MetaConnectionStatus:
     last_checked_at: datetime | None = None
     last_refreshed_at: datetime | None = None
     last_error: str | None = None
+    connection_type: str = "facebook_login"
 
     def to_dict(self) -> dict:
         return {
@@ -426,6 +427,7 @@ class MetaConnectionStatus:
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
             "last_refreshed_at": self.last_refreshed_at.isoformat() if self.last_refreshed_at else None,
             "last_error": self.last_error,
+            "connection_type": self.connection_type,
         }
 
 

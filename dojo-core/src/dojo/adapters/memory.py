@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from threading import RLock
 from typing import overload
 
 from dojo.model import (
@@ -51,6 +52,7 @@ class InMemoryStore:
         self._meta_enc_token: str | None = None
         self._meta_expires_at: datetime | None = None
         self._meta_attempts: dict[str, dict] = {}
+        self._meta_lock = RLock()
 
     @overload
     def create(self, obj: Package) -> Package: ...
@@ -411,79 +413,85 @@ class InMemoryStore:
 
     # Meta connection store
     def get_meta_status(self) -> MetaConnectionStatus | None:
-        return self._meta_conn
+        with self._meta_lock:
+            return self._meta_conn
+
+    def get_active_snapshot(self) -> tuple[MetaConnectionStatus, str] | None:
+        with self._meta_lock:
+            if self._meta_conn is None or self._meta_enc_token is None:
+                return None
+            return self._meta_conn, self._meta_enc_token
 
     def upsert_active(
         self,
         *,
         ig_user_id: str,
         ig_username: str,
-        page_id: str,
-        page_name: str,
+        page_id: str | None,
+        page_name: str | None,
         encrypted_token: str,
-        token_expires_at: datetime,
+        token_expires_at: datetime | None,
         health: str,
         last_checked_at: datetime | None,
         last_refreshed_at: datetime | None,
         last_error: str | None,
+        connection_type: str = "facebook_login",
     ) -> MetaConnectionStatus:
-        self._meta_enc_token = encrypted_token
-        self._meta_expires_at = token_expires_at
-        self._meta_conn = MetaConnectionStatus(
-            health=health,
-            ig_user_id=ig_user_id,
-            ig_username=ig_username,
-            page_id=page_id,
-            page_name=page_name,
-            expires_at=token_expires_at,
-            last_checked_at=last_checked_at,
-            last_refreshed_at=last_refreshed_at,
-            last_error=last_error,
-        )
-        return self._meta_conn
+        with self._meta_lock:
+            self._meta_enc_token = encrypted_token
+            self._meta_expires_at = token_expires_at
+            self._meta_conn = MetaConnectionStatus(
+                health=health,
+                ig_user_id=ig_user_id,
+                ig_username=ig_username,
+                page_id=page_id,
+                page_name=page_name,
+                expires_at=token_expires_at,
+                last_checked_at=last_checked_at,
+                last_refreshed_at=last_refreshed_at,
+                last_error=last_error,
+                connection_type=connection_type,
+            )
+            return self._meta_conn
 
-    def get_raw_active(self) -> tuple[str, datetime] | None:
-        if self._meta_enc_token and self._meta_expires_at:
-            return self._meta_enc_token, self._meta_expires_at
-        return None
+    def get_raw_active(self) -> tuple[str, datetime | None] | None:
+        with self._meta_lock:
+            if self._meta_enc_token:
+                return self._meta_enc_token, self._meta_expires_at
+            return None
 
     def update_health(
-        self, health: str, last_checked_at: datetime | None, last_error: str | None
+        self, health: str, last_checked_at: datetime | None, last_error: str | None,
+        *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None:
-        if self._meta_conn is None:
-            return None
-        self._meta_conn = MetaConnectionStatus(
-            health=health,
-            ig_user_id=self._meta_conn.ig_user_id,
-            ig_username=self._meta_conn.ig_username,
-            page_id=self._meta_conn.page_id,
-            page_name=self._meta_conn.page_name,
-            expires_at=self._meta_conn.expires_at,
-            last_checked_at=last_checked_at,
-            last_refreshed_at=self._meta_conn.last_refreshed_at,
-            last_error=last_error,
-        )
-        return self._meta_conn
+        with self._meta_lock:
+            if self._meta_conn is None:
+                return None
+            if (expected_encrypted_token is not None
+                    and self._meta_enc_token != expected_encrypted_token):
+                return None
+            self._meta_conn = replace(
+                self._meta_conn, health=health,
+                last_checked_at=last_checked_at, last_error=last_error,
+            )
+            return self._meta_conn
 
     def update_token(
-        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime
+        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime,
+        *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None:
-        if self._meta_conn is None:
-            return None
-        self._meta_enc_token = encrypted_token
-        self._meta_expires_at = token_expires_at
-        self._meta_conn = MetaConnectionStatus(
-            health=self._meta_conn.health,
-            ig_user_id=self._meta_conn.ig_user_id,
-            ig_username=self._meta_conn.ig_username,
-            page_id=self._meta_conn.page_id,
-            page_name=self._meta_conn.page_name,
-            expires_at=token_expires_at,
-            last_checked_at=self._meta_conn.last_checked_at,
-            last_refreshed_at=last_refreshed_at,
-            last_error=self._meta_conn.last_error,
-        )
-        return self._meta_conn
+        with self._meta_lock:
+            if self._meta_conn is None:
+                return None
+            if (expected_encrypted_token is not None
+                    and self._meta_enc_token != expected_encrypted_token):
+                return None
+            self._meta_enc_token = encrypted_token
+            self._meta_expires_at = token_expires_at
+            self._meta_conn = replace(
+                self._meta_conn, expires_at=token_expires_at, last_refreshed_at=last_refreshed_at,
+            )
+            return self._meta_conn
 
     def get_meta_attempt(self, attempt_id: str) -> dict | None:
         return self._meta_attempts.get(attempt_id)

@@ -47,6 +47,22 @@ docker compose --env-file ops/.env -f ops/docker-compose.yml up --build
 
 The database listens on `5434` and the backend on `8000`.
 
+### Backend from terminal (same `ops/.env`)
+
+```powershell
+docker compose --env-file ops/.env -f ops/docker-compose.yml up db
+powershell -File ops/run-backend.ps1
+```
+
+`ops/run-backend.ps1` loads `ops/.env` (shared with compose), then derives
+the local `DATABASE_URL` with `@localhost:5434` (compose uses `@db:5432`,
+so the URL itself can't be shared verbatim). CLI tools reuse it too:
+
+```powershell
+. ./ops/Load-Env.ps1
+uv run --project backend dojo-create-pairing-code create-code
+```
+
 ### Python workspace
 
 ```bash

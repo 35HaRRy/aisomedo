@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import logging
 from urllib.parse import urlencode
 
+import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from dojo.exceptions import MetaTokenEncryptionError
+from dojo.adapters.clock import SystemClock
+from dojo.exceptions import MetaProviderUnavailable, MetaTokenEncryptionError, MetaTokenInvalid
 from dojo.model import MetaCandidate
+from dojo.ports import Clock
+
+
+logger = logging.getLogger(__name__)
 
 
 class FernetCipher:
@@ -57,7 +64,7 @@ class StubMetaOAuthProvider:
             "scope": "instagram_basic,instagram_content_publish",
             "response_type": "code",
         }
-        return f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(params)}"
+        return f"https://www.facebook.com/v26.0/dialog/oauth?{urlencode(params)}"
 
     def exchange_code(self, code: str, redirect_uri: str) -> tuple[str, datetime]:
         self.calls.append("exchange_code")
@@ -101,7 +108,7 @@ class HttpMetaOAuthProvider:
         app_id: str,
         app_secret: str,
         redirect_uri: str,
-        graph_version: str = "v19.0",
+        graph_version: str = "v26.0",
         http_client: object | None = None,
     ) -> None:
         self._app_id = app_id
@@ -135,3 +142,85 @@ class HttpMetaOAuthProvider:
 
     def inspect_token(self, token: str) -> tuple[bool, datetime | None]:
         raise NotImplementedError
+
+
+class HttpInstagramTokenProvider:
+    """Instagram Login tokens; never use Facebook's token or account endpoints."""
+
+    def __init__(
+        self,
+        *,
+        graph_version: str = "v26.0",
+        http_client: httpx.Client | None = None,
+        clock: Clock | None = None,
+    ) -> None:
+        self._graph_version = graph_version
+        self._http = http_client
+        self._clock = clock or SystemClock()
+
+    def _get(self, path: str, token: str, params: dict[str, str] | None = None) -> dict:
+        url = f"https://graph.instagram.com/{path}"
+        merged = {**(params or {}), "access_token": token}
+        logger.warning("Instagram request path: path=%s params=%s", path, merged)
+        try:
+            if self._http is None:
+                with httpx.Client(timeout=20, follow_redirects=False) as client:
+                    response = client.get(url, params=merged)
+            else:
+                response = self._http.get(
+                    url, params=merged,
+                    timeout=20, follow_redirects=False,
+                )
+
+        except httpx.RequestError:
+            raise MetaProviderUnavailable("Instagram temporarily unavailable") from None
+        if response.status_code == 429 or response.status_code >= 500:
+            raise MetaProviderUnavailable("Instagram temporarily unavailable")
+        try:
+            data = response.json()
+        except ValueError:
+            raise MetaProviderUnavailable("Invalid Instagram response") from None
+        if not isinstance(data, dict):
+            raise MetaProviderUnavailable("Invalid Instagram response")
+        error = data.get("error")
+        if isinstance(error, dict):
+            if error.get("is_transient") or error.get("code") in (1, 2, 4, 17, 32, 613):
+                raise MetaProviderUnavailable("Instagram temporarily unavailable")
+            if error.get("code") in (10, 100, 190, 200):
+                raise MetaTokenInvalid("Instagram token is invalid or lacks required permissions")
+            raise MetaProviderUnavailable("Instagram request failed")
+        if response.status_code in (400, 401, 403):
+            raise MetaTokenInvalid("Instagram token is invalid or lacks required permissions")
+        if not response.is_success:
+            raise MetaProviderUnavailable("Instagram request failed")
+        return data
+
+    def get_account(self, token: str) -> MetaCandidate:
+        data = self._get(f"{self._graph_version}/me", token, {"fields": "user_id,username"})
+        # Meta examples include both a direct object and a single-entry data envelope.
+        if isinstance(data.get("data"), list) and len(data["data"]) == 1:
+            data = data["data"][0]
+        if not isinstance(data, dict):
+            raise MetaProviderUnavailable("Invalid Instagram account response")
+        user_id, username = data.get("user_id"), data.get("username")
+        if not isinstance(user_id, (str, int)) or not str(user_id).isdigit():
+            raise MetaProviderUnavailable("Instagram account ID missing")
+        if not isinstance(username, str) or not username.strip():
+            raise MetaProviderUnavailable("Instagram username missing")
+        # NOTE: graph.instagram.com has no /me/permissions edge (that is a
+        # graph.facebook.com endpoint). Querying it returns code 100
+        # "Unsupported get request. Object with ID 'permissions' does not exist".
+        # Scopes are returned once at OAuth code exchange time; at runtime a
+        # successful /me plus downstream 190/200 handling is the signal.
+        # Missing publish scope surfaces at publish time as MetaTokenInvalid.
+        return MetaCandidate(str(user_id), username, None, None)
+
+    def refresh_token(self, token: str) -> tuple[str, datetime]:
+        started_at = self._clock.now()
+        data = self._get("refresh_access_token", token, {"grant_type": "ig_refresh_token"})
+        refreshed, expires_in = data.get("access_token"), data.get("expires_in")
+        if not isinstance(refreshed, str) or not refreshed:
+            raise MetaProviderUnavailable("Invalid Instagram refresh response")
+        if type(expires_in) is not int or not 0 < expires_in <= 60 * 24 * 3600:
+            raise MetaProviderUnavailable("Invalid Instagram token expiry")
+        return refreshed, started_at + timedelta(seconds=expires_in)

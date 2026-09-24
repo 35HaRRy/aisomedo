@@ -167,7 +167,7 @@ No token/code/state/secret/encrypted payload ever appears in responses, logs, or
 ## Configuration
 
 Environment (backend + worker):
-- `META_APP_ID`, `META_APP_SECRET`, `META_REDIRECT_URI`, `META_GRAPH_VERSION` (default `v19.0`), `META_TOKEN_ENCRYPTION_KEY` (required, 32-byte base64url Fernet key), `META_ALLOWED_RETURN_URIS` (comma-separated allowlist, must include web origin and Android deep-link prefix), `META_OAUTH_SCOPE` (default `instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement`).
+- `META_APP_ID`, `META_APP_SECRET`, `META_REDIRECT_URI`, `META_GRAPH_VERSION` (default `v26.0`), `META_TOKEN_ENCRYPTION_KEY` (required, 32-byte base64url Fernet key), `META_ALLOWED_RETURN_URIS` (comma-separated allowlist, must include web origin and Android deep-link prefix), `META_OAUTH_SCOPE` (default `instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement`).
 
 Missing production secrets fail `DojoMetaConnection` construction fail-closed.
 

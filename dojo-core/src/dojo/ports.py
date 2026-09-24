@@ -12,7 +12,6 @@ from dojo.model import (
     Job,
     MetaCandidate,
     MetaConnectionStatus,
-    MetaOAuthAttempt,
     Notification,
     NotificationResult,
     Package,
@@ -190,21 +189,25 @@ class MetaConnectionStore(Protocol):
         *,
         ig_user_id: str,
         ig_username: str,
-        page_id: str,
-        page_name: str,
+        page_id: str | None,
+        page_name: str | None,
         encrypted_token: str,
-        token_expires_at: datetime,
+        token_expires_at: datetime | None,
         health: str,
         last_checked_at: datetime | None,
         last_refreshed_at: datetime | None,
         last_error: str | None,
+        connection_type: str = "facebook_login",
     ) -> MetaConnectionStatus: ...
-    def get_raw_active(self) -> tuple[str, datetime] | None: ...  # (encrypted_token, expires_at)
+    def get_raw_active(self) -> tuple[str, datetime | None] | None: ...
+    def get_active_snapshot(self) -> tuple[MetaConnectionStatus, str] | None: ...
     def update_health(
-        self, health: str, last_checked_at: datetime | None, last_error: str | None
+        self, health: str, last_checked_at: datetime | None, last_error: str | None,
+        *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None: ...
     def update_token(
-        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime
+        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime,
+        *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None: ...
 
     def get_meta_attempt(self, attempt_id: str) -> dict | None: ...
@@ -235,3 +238,8 @@ class MetaOAuthProvider(Protocol):
 class TokenCipher(Protocol):
     def encrypt(self, plaintext: str) -> str: ...
     def decrypt(self, ciphertext: str) -> str: ...
+
+
+class InstagramTokenProvider(Protocol):
+    def get_account(self, token: str) -> MetaCandidate: ...
+    def refresh_token(self, token: str) -> tuple[str, datetime]: ...

@@ -211,10 +211,15 @@ class MetaConnectionRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     ig_user_id: Mapped[str] = mapped_column(Text, nullable=False)
     ig_username: Mapped[str] = mapped_column(Text, nullable=False)
-    page_id: Mapped[str] = mapped_column(Text, nullable=False)
-    page_name: Mapped[str] = mapped_column(Text, nullable=False)
+    page_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     encrypted_token: Mapped[str] = mapped_column(Text, nullable=False)
-    token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    connection_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="facebook_login", server_default="facebook_login"
+    )
     health: Mapped[str] = mapped_column(String(32), nullable=False)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1018,11 +1023,15 @@ class PostgresStore:
 
     # Meta connection store
     def get_meta_status(self) -> MetaConnectionStatus | None:
+        snapshot = self.get_active_snapshot()
+        return snapshot[0] if snapshot else None
+
+    def get_active_snapshot(self) -> tuple[MetaConnectionStatus, str] | None:
         with self._session() as session:
             row = session.get(MetaConnectionRow, 1)
             if row is None:
                 return None
-            return MetaConnectionStatus(
+            status = MetaConnectionStatus(
                 health=row.health,
                 ig_user_id=row.ig_user_id,
                 ig_username=row.ig_username,
@@ -1032,21 +1041,24 @@ class PostgresStore:
                 last_checked_at=row.last_checked_at,
                 last_refreshed_at=row.last_refreshed_at,
                 last_error=row.last_error,
+                connection_type=row.connection_type,
             )
+            return status, row.encrypted_token
 
     def upsert_active(
         self,
         *,
         ig_user_id: str,
         ig_username: str,
-        page_id: str,
-        page_name: str,
+        page_id: str | None,
+        page_name: str | None,
         encrypted_token: str,
-        token_expires_at: datetime,
+        token_expires_at: datetime | None,
         health: str,
         last_checked_at: datetime | None,
         last_refreshed_at: datetime | None,
         last_error: str | None,
+        connection_type: str = "facebook_login",
     ) -> MetaConnectionStatus:
         with self._session() as session:
             row = session.get(MetaConnectionRow, 1)
@@ -1063,6 +1075,7 @@ class PostgresStore:
                     last_checked_at=last_checked_at,
                     last_refreshed_at=last_refreshed_at,
                     last_error=last_error,
+                    connection_type=connection_type,
                 )
                 session.add(row)
             else:
@@ -1076,6 +1089,7 @@ class PostgresStore:
                 row.last_checked_at = last_checked_at
                 row.last_refreshed_at = last_refreshed_at
                 row.last_error = last_error
+                row.connection_type = connection_type
             session.commit()
             return MetaConnectionStatus(
                 health=row.health,
@@ -1087,9 +1101,10 @@ class PostgresStore:
                 last_checked_at=row.last_checked_at,
                 last_refreshed_at=row.last_refreshed_at,
                 last_error=row.last_error,
+                connection_type=row.connection_type,
             )
 
-    def get_raw_active(self) -> tuple[str, datetime] | None:
+    def get_raw_active(self) -> tuple[str, datetime | None] | None:
         with self._session() as session:
             row = session.get(MetaConnectionRow, 1)
             if row is None:
@@ -1097,11 +1112,17 @@ class PostgresStore:
             return row.encrypted_token, row.token_expires_at
 
     def update_health(
-        self, health: str, last_checked_at: datetime | None, last_error: str | None
+        self, health: str, last_checked_at: datetime | None, last_error: str | None,
+        *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None:
         with self._session() as session:
-            row = session.get(MetaConnectionRow, 1)
+            row = session.get(MetaConnectionRow, 1, with_for_update=True)
             if row is None:
+                return None
+            if (
+                expected_encrypted_token is not None
+                and row.encrypted_token != expected_encrypted_token
+            ):
                 return None
             row.health = health
             row.last_checked_at = last_checked_at
@@ -1117,14 +1138,21 @@ class PostgresStore:
                 last_checked_at=row.last_checked_at,
                 last_refreshed_at=row.last_refreshed_at,
                 last_error=row.last_error,
+                connection_type=row.connection_type,
             )
 
     def update_token(
-        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime
+        self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime,
+        *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None:
         with self._session() as session:
-            row = session.get(MetaConnectionRow, 1)
+            row = session.get(MetaConnectionRow, 1, with_for_update=True)
             if row is None:
+                return None
+            if (
+                expected_encrypted_token is not None
+                and row.encrypted_token != expected_encrypted_token
+            ):
                 return None
             row.encrypted_token = encrypted_token
             row.token_expires_at = token_expires_at
@@ -1140,6 +1168,7 @@ class PostgresStore:
                 last_checked_at=row.last_checked_at,
                 last_refreshed_at=row.last_refreshed_at,
                 last_error=row.last_error,
+                connection_type=row.connection_type,
             )
 
     def get_meta_attempt(self, attempt_id: str) -> dict | None:

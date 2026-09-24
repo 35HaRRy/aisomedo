@@ -2,6 +2,95 @@
 
 Bu doküman issue #17 (Meta bağlantısı ve bağlantı sağlığı) kapsamında yapılan değişiklikleri özetler ve tamamen PowerShell ile adım adım denemeni sağlar.
 
+## Instagram Login Token'ını Elle Bağlama
+
+Meta panelinin **Instagram API / Instagram Login** bölümünden alınan uzun ömürlü
+Instagram User access token ile OAuth ekranlarını geçmeden bağlantı kurulabilir.
+Business veya Creator hesabı ve `instagram_business_basic`,
+`instagram_business_content_publish` izinleri gerekir. Bu yol Facebook Page istemez.
+Aşağıdaki eski Facebook Login kurulum adımları bu alternatif için gerekli değildir.
+
+### Önce veritabanını güncelle
+
+Backend ve worker'ı durdur; doğru veritabanı URL'sini kullanan Alembic ayarıyla,
+repo kökünde çalıştır:
+
+```powershell
+uv run --directory dojo-core alembic upgrade head
+```
+
+`dojo-core/alembic.ini` içindeki `sqlalchemy.url` hedef veritabanını göstermelidir;
+mevcut migration ortamı `DATABASE_URL` değişkenini kendiliğinden okumaz.
+`0013_instagram_login` eski bağlantıları `facebook_login` olarak korur; sayfa ve
+token bitiş tarihini nullable yapar. `create_all()` mevcut tablolara kolon eklemez.
+Ardından backend ve worker'ı yeniden başlat. İkisinde de aynı
+`META_TOKEN_ENCRYPTION_KEY` ve veritabanı kullanılmalıdır.
+
+### PowerShell ile bağlan
+
+```powershell
+# Dojo Bearer token'ı ve Instagram token'ı gizli giriş olarak sorulur:
+.\ops\connect-instagram.ps1
+
+# Uzak backend:
+.\ops\connect-instagram.ps1 -BaseUrl 'https://dojo.example.com'
+
+# Dojo Bearer token yerine geçerli, tek kullanımlık eşleştirme kodu da kullanılabilir:
+.\ops\connect-instagram.ps1 -PairingCode '<DOJO_ESLESTIRME_KODU>'
+```
+
+Eşleştirme kodu mevcut `dojo-create-pairing-code` komutuyla oluşturulur.
+Script iki kimlik bilgisini ayırır: **Dojo Bearer token**, backend'e erişimi;
+**Instagram access token**, Instagram hesabına erişimi sağlar.
+Başarılı çıktı `health`, `connection_type`, `ig_user_id`, `ig_username`, `expires_at`
+alanlarını içerir. Başarılı doğrulama mevcut tek aktif bağlantıyı değiştirir;
+doğrulama başarısızsa eski bağlantı korunur. Facebook OAuth endpoint'leri kullanılmaya devam eder.
+
+### Endpoint sözleşmesi
+
+`POST /api/meta/instagram/token` — Dojo Bearer veya oturum cookie'si zorunlu.
+
+```http
+Authorization: Bearer <DOJO_TOKEN>
+Content-Type: application/json
+
+{"access_token":"<INSTAGRAM_LOGIN_TOKEN>"}
+```
+
+Instagram ID ve kullanıcı adı `graph.instagram.com/{version}/me` üzerinden
+doğrulanır. ID elle girilmez, hesap seçimi gerekmez. `graph.instagram.com` üzerinde
+`/me/permissions` ucu yoktur (o, `graph.facebook.com` ucudur); izinler OAuth kod
+değişiminde dönen liste ile istenir, çalışırken eksik yetki yayın anında 190/200
+hatası olarak `reconnect_required` olur.
+Token yalnızca şifrelenmiş saklanır; yanıtlara veya audit detaylarına eklenmez.
+Meta isteklerinde token URL yerine Authorization başlığıyla taşınır.
+
+- **200:** bağlantı kaydedildi, `connection_type=instagram_login`, sayfa alanları `null`.
+- **401:** Dojo kimlik doğrulaması gerekli/geçersiz.
+- **422:** hatalı token girdisi, geçersiz token veya eksik Instagram izni.
+- **502:** Instagram API/ağ sorunu; daha sonra tekrar dene.
+
+### Süre ve yenileme
+
+`/me` token'ın bitiş tarihini vermez. İlk kayıtta `expires_at=null` **süresi bilinmiyor**
+anlamına gelir; süresiz token anlamına gelmez. Worker ilk uzak kontrolü kayıttan en
+az 24 saat sonra yapar; hesabı/izinleri doğrular ve `ig_refresh_token` ile yeniler.
+Yenilemenin döndürdüğü `expires_in` gerçek bitiş tarihine çevrilir. Sonrasında mevcut
+7 günlük yenileme penceresi kullanılır. Günlük doğrulama iptal edilen token'ı fark eder;
+geçici API hataları yeniden bağlantı gerektiriyor diye işaretlenmez.
+
+Bu giriş uzun ömürlü **panel token'ı** içindir. Bir saatlik OAuth token'ı önce
+Instagram'ın uzun ömürlü token exchange akışından geçirilmelidir.
+
+Mevcut Facebook OAuth bağlantısının uygulama fabrikalarında hâlâ
+`StubMetaOAuthProvider` kullandığını unutma; yeni elle giriş ve Instagram yenilemesi
+gerçek `HttpInstagramTokenProvider` kullanır. Bu değişiklik Instagram bağlantısını
+ve sağlık akışını kurar; mevcut yayın adaptörünün gerçek medya yayınlama durumunu değiştirmez.
+
+Kaynaklar:
+- [Instagram Login başlangıç](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/get-started/)
+- [Token yenileme](https://developers.facebook.com/documentation/instagram-platform/reference/refresh_access_token/)
+
 ## Ne Değişti?
 
 - **Yeni facade `DojoMetaConnection`** (`dojo-core/src/dojo/meta_connection.py`): OAuth başlatma, callback tamamlama, aday Instagram Professional hesap keşfi, açık hesap seçimi, şifrelenmiş token saklama, durum ve `maintain()` (7 gün önce yenileme, günde bir doğrulama).
@@ -112,7 +201,7 @@ Start-Process "https://developers.facebook.com/apps/<APP_ID>/roles/roles/"
 ### 5. App Mode ve Versiyon
 
 - `Settings` → `Basic` → **App Mode**: geliştirme sırasında `In Development` yeterlidir; prod'da `Live` yapmadan önce `App Review` gerekir.
-- **Graph API Version**: `META_GRAPH_VERSION` (ör. `v19.0`) → uygulamanın `Settings` → `Advanced` → `Upgrade API Version` alanından görülür. Kod varsayılanı `v19.0`, değiştirmek istersen:
+- **Graph API Version**: `META_GRAPH_VERSION` (ör. `v26.0`) → uygulamanın `Settings` → `Advanced` → `Upgrade API Version` alanından görülür. Kod varsayılanı `v26.0`, değiştirmek istersen:
 
 ```powershell
 $env:META_GRAPH_VERSION = "v20.0"
@@ -126,7 +215,7 @@ Artık elindeki değerleri PowerShell'de ayarla:
 $env:META_APP_ID = "BURAYA_APP_ID_YAZ"
 $env:META_APP_SECRET = "BURAYA_APP_SECRET_YAZ"
 $env:META_REDIRECT_URI = "http://localhost:8000/api/meta/oauth/callback"
-$env:META_GRAPH_VERSION = "v19.0"
+$env:META_GRAPH_VERSION = "v26.0"
 $env:META_ALLOWED_RETURN_URIS = "http://localhost:3000/callback,dojo://callback"
 # Şifreleme anahtarı (aşağıdaki komutla üret)
 $env:META_TOKEN_ENCRYPTION_KEY = python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -185,7 +274,7 @@ Start-Process "https://developers.facebook.com/apps/$env:META_APP_ID/settings/ba
 | `META_APP_ID` | `https://developers.facebook.com/apps/<APP_ID>/settings/basic/` → **App ID** | OAuth `client_id`, Graph çağrılarında `app_id` |
 | `META_APP_SECRET` | Aynı sayfa → **App secret** → `Show` | `exchange_code` ve `refresh_token` sunucu tarafı doğrulaması |
 | `META_REDIRECT_URI` | `Facebook Login` → `Settings` → **Valid OAuth Redirect URIs** | Meta'nın kodu geri göndereceği adres (`/api/meta/oauth/callback`) |
-| `META_GRAPH_VERSION` | `Settings` → `Advanced` → API Version | Graph isteklerinin versiyon öneki (`v19.0`) |
+| `META_GRAPH_VERSION` | `Settings` → `Advanced` → API Version | Graph isteklerinin versiyon öneki (`v26.0`) |
 | `META_ALLOWED_RETURN_URIS` | Senin belirlediğin web/Android callback allowlist | `POST /oauth/start` içindeki `return_uri` doğrulaması |
 | `META_TOKEN_ENCRYPTION_KEY` | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | Uzun ömürlü token'ı `FernetCipher` ile şifreleme |
 | `META_OAUTH_SCOPE` | `App Review` → `Permissions` listesi | `build_auth_url` içindeki `scope` parametresi |
@@ -206,7 +295,7 @@ $env:META_APP_ID = "dev_app_id"
 $env:META_APP_SECRET = "dev_secret"
 $env:META_REDIRECT_URI = "http://localhost:8000/api/meta/oauth/callback"
 $env:META_ALLOWED_RETURN_URIS = "http://localhost:3000/callback,dojo://callback"
-$env:META_GRAPH_VERSION = "v19.0"
+$env:META_GRAPH_VERSION = "v26.0"
 $env:META_TOKEN_ENCRYPTION_KEY
 ```
 
@@ -251,7 +340,7 @@ uv run --project backend dojo-create-pairing-code create-code
 
 Çıktıdaki 8 haneli `CODE` değerini not et.
 
-### 5. Tarayıcı Pairing Yap ve Token Al
+### 5. Device Pairing Yap ve Token Al
 
 ```powershell
 $CODE = "BURAYA_KODU_YAZ"
@@ -270,63 +359,64 @@ Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/status" -Head
 # health = not_connected beklenir
 ```
 
-### 7. OAuth Başlat (Allowlist İçindeki return_uri ile)
+### 7. OAuth Başlat, Tarayıcı Onayı, Aday Listele ve Hesap Seç (Tarayıcı Tabanlı Akış)
+
+#### 7.1. OAuth başlat ve `auth_url` + `attempt_id` al
+
+PowerShell'de bu isteği at — Ne için: deneme kaydı açar, Meta onay URL'si üretir:
 
 ```powershell
 $startBody = @{ return_uri = "http://localhost:3000/callback" } | ConvertTo-Json
 $start = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/meta/oauth/start" -Headers $headers -ContentType "application/json" -Body $startBody
-$start | ConvertTo-Json -Depth 5
 $authUrl = $start.auth_url
 $attemptId = $start.attempt_id
 $authUrl
 $attemptId
 ```
 
-Allowlist dışı URI deneyince 422 döner:
+`state` nedir — Ne için: callback'i başlatan client ile eşleştiren, CSRF'yi engelleyen tek kullanımlık anahtar:
+- Backend rastgele üretir, DB'ye ham halini yazmaz, sadece SHA-256 hash'ini `meta_oauth_attempts.state_hash` kolonuna yazar.
+- 10 dakika TTL'li, `initiated_by_client_id` ile senin Bearer token'ına bağlı, tek kullanımlıktır. Tekrar kullanılırsa `400 state already consumed`, süresi geçerse `400 state expired`, uydurma değerde `400 invalid state` döner.
+- `attempt_id` ile karıştırma: `attempt_id` senin sorguladığın kayıt ID'sidir (`GET /attempts/{id}`), `state` Meta'ya giden ve callback'de geri gelen gizli eşleşme değeridir.
 
-```powershell
-$badBody = @{ return_uri = "https://evil.example/cb" } | ConvertTo-Json
-try { Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/meta/oauth/start" -Headers $headers -ContentType "application/json" -Body $badBody } catch { $_.Exception.Response.StatusCode.Value__ }
-# 422 beklenir
-```
-
-`return_uri` göndermeden de başlatabilirsin:
-
-```powershell
-$start2 = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/meta/oauth/start" -Headers $headers -ContentType "application/json" -Body "{}"
-$start2.auth_url
-```
-
-### 8. Callback Çağrısı (Stub Sağlayıcı ile)
-
-`auth_url` içindeki `state` parametresini al:
+`auth_url` içeriğini kontrol et — Ne için: Meta'ya ne sorulduğunu görürsün:
 
 ```powershell
 Add-Type -AssemblyName System.Web
-$uri = [System.Uri]$authUrl
-$q = [System.Web.HttpUtility]::ParseQueryString($uri.Query)
-$state = $q["state"]
-$state
-# Stub sağlayıcıda code değeri doğrulanmaz; herhangi bir string kabul edilir
-$callbackUri = "http://localhost:8000/api/meta/oauth/callback?state=$state&code=code123"
-# Allowlist kullanıldıysa callback 302 redirect döner; redirect'i takip etme
-try {
-  $cb = Invoke-WebRequest -Uri $callbackUri -MaximumRedirection 0 -ErrorAction Stop
-} catch {
-  $_.Exception.Response.Headers.Location
-}
+$q = [System.Web.HttpUtility]::ParseQueryString(([System.Uri]$authUrl).Query)
+$q["client_id"]; $q["redirect_uri"]; $q["scope"]; $q["state"]
 ```
 
-`return_uri` yoksa JSON döner:
+Beklenen: `client_id` = `META_APP_ID`, `redirect_uri` = `http://localhost:8000/api/meta/oauth/callback` (Facebook Login > Valid OAuth Redirect URIs ile birebir aynı olmalı), `scope` içinde `instagram_content_publish` olmalı.
+
+#### 7.2. Tarayıcıda `$authUrl` adresini aç, Facebook hesabınla izinleri onayla
+
+Tarayıcıda `$authUrl` değerini adres çubuğuna yapıştır ve aç — Ne için: onay sonrası Meta tarayıcıyı `.../api/meta/oauth/callback?state=AYNI_STATE&code=XXX` adresine yönlendirir, backend `state` hash'inden denemeyi bulur ve `code` → kısa token → 60 günlük uzun token takasına başlar. `return_uri` verdiysen `http://localhost:3000/callback?attempt_id=...` adresine 302 ile yönlenirsin.
+
+#### 7.3. PowerShell ile aday hesapları listele
+
+Ne için: uzun ömürlü token alındıktan sonra hangi `ig_user_id` değerinin hikaye paylaşabileceğini görürsün, token yanıta yazılmaz:
 
 ```powershell
-$uri2 = [System.Uri]$start2.auth_url
-$q2 = [System.Web.HttpUtility]::ParseQueryString($uri2.Query)
-$state2 = $q2["state"]
-Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/oauth/callback?state=$state2&code=code123" | ConvertTo-Json
+Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/oauth/attempts/$attemptId" -Headers $headers | ConvertTo-Json -Depth 5
+# candidates içinde ig_user_id, ig_username, page_id, page_name görünür; token görünmez
 ```
 
-### 9. Aday Hesapları Listele
+#### 7.4. PowerShell ile hikaye paylaşılacak hesabı seç ve bağlantıyı aktif et
+
+Ne için: şifreli uzun ömürlü tokeni `meta_connections` tablosuna `id=1` olarak yazar, bundan sonra hikaye yayın akışı `get_valid_token()` ile bu tokeni kullanır:
+
+```powershell
+$cands = (Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/oauth/attempts/$attemptId" -Headers $headers).candidates
+$chosen = $cands[0].ig_user_id
+$selectBody = @{ ig_user_id = $chosen } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/meta/oauth/attempts/$attemptId/select" -Headers $headers -ContentType "application/json" -Body $selectBody | ConvertTo-Json -Depth 5
+# health = healthy
+Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/status" -Headers $headers | ConvertTo-Json -Depth 5
+# health = healthy, ig_username ve page_name dolu, expires_at dolu, token yok
+```
+
+### 8. Aday Hesapları Listele
 
 ```powershell
 Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/oauth/attempts/$attemptId" -Headers $headers | ConvertTo-Json -Depth 5
@@ -339,7 +429,7 @@ Başka client ile denersen 404:
 # ikinci bir client oluşturup onun token'ı ile aynı attemptId'yi sorgula -> 404
 ```
 
-### 10. Hesap Seç ve Bağlantıyı Aktif Et
+### 9. Hesap Seç ve Bağlantıyı Aktif Et
 
 ```powershell
 $cands = (Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/oauth/attempts/$attemptId" -Headers $headers).candidates
@@ -357,14 +447,14 @@ try { Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/meta/oauth/
 # 422
 ```
 
-### 11. Durumu Tekrar Gör (Bağlı)
+### 10. Durumu Tekrar Gör (Bağlı)
 
 ```powershell
 Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/status" -Headers $headers | ConvertTo-Json -Depth 5
 # health = healthy, ig_username ve page_name dolu, expires_at dolu, token yok
 ```
 
-### 12. State Tek Kullanım ve TTL Kontrolü
+### 11. State Tek Kullanım ve TTL Kontrolü
 
 Aynı state ile callback'i tekrar çağır:
 
@@ -380,7 +470,7 @@ try { Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/oauth/c
 # 400
 ```
 
-### 13. Yeniden Bağlanma Atomik Kalır (Eski Bağlantı Korunur)
+### 12. Yeniden Bağlanma Atomik Kalır (Eski Bağlantı Korunur)
 
 Yeni bir OAuth başlat, başarısız bir code ile callback yap, durumun değişmediğini doğrula:
 
@@ -395,14 +485,14 @@ Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/status" -Head
 # health hala healthy, eski bağlantı korunmuş
 ```
 
-### 14. Onboarding Kontrol Listesi (Instagram Öğesi)
+### 13. Onboarding Kontrol Listesi (Instagram Öğesi)
 
 ```powershell
 Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/setup" -Headers $headers | ConvertTo-Json -Depth 5
 # instagram öğesi complete = true görülmeli (healthy iken)
 ```
 
-### 15. Korumasız ve Yetkisiz Erişim
+### 14. Korumasız ve Yetkisiz Erişim
 
 ```powershell
 try { Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/meta/status" } catch { $_.Exception.Response.StatusCode.Value__ }
@@ -411,7 +501,7 @@ try { Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/meta/oauth/
 # 401
 ```
 
-### 16. Temizlik
+### 15. Temizlik
 
 ```powershell
 docker compose -f ops/docker-compose.yml down
