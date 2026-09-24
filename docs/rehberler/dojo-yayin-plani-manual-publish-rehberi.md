@@ -155,7 +155,7 @@ eşleştirip token alın, sonra plan ve manuel yayınlama uçlarını deneyin.
 ```powershell
 $base = "http://localhost:8000"
 
-# 1) Pairing kodu üret (CLI, host:5433 -> Docker'daki Postgres)
+# 1) Pairing kodu üret (CLI, host:5434 -> Docker'daki Postgres)
 $out = uv run --project backend dojo-create-pairing-code create-code
 $code = ($out | Where-Object { $_ -like 'Pairing code:*' }) -replace '^Pairing code:\s*',''
 $code

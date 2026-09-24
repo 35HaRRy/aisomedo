@@ -8,7 +8,7 @@ from dojo.adapters.db import PostgresStore
 from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
 from fastapi import HTTPException, Request, Response
 
-DEFAULT_URL = "postgresql+psycopg://dojo:dojo@localhost:5433/dojo"
+DEFAULT_URL = "postgresql+psycopg://dojo:dojo@localhost:5434/dojo"
 COOKIE_NAME = "dojo_session"
 SESSION_MAX_AGE = 30 * 24 * 3600
 

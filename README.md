@@ -45,7 +45,7 @@ cp ops/.env.example ops/.env        # set POSTGRES_PASSWORD
 docker compose --env-file ops/.env -f ops/docker-compose.yml up --build
 ```
 
-The database listens on `5433` and the backend on `8000`.
+The database listens on `5434` and the backend on `8000`.
 
 ### Python workspace
 

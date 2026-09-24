@@ -126,8 +126,8 @@ Beklenen: hepsi temiz.
 
 ## 4. Manuel Deneme (Uçtan Uca — CLI)
 
-CLI komutları gerçek PostgreSQL'e bağlanır (`localhost:5433`, varsayılan
-`postgresql+psycopg://dojo:dojo@localhost:5433/dojo`). DB hazırsa:
+CLI komutları gerçek PostgreSQL'e bağlanır (`localhost:5434`, varsayılan
+`postgresql+psycopg://dojo:dojo@localhost:5434/dojo`). DB hazırsa:
 
 1. **Global marka varsayılanlarını ayarlayın** (logo + intro/outro):
 ```powershell

@@ -10,7 +10,7 @@ from dojo import BrandingConfig, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.db import PostgresStore
 from dojo.model import ConsentPolicy, PairingCodeIssued
 
-DEFAULT_URL = "postgresql+psycopg://dojo:dojo@localhost:5433/dojo"
+DEFAULT_URL = "postgresql+psycopg://dojo:dojo@localhost:5434/dojo"
 
 
 def mint_code(pairing: DojoPairing) -> PairingCodeIssued:

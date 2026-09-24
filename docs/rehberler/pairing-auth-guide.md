@@ -27,8 +27,8 @@ değişiklikleri özetler ve adım adım denemeni sağlar.
 
 - `uv` (Python 3.12)
 - Docker (tam test süiti ve compose stack için)
-- Postgres: compose ile 5433 portunda yayınlanır; kod varsayılanları
-  `localhost:5433` (bkz. `ops/docker-compose.yml`).
+- Postgres: compose ile 5434 portunda yayınlanır; kod varsayılanları
+  `localhost:5434` (bkz. `ops/docker-compose.yml`).
 
 ## Adım Adım Deneme
 

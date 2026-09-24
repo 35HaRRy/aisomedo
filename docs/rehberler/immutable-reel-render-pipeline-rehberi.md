@@ -143,7 +143,7 @@ docker compose -f ops/docker-compose.yml up -d --build db backend worker
 
 $base = "http://localhost:8000"
 $env:MEDIA_ROOT = (Resolve-Path "ops/media-data").Path
-$env:DATABASE_URL = "postgresql+psycopg://dojo:$env:POSTGRES_PASSWORD@localhost:5433/dojo"
+$env:DATABASE_URL = "postgresql+psycopg://dojo:$env:POSTGRES_PASSWORD@localhost:5434/dojo"
 ```
 
 2. **Logoyu koyun** (zorunlu watermark; logo yoksa render reddedilir):

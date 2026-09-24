@@ -139,7 +139,7 @@ Backend'i geçici ayağa kaldır (ayrı terminal):
 ```powershell
 $base = "http://localhost:8000"
 
-$env:DATABASE_URL = "postgresql+psycopg://dojo:dojo@localhost:5433/dojo"
+$env:DATABASE_URL = "postgresql+psycopg://dojo:dojo@localhost:5434/dojo"
 uv run --project backend uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 

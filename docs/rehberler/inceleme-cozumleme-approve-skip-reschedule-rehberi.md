@@ -153,7 +153,7 @@ yapılır. Yığın ayağa kalktıktan sonra:
 1. **Migration'ları uygulayın** — docker-compose migration'ı otomatik çalıştırmaz; DB şeması
    `0010_review_resolution` öncesinde kalmışsa `yayin_incelemesi` tablosunda `version` sütunu
    olmaz ve aşağıdaki sorgular "column \"version\" does not exist" verir. Alembic zaten
-   docker DB'sine (`localhost:5433`, kullanıcı/şifre `dojo`) işaret ettiği için şu komut yeterli:
+   docker DB'sine (`localhost:5434`, kullanıcı/şifre `dojo`) işaret ettiği için şu komut yeterli:
 ```powershell
 uv run --project dojo-core alembic upgrade head
 ```
@@ -197,7 +197,7 @@ docker exec -i $(docker compose -f ops/docker-compose.yml ps -q db) psql -U dojo
 
 7.
 ```powershell
-$env:DATABASE_URL = "postgresql+psycopg://dojo:dojo@localhost:5433/dojo"
+$env:DATABASE_URL = "postgresql+psycopg://dojo:dojo@localhost:5434/dojo"
 uv run --project backend uvicorn backend.main:app --host 0.0.0.0 --port 8000
 $token = "<bearer yada session cookie>"
 $body = @{ review_id = 1; version = 1; new_due_at = (Get-Date).AddDays(2).ToString("o") } | ConvertTo-Json

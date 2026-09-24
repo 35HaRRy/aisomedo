@@ -107,7 +107,7 @@ bu Windows makinedeki `_pillow_heif` DLL engelinden etkilenmezsin.
 # 0) Yığını başlat (ilk seferde imajları derler; sonrasında --build gerekmez)
 docker compose -f ops/docker-compose.yml up -d --build db backend worker
 
-# 1) Pairing kodu üret (CLI, host:5433 -> Docker'daki Postgres)
+# 1) Pairing kodu üret (CLI, host:5434 -> Docker'daki Postgres)
 $out = uv run --project backend dojo-create-pairing-code create-code
 $code = ($out | Where-Object { $_ -like 'Pairing code:*' }) -replace '^Pairing code:\s*',''
 $code
