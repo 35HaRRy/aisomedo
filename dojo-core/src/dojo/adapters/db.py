@@ -353,6 +353,27 @@ class PostgresStore:
             ).all()
             return [self._package_from_row(row) for row in rows]
 
+    def get_publishing(self) -> Package | None:
+        with self._session() as session:
+            row = session.scalar(
+                select(PackageRow)
+                .where(PackageRow.status == "publishing")
+                .order_by(PackageRow.id)
+                .limit(1)
+            )
+            if row is None:
+                return None
+            return self._package_from_row(row)
+
+    def get_by_folder(self, folder_name: str) -> Package | None:
+        with self._session() as session:
+            row = session.scalar(
+                select(PackageRow).where(PackageRow.folder_name == folder_name).limit(1)
+            )
+            if row is None:
+                return None
+            return self._package_from_row(row)
+
     @staticmethod
     def _package_from_row(row: PackageRow) -> Package:
         return Package(

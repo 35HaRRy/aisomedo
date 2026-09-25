@@ -15,6 +15,8 @@ from dojo import (
     MontageTrimInvalid,
     NoActivePackage,
     PackageCompleted,
+    PublicationInProgress,
+    PublicationNotReady,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -229,15 +231,24 @@ def set_branding(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/active/publish", response_model=dict[str, str])
+@router.post("/active/publish", response_model=dict[str, object])
 def publish_active(
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
-) -> dict[str, str]:
+) -> dict[str, object]:
     try:
-        publishing.publish(requester=str(client.id))
+        result = publishing.publish(requester=str(client.id))
     except LogoNotConfigured as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PublicationInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PublicationNotReady as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(result, dict):
+        status = result.get("status")
+        if status in ("failed", "uncertain"):
+            raise HTTPException(status_code=502, detail=result.get("error") or status)
+        return {"status": "published", "publication": result}
     return {"status": "published"}
 
 

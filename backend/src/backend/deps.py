@@ -18,6 +18,30 @@ def build_publishing() -> DojoPublishing:
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
     store = PostgresStore(url)
     store.create_all()
+    kwargs: dict = {}
+    try:
+        from dojo.adapters.meta import FernetCipher, HttpMetaPublisher
+
+        key = os.environ.get("META_TOKEN_ENCRYPTION_KEY", "")
+        if key:
+            kwargs["meta"] = HttpMetaPublisher(
+                connection_store=store,
+                cipher=FernetCipher(key),
+                graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
+            )
+    except Exception:  # noqa: BLE001 - publishing works with stub in dev
+        pass
+    try:
+        from dojo.adapters.signed_urls import HmacSignedUrlStore
+
+        secret = os.environ.get("SIGNED_URL_SECRET", "")
+        if secret:
+            kwargs["signed_urls"] = HmacSignedUrlStore(
+                base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
+                secret=secret,
+            )
+    except Exception:  # noqa: BLE001
+        pass
     return DojoPublishing(
         packages=store,
         audit=store,
@@ -25,6 +49,7 @@ def build_publishing() -> DojoPublishing:
         jobs=store,
         settings=store,
         media_root=media_root,
+        **kwargs,
     )
 
 
@@ -67,11 +92,11 @@ def build_meta() -> DojoMetaConnection:
     )
 
 
-def build_setup() -> DojoSetup:
+def build_setup(meta: DojoMetaConnection | None = None) -> DojoSetup:
     url = os.environ.get("DATABASE_URL", DEFAULT_URL)
     store = PostgresStore(url)
     store.create_all()
-    return DojoSetup(setup=store, audit=store, pairing=store)
+    return DojoSetup(setup=store, audit=store, pairing=store, meta=meta)
 
 
 def get_current_client(request: Request, response: Response) -> Client:

@@ -102,6 +102,15 @@ class InMemoryStore:
     def list_completed(self) -> list[Package]:
         return [p for p in self._packages if p.status == "completed"]
 
+    def get_publishing(self) -> Package | None:
+        for package in reversed(self._packages):
+            if package.status == "publishing":
+                return package
+        return None
+
+    def get_by_folder(self, folder_name: str) -> Package | None:
+        return next((p for p in self._packages if p.folder_name == folder_name), None)
+
     @overload
     def update(self, obj: Package) -> Package: ...
     @overload

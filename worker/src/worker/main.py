@@ -30,10 +30,42 @@ def build_publishing() -> DojoPublishing:
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
     store = PostgresStore(url)
     store.create_all()
+    kwargs: dict = {}
     notifier = _build_notifier()
     if notifier is not None:
-        return DojoPublishing(packages=store, audit=store, media_root=media_root, notifier=notifier)  # type: ignore[arg-type]
-    return DojoPublishing(packages=store, audit=store, media_root=media_root)
+        kwargs["notifier"] = notifier
+    try:
+        from dojo.adapters.meta import FernetCipher, HttpMetaPublisher
+
+        key = os.environ.get("META_TOKEN_ENCRYPTION_KEY", "")
+        if key:
+            kwargs["meta"] = HttpMetaPublisher(
+                connection_store=store,
+                cipher=FernetCipher(key),
+                graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("meta publisher not configured; using stub")
+    try:
+        from dojo.adapters.signed_urls import HmacSignedUrlStore
+
+        secret = os.environ.get("SIGNED_URL_SECRET", "")
+        if secret:
+            kwargs["signed_urls"] = HmacSignedUrlStore(
+                base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
+                secret=secret,
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("signed URL store not configured; using stub")
+    return DojoPublishing(
+        packages=store,
+        audit=store,
+        uploads=store,
+        jobs=store,
+        settings=store,
+        media_root=media_root,
+        **kwargs,
+    )
 
 
 def build_meta() -> object | None:
@@ -79,6 +111,10 @@ def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("meta maintain failed")
     publishing.evaluate_due_work()
+    try:
+        publishing.reconcile_publication()
+    except Exception:  # noqa: BLE001
+        logger.exception("reconcile_publication failed")
     job = publishing.claim_next_job()
     if job is not None:
         publishing.process_job(job.job_id)

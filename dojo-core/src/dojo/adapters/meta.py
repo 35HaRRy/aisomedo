@@ -144,6 +144,175 @@ class HttpMetaOAuthProvider:
         raise NotImplementedError
 
 
+class HttpMetaPublisher:
+    """Publish Reels through the official Instagram Graph API.
+
+    Flow: create REELS container from the signed video URL, poll the
+    container ``status_code`` until ``FINISHED``, then ``media_publish``
+    the saved container id. Timeouts and 5xx/transient errors raise
+    ``MetaPublishUncertain`` (retain ``-publishing``, poll, never mint a
+    fresh container on reconcile); definitive 4xx/API errors raise
+    ``MetaPublishFailed`` (restore to active for retry).
+    """
+
+    _TRANSIENT_CODES = {1, 2, 4, 17, 32, 613}
+
+    def __init__(
+        self,
+        *,
+        connection_store: object,
+        cipher: object,
+        graph_version: str = "v26.0",
+        host: str = "https://graph.facebook.com",
+        http_client: httpx.Client | None = None,
+    ) -> None:
+        self._store = connection_store
+        self._cipher = cipher
+        self._graph_version = graph_version
+        self._host = host.rstrip("/")
+        self._http = http_client
+
+    def _client(self) -> httpx.Client:
+        if self._http is not None:
+            return self._http
+        return httpx.Client(timeout=30.0)
+
+    def _credentials(self) -> tuple[str, str]:
+        from dojo.exceptions import MetaNotConnected
+
+        snapshot = self._store.get_active_snapshot()  # type: ignore[attr-defined]
+        if snapshot is None:
+            raise MetaNotConnected("no Instagram account connected")
+        status, encrypted = snapshot
+        token = self._cipher.decrypt(encrypted)  # type: ignore[attr-defined]
+        if not status.ig_user_id:
+            from dojo.exceptions import MetaPublishFailed as Failed
+
+            raise Failed("connected account has no Instagram user id")
+        return token, status.ig_user_id
+
+    @staticmethod
+    def _error_kind(data: dict) -> str | None:
+        error = data.get("error")
+        if not isinstance(error, dict):
+            return None
+        if error.get("is_transient") or error.get("code") in HttpMetaPublisher._TRANSIENT_CODES:
+            return "transient"
+        return "definitive"
+
+    def _post(self, path: str, payload: dict) -> dict:
+        from dojo.exceptions import MetaPublishFailed as Failed
+        from dojo.exceptions import MetaPublishUncertain as Uncertain
+
+        url = f"{self._host}/{self._graph_version}/{path.lstrip('/')}"
+        close = self._http is None
+        client = self._client()
+        try:
+            response = client.post(url, data=payload)
+        except httpx.RequestError:
+            raise Uncertain("Meta request timed out; outcome unknown") from None
+        finally:
+            if close:
+                client.close()
+        if response.status_code == 429 or response.status_code >= 500:
+            raise Uncertain(f"Meta temporarily unavailable ({response.status_code})")
+        try:
+            data = response.json()
+        except ValueError:
+            raise Uncertain("invalid Meta response; outcome unknown") from None
+        if not isinstance(data, dict):
+            raise Uncertain("invalid Meta response; outcome unknown")
+        kind = self._error_kind(data)
+        if kind == "transient":
+            raise Uncertain(f"Meta transient error: {data.get('error')}")
+        if kind == "definitive" or response.status_code in (400, 401, 403):
+            raise Failed(f"Meta rejected request: {data.get('error')}")
+        if not response.is_success:
+            raise Uncertain(f"Meta request failed ({response.status_code}); outcome unknown")
+        return data
+
+    def _get(self, path: str, params: dict) -> dict:
+        from dojo.exceptions import MetaPublishFailed as Failed
+        from dojo.exceptions import MetaPublishUncertain as Uncertain
+
+        url = f"{self._host}/{self._graph_version}/{path.lstrip('/')}"
+        close = self._http is None
+        client = self._client()
+        try:
+            response = client.get(url, params=params)
+        except httpx.RequestError:
+            raise Uncertain("Meta status check timed out; outcome unknown") from None
+        finally:
+            if close:
+                client.close()
+        if response.status_code == 429 or response.status_code >= 500:
+            raise Uncertain(f"Meta temporarily unavailable ({response.status_code})")
+        try:
+            data = response.json()
+        except ValueError:
+            raise Uncertain("invalid Meta response; outcome unknown") from None
+        if not isinstance(data, dict):
+            raise Uncertain("invalid Meta response; outcome unknown")
+        kind = self._error_kind(data)
+        if kind == "transient":
+            raise Uncertain(f"Meta transient error: {data.get('error')}")
+        if kind == "definitive" or response.status_code in (400, 401, 403):
+            raise Failed(f"Meta rejected request: {data.get('error')}")
+        if not response.is_success:
+            raise Uncertain(f"Meta request failed ({response.status_code}); outcome unknown")
+        return data
+
+    def publish_reel(self, signed_url: str, caption: str) -> None:
+        container_id = self.create_container(signed_url, caption)
+        status = self.get_container_status(container_id)
+        if status != "FINISHED":
+            from dojo.exceptions import MetaPublishUncertain as Uncertain
+
+            raise Uncertain(f"container {container_id} reported {status}")
+        self.publish_container(container_id)
+
+    def create_container(self, signed_url: str, caption: str) -> str:
+        from dojo.exceptions import MetaPublishFailed as Failed
+
+        token, ig_user_id = self._credentials()
+        data = self._post(
+            f"{ig_user_id}/media",
+            {
+                "media_type": "REELS",
+                "video_url": signed_url,
+                "caption": caption,
+                "access_token": token,
+            },
+        )
+        container_id = data.get("id")
+        if not isinstance(container_id, str) or not container_id:
+            raise Failed("Meta did not return a container id")
+        return container_id
+
+    def get_container_status(self, container_id: str) -> str:
+        from dojo.exceptions import MetaPublishFailed as Failed
+
+        token, _ = self._credentials()
+        data = self._get(f"{container_id}", {"fields": "status_code", "access_token": token})
+        status = data.get("status_code")
+        if not isinstance(status, str) or not status:
+            raise Failed(f"Meta returned no status for container {container_id}")
+        return status
+
+    def publish_container(self, container_id: str) -> str:
+        from dojo.exceptions import MetaPublishFailed as Failed
+
+        token, ig_user_id = self._credentials()
+        data = self._post(
+            f"{ig_user_id}/media_publish",
+            {"creation_id": container_id, "access_token": token},
+        )
+        media_id = data.get("id")
+        if not isinstance(media_id, str) or not media_id:
+            raise Failed("Meta did not return a media id")
+        return media_id
+
+
 class HttpInstagramTokenProvider:
     """Instagram Login tokens; never use Facebook's token or account endpoints."""
 

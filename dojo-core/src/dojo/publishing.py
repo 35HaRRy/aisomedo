@@ -22,6 +22,7 @@ from dojo.exceptions import (
     MediaNotRemovable,
     MediaNotRestorable,
     MediaValidationError,
+    MetaPublishUncertain,
     MontageDurationExceeded,
     MontageOrderInvalid,
     MontageTrimInvalid,
@@ -29,6 +30,8 @@ from dojo.exceptions import (
     PackageCompleted,
     PackageLimitExceeded,
     PlanInvalid,
+    PublicationInProgress,
+    PublicationNotReady,
     PushTokenInvalid,
     ReminderPolicyInvalid,
     RenderFailed,
@@ -1687,12 +1690,14 @@ class DojoPublishing:
         version: int,
         requester: str | None = None,
     ) -> YayinIncelemesi:
-        return self._resolve_review(
+        resolved = self._resolve_review(
             review_id,
             version,
             to_status="approved",
             requester=requester,
         )
+        self._start_publication_for_review(resolved, requester=requester)
+        return resolved
 
     def skip(
         self,
@@ -2040,6 +2045,467 @@ class DojoPublishing:
             return path
         return self.media_root / path
 
-    def publish(self, *args: object, **kwargs: object) -> None:
+    def publish(self, *args: object, **kwargs: object) -> dict:
+        """Legacy entry: publish the latest approved review for the active package.
+
+        Approval already triggers publication synchronously; this path exists
+        for the ``POST /api/packages/active/publish`` route as an explicit
+        retry. Raises ``PublicationNotReady`` when nothing approved is ready.
+        """
         self._assert_logo_configured()
-        raise NotImplementedError
+        requester = kwargs.get("requester")
+        if not isinstance(requester, str) and requester is not None:
+            requester = None
+        return self.retry_publication(requester=requester)
+
+    # --- publication execution (issue #18) ---
+
+    def _get_publishing_package(self) -> Package | None:
+        getter = getattr(self._packages, "get_publishing", None)
+        if callable(getter):
+            return getter()
+        return None
+
+    def _publication_record(self, package: Package) -> dict | None:
+        try:
+            manifest = self._load_manifest(package)
+        except MediaNotFound:
+            return None
+        record = manifest.get("meta", {}).get("publication")
+        return dict(record) if isinstance(record, dict) else None
+
+    def _save_publication_record(self, package: Package, record: dict) -> None:
+        manifest = self._load_manifest(package)
+        meta = dict(manifest.get("meta", {}))
+        meta["publication"] = dict(record)
+        manifest["meta"] = meta
+        self._write_manifest(package, manifest)
+
+    def _start_publication_for_review(
+        self, review: YayinIncelemesi, *, requester: str | None
+    ) -> None:
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("another publication is already in progress")
+        package = self._packages.get_active()
+        if package is None or package.folder_name != review.package_folder:
+            raise PublicationNotReady("approved package is no longer active")
+        manifest = self._load_manifest(package)
+        if manifest.get("render_revision") != review.revision_digest:
+            raise ReviewStale(
+                f"review {review.id} is stale; content changed since it was created"
+            )
+        claimed = self._claim_for_publication(package, review, requester=requester)
+        self._attempt_publication(claimed, requester=requester)
+
+    def _claim_for_publication(
+        self, package: Package, review: YayinIncelemesi, *, requester: str | None
+    ) -> Package:
+        render_path = self.media_root / package.folder_name / "render" / "reel.mp4"
+        if not render_path.is_file():
+            raise RenderFailed(f"approved render for {package.folder_name} is missing")
+        publishing_folder = f"{package.folder_name}-publishing"
+        target = self.media_root / publishing_folder
+        if target.exists():
+            raise PublicationInProgress(
+                f"publication folder {publishing_folder} already exists"
+            )
+        now = self._clock.now()
+        manifest = self._load_manifest(package)
+        record = {
+            "status": "publishing",
+            "revision": review.revision_digest,
+            "review_id": review.id,
+            "caption": review.caption,
+            "container_id": None,
+            "media_id": None,
+            "signed_url": None,
+            "error": None,
+            "started_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        manifest.setdefault("meta", {})["publication"] = record
+        self._write_manifest(package, manifest)
+        (self.media_root / package.folder_name).rename(target)
+        claimed = self._packages.update(
+            replace(package, status="publishing", folder_name=publishing_folder)
+        )
+        self._audit.append(
+            AuditEvent(
+                action="publication.claimed",
+                actor=requester or "system",
+                occurred_at=now,
+                details={
+                    "package": publishing_folder,
+                    "from": package.folder_name,
+                    "revision": review.revision_digest,
+                    "review_id": review.id,
+                },
+            )
+        )
+        return claimed
+
+    def _attempt_publication(self, package: Package, *, requester: str | None) -> None:
+        """Run one publication attempt for a ``-publishing`` package.
+
+        Definite failures restore the package to active for retry. Uncertain
+        outcomes (timeouts) retain ``-publishing`` and block fresh publishes.
+        """
+        record = self._publication_record(package) or {}
+        manifest = self._load_manifest(package)
+        caption = record.get("caption") or manifest.get("caption") or ""
+        artifact = self.media_root / package.folder_name / "render" / "reel.mp4"
+        if not artifact.is_file():
+            self._restore_to_active(
+                package, "approved render missing", requester=requester
+            )
+            return
+        container_id = record.get("container_id")
+        signed_url = record.get("signed_url")
+        if not signed_url and not container_id:
+            # Fresh attempt: expose the approved render for ingestion. Resumes
+            # reuse the saved container id and never mint a second container.
+            signed_url = self._signed_urls.create(artifact)
+            record["signed_url"] = signed_url
+            record["updated_at"] = self._clock.now().isoformat()
+            self._save_publication_record(package, record)
+            self._audit.append(
+                AuditEvent(
+                    action="publication.signed_url_created",
+                    actor=requester or "system",
+                    occurred_at=self._clock.now(),
+                    details={"package": package.folder_name, "artifact": "render/reel.mp4"},
+                )
+            )
+        if not container_id:
+            assert signed_url, "fresh attempts always mint a signed URL first"
+            try:
+                container_id = self._meta.create_container(str(signed_url), str(caption))
+            except MetaPublishUncertain as exc:
+                self._mark_uncertain(package, f"container creation uncertain: {exc}",
+                                     requester=requester)
+                return
+            except Exception as exc:  # definite pre-acceptance failure
+                self._restore_to_active(package, str(exc), requester=requester)
+                return
+            record["container_id"] = container_id
+            record["updated_at"] = self._clock.now().isoformat()
+            self._save_publication_record(package, record)
+            self._audit.append(
+                AuditEvent(
+                    action="publication.container_created",
+                    actor=requester or "system",
+                    occurred_at=self._clock.now(),
+                    details={"package": package.folder_name, "container_id": container_id},
+                )
+            )
+        try:
+            status = self._meta.get_container_status(str(container_id))
+        except MetaPublishUncertain as exc:
+            self._mark_uncertain(package, f"container status uncertain: {exc}",
+                                 requester=requester)
+            return
+        except Exception as exc:
+            self._restore_to_active(package, str(exc), requester=requester)
+            return
+        if status in ("ERROR", "EXPIRED"):
+            self._restore_to_active(
+                package, f"container {container_id} reported {status}",
+                requester=requester,
+            )
+            return
+        if status != "FINISHED":
+            # IN_PROGRESS or unknown: ingestion not confirmed; keep polling.
+            self._mark_uncertain(
+                package, f"container {container_id} reported {status}",
+                requester=requester,
+            )
+            return
+        # Ingested: revoke the signed URL before the external publish call.
+        try:
+            if signed_url:
+                self._signed_urls.revoke(str(signed_url))
+        finally:
+            record = self._publication_record(package) or record
+            record["signed_url"] = None
+            record["updated_at"] = self._clock.now().isoformat()
+            self._save_publication_record(package, record)
+        self._audit.append(
+            AuditEvent(
+                action="publication.signed_url_revoked",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"package": package.folder_name, "container_id": container_id},
+            )
+        )
+        try:
+            media_id = self._meta.publish_container(str(container_id))
+        except MetaPublishUncertain as exc:
+            record = self._publication_record(package) or record
+            record["updated_at"] = self._clock.now().isoformat()
+            self._save_publication_record(package, record)
+            self._mark_uncertain(package, f"publish uncertain: {exc}",
+                                 requester=requester)
+            return
+        except Exception as exc:
+            self._restore_to_active(package, str(exc), requester=requester)
+            return
+        self._complete_publication(package, str(container_id), str(media_id),
+                                   requester=requester)
+
+    def _notify_publication_outcome(self, *, succeeded: bool,
+                                           package_folder: str) -> None:
+        """Best-effort push to all paired devices on success or failure."""
+        try:
+            regs = self._push_regs.list_active_device_tokens()
+        except Exception:  # noqa: BLE001 - notifications never block publication
+            return
+        if not regs:
+            return
+        tokens = [r.token for r in regs]
+        notification = Notification(
+            title="Yayın Tamamlandı" if succeeded else "Yayın Başarısız",
+            body=(
+                f"{package_folder} Instagram'da yayınlandı."
+                if succeeded
+                else f"{package_folder} yayınlanamadı; yeniden deneyin."
+            ),
+            data={"type": "publication_confirmed" if succeeded else "publication_failed",
+                  "package_folder": package_folder},
+        )
+        try:
+            result = self._notifier.send(notification, tokens)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("publication notification failed")
+            return
+        for tok in getattr(result, "invalid_tokens", []):
+            try:
+                self._push_regs.remove_by_token(tok)
+            except Exception:  # noqa: BLE001
+                pass
+        self._audit.append(
+            AuditEvent(
+                action="notification.sent",
+                actor="worker",
+                occurred_at=self._clock.now(),
+                details={"package": package_folder,
+                         "delivered": len(getattr(result, "delivered", []))},
+            )
+        )
+
+    def _mark_uncertain(self, package: Package, error: str, *,
+                        requester: str | None) -> None:
+        record = self._publication_record(package) or {}
+        record["status"] = "uncertain"
+        record["error"] = error
+        record["updated_at"] = self._clock.now().isoformat()
+        self._save_publication_record(package, record)
+        self._audit.append(
+            AuditEvent(
+                action="publication.uncertain",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"package": package.folder_name, "error": error},
+            )
+        )
+
+    def _restore_to_active(self, package: Package, error: str, *,
+                           requester: str | None) -> Package:
+        record = self._publication_record(package) or {}
+        try:
+            signed_url = record.get("signed_url")
+            if signed_url:
+                self._signed_urls.revoke(str(signed_url))
+        except Exception:  # noqa: BLE001 - revocation is best effort
+            pass
+        base = package.folder_name
+        active_folder = base[:-len("-publishing")] if base.endswith("-publishing") else base
+        (self.media_root / base).rename(self.media_root / active_folder)
+        restored = self._packages.update(
+            replace(package, status="active", folder_name=active_folder)
+        )
+        failed = {
+            "status": "failed",
+            "revision": record.get("revision"),
+            "review_id": record.get("review_id"),
+            "caption": record.get("caption"),
+            "container_id": record.get("container_id"),
+            "media_id": None,
+            "signed_url": None,
+            "error": error,
+            "started_at": record.get("started_at"),
+            "updated_at": self._clock.now().isoformat(),
+        }
+        self._save_publication_record(restored, failed)
+        self._audit.append(
+            AuditEvent(
+                action="publication.failed",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"package": active_folder, "error": error},
+            )
+        )
+        self._notify_publication_outcome(succeeded=False, package_folder=active_folder)
+        return restored
+
+    def _complete_publication(self, package: Package, container_id: str,
+                              media_id: str, *, requester: str | None) -> Package:
+        now = self._clock.now()
+        record = self._publication_record(package) or {}
+        record.update({
+            "status": "completed",
+            "container_id": container_id,
+            "media_id": media_id,
+            "signed_url": None,
+            "error": None,
+            "updated_at": now.isoformat(),
+        })
+        self._save_publication_record(package, record)
+        self._audit.append(
+            AuditEvent(
+                action="publication.confirmed",
+                actor=requester or "system",
+                occurred_at=now,
+                details={
+                    "package": package.folder_name,
+                    "container_id": container_id,
+                    "media_id": media_id,
+                },
+            )
+        )
+        base = package.folder_name
+        stem = base[:-len("-publishing")] if base.endswith("-publishing") else base
+        completed_folder = f"{stem}-completed"
+        (self.media_root / base).rename(self.media_root / completed_folder)
+        completed = self._packages.update(
+            replace(package, status="completed", folder_name=completed_folder)
+        )
+        self._audit.append(
+            AuditEvent(
+                action="package.completed",
+                actor=requester or "system",
+                occurred_at=now,
+                details={
+                    "folder_name": completed_folder,
+                    "container_id": container_id,
+                    "media_id": media_id,
+                },
+            )
+        )
+        self._notify_publication_outcome(succeeded=True, package_folder=completed_folder)
+        if self._packages.get_active() is None and self._get_publishing_package() is None:
+            try:
+                self._create_active_package(requester=requester)
+            except FileExistsError:
+                # clock fixed in tests can collide; suffix to keep invariant
+                existing = self._packages.get_active()
+                if existing is None:
+                    raise
+        return completed
+
+    def serve_signed_artifact(self, url_or_token: str) -> Path:
+        """Resolve a signed publication URL to its artifact path for serving.
+
+        Only the approved ``render/reel.mp4`` is ever resolvable; raw media
+        paths raise. Each fetch is audited.
+        """
+        resolver = getattr(self._signed_urls, "resolve", None)
+        if not callable(resolver):
+            raise MediaNotFound("signed URL delivery is not configured")
+        try:
+            path = Path(resolver(url_or_token))
+        except ValueError as exc:
+            raise MediaNotFound(str(exc)) from exc
+        self._audit.append(
+            AuditEvent(
+                action="publication.artifact_fetched",
+                actor="meta",
+                occurred_at=self._clock.now(),
+                details={"artifact": "render/reel.mp4"},
+            )
+        )
+        return path
+
+    def get_publication_status(self) -> dict | None:
+        package = self._get_publishing_package()
+        if package is not None:
+            record = self._publication_record(package) or {}
+            return {"package": package.folder_name, **record}
+        active = self._packages.get_active()
+        if active is not None:
+            active_record = self._publication_record(active)
+            if active_record is not None and active_record.get("status") in ("failed", "uncertain"):
+                return {"package": active.folder_name, **active_record}
+        return None
+
+    def retry_publication(self, *, requester: str | None = None) -> dict:
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("another publication is already in progress")
+        package = self._packages.get_active()
+        if package is None:
+            raise PublicationNotReady("no active package to publish")
+        record = self._publication_record(package)
+        if record is None or record.get("status") not in ("failed",):
+            # approve() already publishes; explicit retry needs a failed attempt.
+            raise PublicationNotReady(
+                "no failed publication to retry; approve a review first"
+            )
+        manifest = self._load_manifest(package)
+        if manifest.get("render_revision") != record.get("revision"):
+            raise PublicationNotReady("package changed since the failed attempt")
+        review = self._reviews.get(int(record.get("review_id") or 0))
+        if review is None or review.status != "approved":
+            raise PublicationNotReady("approved review for retry is unavailable")
+        claimed = self._claim_for_publication(package, review, requester=requester)
+        self._attempt_publication(claimed, requester=requester)
+        status = self.get_publication_status()
+        if status is None:
+            completed = self._packages.get_by_folder(
+                f"{claimed.folder_name[:-len('-publishing')]}-completed"
+            ) if hasattr(self._packages, "get_by_folder") else None
+            if completed is not None:
+                record = self._publication_record(completed) or {}
+                return {"package": completed.folder_name, **record}
+            raise PublicationNotReady("publication finished without a status record")
+        return status
+
+    def reconcile_publication(self, *, requester: str | None = None) -> dict | None:
+        """Poll saved Meta identifiers for a ``-publishing`` package.
+
+        Never issues a fresh external publish command: it only inspects the
+        saved container and completes when Instagram confirms.
+        """
+        package = self._get_publishing_package()
+        if package is None:
+            return None
+        record = self._publication_record(package) or {}
+        container_id = record.get("container_id")
+        if not container_id:
+            self._mark_uncertain(package, "no container id recorded yet",
+                                 requester=requester)
+            return self.get_publication_status()
+        try:
+            status = self._meta.get_container_status(str(container_id))
+        except MetaPublishUncertain as exc:
+            self._mark_uncertain(package, f"container status uncertain: {exc}",
+                                 requester=requester)
+            return self.get_publication_status()
+        except Exception as exc:
+            self._restore_to_active(package, str(exc), requester=requester)
+            return self.get_publication_status()
+        if status in ("ERROR", "EXPIRED"):
+            self._restore_to_active(
+                package, f"container {container_id} reported {status}",
+                requester=requester,
+            )
+            return self.get_publication_status()
+        if status == "FINISHED":
+            # Resume with the SAME saved container id: no fresh container is
+            # ever created here, so a resumed publish cannot mint a second
+            # Reel. A repeated publish_container for one container either
+            # returns its media or errors; only a new container would
+            # duplicate, and this path never creates one.
+            self._attempt_publication(package, requester=requester)
+            return self.get_publication_status()
+        self._mark_uncertain(package, f"container {container_id} reported {status}",
+                             requester=requester)
+        return self.get_publication_status()

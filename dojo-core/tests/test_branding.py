@@ -174,10 +174,12 @@ def test_publish_without_logo_raises(tmp_path):
 
 
 def test_publish_with_logo_passes_guard(tmp_path):
+    from dojo import PublicationNotReady
+
     _, seam = make_seam(tmp_path)
     set_defaults(seam)
     seam.get_or_create_active_package()
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(PublicationNotReady):
         seam.publish()
 
 

@@ -108,26 +108,32 @@ def test_stubbed_methods_raise_not_implemented(tmp_path):
 
 
 def test_publish_with_logo_config_falls_through_to_stub(tmp_path):
+    from dojo import PublicationNotReady
+
     store, seam = make_seam(tmp_path)
     store.set("branding.logo_asset", "logo.png", updated_at=FIXED_AT)
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(PublicationNotReady):
         seam.publish()
 
 
 def test_publish_honors_draft_logo_override_when_global_unset(tmp_path):
+    from dojo import PublicationNotReady
+
     store, seam = make_seam(tmp_path)
     seam.set_branding_defaults(BrandingConfig(), requester="setup")
     seam.ensure_active_package(requester="1")
     seam.set_branding({"logo_asset": "draft-logo.png"}, requester="1")
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(PublicationNotReady):
         seam.publish()
 
 
 def test_publish_falls_back_to_global_logo_when_draft_logo_unset(tmp_path):
+    from dojo import PublicationNotReady
+
     store, seam = make_seam(tmp_path)
     store.set("branding.logo_asset", "logo.png", updated_at=FIXED_AT)
     seam.ensure_active_package(requester="1")
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(PublicationNotReady):
         seam.publish()
 
 

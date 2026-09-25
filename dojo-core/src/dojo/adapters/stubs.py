@@ -23,9 +23,42 @@ class StubReelRenderer:
 class StubMetaPublisher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.created: list[tuple[str, str, str]] = []
+        self.status_queues: dict[str, list[str]] = {}
+        self.statuses: dict[str, str] = {}
+        self.publish_results: dict[str, str] = {}
+        self.fail_create: Exception | None = None
+        self.fail_publish: Exception | None = None
+        self.publish_calls: list[str] = []
+        self._next_container = 1
 
     def publish_reel(self, signed_url: str, caption: str) -> None:
         self.calls.append((signed_url, caption))
+
+    def create_container(self, signed_url: str, caption: str) -> str:
+        if self.fail_create is not None:
+            exc = self.fail_create
+            self.fail_create = None
+            raise exc
+        container_id = f"container_{self._next_container}"
+        self._next_container += 1
+        self.created.append((signed_url, caption, container_id))
+        self.calls.append((signed_url, caption))
+        return container_id
+
+    def get_container_status(self, container_id: str) -> str:
+        queue = self.status_queues.get(container_id)
+        if queue:
+            return queue.pop(0)
+        return self.statuses.get(container_id, "FINISHED")
+
+    def publish_container(self, container_id: str) -> str:
+        self.publish_calls.append(container_id)
+        if self.fail_publish is not None:
+            exc = self.fail_publish
+            self.fail_publish = None
+            raise exc
+        return self.publish_results.get(container_id, f"media_{container_id}")
 
 
 class StubNotifier:
@@ -56,13 +89,21 @@ class StubNotifier:
 class StubSignedUrlStore:
     def __init__(self) -> None:
         self.active: list[str] = []
+        self.paths: dict[str, Path] = {}
+        self.created_paths: list[Path] = []
+        self.revoked: list[str] = []
+        self._next = 1
 
     def create(self, artifact_path: Path) -> str:
-        url = f"https://signed.local/{artifact_path.name}"
+        url = f"https://signed.local/{self._next}/{artifact_path.name}"
+        self._next += 1
         self.active.append(url)
+        self.paths[url] = Path(artifact_path)
+        self.created_paths.append(Path(artifact_path))
         return url
 
     def revoke(self, url: str) -> None:
+        self.revoked.append(url)
         if url in self.active:
             self.active.remove(url)
 

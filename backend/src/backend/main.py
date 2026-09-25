@@ -20,9 +20,17 @@ from backend.routes import health, packages
 from backend.routes import media as media_router
 from backend.routes import meta as meta_router
 from backend.routes import pairing as pairing_router
+from backend.routes import publication as publication_router
 from backend.routes import settings as settings_router
 from backend.routes import setup as setup_router
 from backend.routes.pairing import IpThrottle
+
+
+def _wire_setup_meta(app: FastAPI) -> None:
+    setup = getattr(app.state, "setup", None)
+    meta = getattr(app.state, "meta", None)
+    if setup is not None and meta is not None and getattr(setup, "_meta", None) is None:
+        setup.attach_meta(meta)
 
 
 @asynccontextmanager
@@ -33,10 +41,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         app.state.pairing = build_pairing()
     if not hasattr(app.state, "activity"):
         app.state.activity = build_activity()
-    if not hasattr(app.state, "setup"):
-        app.state.setup = build_setup()
     if not hasattr(app.state, "meta"):
-        app.state.meta = build_meta()
+        try:
+            app.state.meta = build_meta()
+        except Exception as exc:  # noqa: BLE001 - meta optional (e.g. missing key)
+            import logging
+
+            logging.getLogger(__name__).warning("meta connection not configured: %s", exc)
+            app.state.meta = None
+    if not hasattr(app.state, "setup"):
+        app.state.setup = build_setup(meta=getattr(app.state, "meta", None))
+    else:
+        _wire_setup_meta(app)
+    _wire_setup_meta(app)
     yield
 
 
@@ -66,6 +83,7 @@ def create_app(
         app.state.setup = setup
     if meta is not None:
         app.state.meta = meta
+    _wire_setup_meta(app)
     if cookie_secure is None:
         cookie_secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
     app.state.cookie_secure = cookie_secure
@@ -78,6 +96,8 @@ def create_app(
     app.include_router(media_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(settings_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(meta_router.router)
+    app.include_router(publication_router.router, dependencies=[Depends(get_current_client)])
+    app.include_router(publication_router.fetch_router)
     return app
 
 

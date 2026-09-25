@@ -194,3 +194,19 @@ class MetaReturnUriInvalid(MetaConnectionError):
 
 class MetaTokenEncryptionError(MetaConnectionError):
     pass
+
+
+class PublicationInProgress(DojoError):
+    pass
+
+
+class PublicationNotReady(DojoError):
+    pass
+
+
+class MetaPublishFailed(DojoError):
+    pass
+
+
+class MetaPublishUncertain(DojoError):
+    pass
