@@ -46,6 +46,15 @@ class DojoSetup:
         self._settings = settings or cast(SettingsStore, setup)
         self._meta = meta
 
+    def attach_meta(self, meta: object | None) -> None:
+        """Wire the Instagram/Meta connection after construction.
+
+        Backend lifespan builds ``meta`` and ``setup`` separately; without
+        this hook ``checklist()`` never sees the connection and the
+        ``instagram`` item is omitted (never ``complete=True``).
+        """
+        self._meta = meta
+
     def current_policy(self) -> ConsentPolicy | None:
         """Return the current (highest-version) consent policy, if any."""
         return self._setup.get_current_policy()

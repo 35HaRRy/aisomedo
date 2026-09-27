@@ -10,7 +10,11 @@ from backend.deps import get_current_client
 
 
 def get_setup(request: Request) -> DojoSetup:
-    return request.app.state.setup
+    setup: DojoSetup = request.app.state.setup
+    meta = getattr(request.app.state, "meta", None)
+    if meta is not None and getattr(setup, "_meta", None) is None:
+        setup.attach_meta(meta)
+    return setup
 
 
 class SetupItemOut(BaseModel):
