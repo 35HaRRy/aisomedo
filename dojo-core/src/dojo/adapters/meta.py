@@ -272,7 +272,7 @@ class HttpMetaPublisher:
         self.publish_container(container_id)
 
     def create_container(self, signed_url: str, caption: str) -> str:
-        from dojo.exceptions import MetaPublishFailed as Failed
+        from dojo.exceptions import MetaPublishUncertain as Uncertain
 
         token, ig_user_id = self._credentials()
         data = self._post(
@@ -286,7 +286,7 @@ class HttpMetaPublisher:
         )
         container_id = data.get("id")
         if not isinstance(container_id, str) or not container_id:
-            raise Failed("Meta did not return a container id")
+            raise Uncertain("Meta did not return a container id; outcome unknown")
         return container_id
 
     def get_container_status(self, container_id: str) -> str:
@@ -300,7 +300,7 @@ class HttpMetaPublisher:
         return status
 
     def publish_container(self, container_id: str) -> str:
-        from dojo.exceptions import MetaPublishFailed as Failed
+        from dojo.exceptions import MetaPublishUncertain as Uncertain
 
         token, ig_user_id = self._credentials()
         data = self._post(
@@ -309,7 +309,7 @@ class HttpMetaPublisher:
         )
         media_id = data.get("id")
         if not isinstance(media_id, str) or not media_id:
-            raise Failed("Meta did not return a media id")
+            raise Uncertain("Meta did not return a media id; outcome unknown")
         return media_id
 
 

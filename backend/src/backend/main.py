@@ -21,6 +21,7 @@ from backend.routes import media as media_router
 from backend.routes import meta as meta_router
 from backend.routes import pairing as pairing_router
 from backend.routes import publication as publication_router
+from backend.routes import reviews as reviews_router
 from backend.routes import settings as settings_router
 from backend.routes import setup as setup_router
 from backend.routes.pairing import IpThrottle
@@ -98,6 +99,7 @@ def create_app(
     app.include_router(meta_router.router)
     app.include_router(publication_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(publication_router.fetch_router)
+    app.include_router(reviews_router.router, dependencies=[Depends(get_current_client)])
     return app
 
 

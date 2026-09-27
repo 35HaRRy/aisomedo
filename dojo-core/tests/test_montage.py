@@ -278,7 +278,8 @@ def test_get_montage_status_reports_over_limit_and_action(tmp_path):
 def test_montage_mutation_on_completed_package_raises(tmp_path):
     store, seam = make_seam(tmp_path)
     media_id = finalize_media(tmp_path, seam, store, filename="a.jpg")
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
     with pytest.raises(PackageCompleted):
         seam.set_order([media_id])
     with pytest.raises(PackageCompleted):

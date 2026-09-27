@@ -76,23 +76,20 @@ def test_post_active_second_ensure_returns_409(tmp_path: Path) -> None:
     assert client.post("/api/packages/active", headers=bearer(token)).status_code == 409
 
 
-def test_complete_active_returns_next_package(tmp_path: Path) -> None:
+def test_complete_active_requires_instagram_confirmation(tmp_path: Path) -> None:
     client, _, pairing, _ = make_app(tmp_path)
     token = pair_device(client, pairing)
     first = client.post("/api/packages/active", headers=bearer(token)).json()
 
     resp = client.post("/api/packages/active/complete", headers=bearer(token))
-    assert resp.status_code == 200
-    next_body = resp.json()
-    assert next_body["status"] == "active"
-    assert next_body["id"] != first["id"]
+    assert resp.status_code == 409
 
     fetched = client.get("/api/packages/active", headers=bearer(token)).json()
-    assert fetched["id"] == next_body["id"]
+    assert fetched["id"] == first["id"]
 
     events = client.get("/api/activity", headers=bearer(token)).json()["events"]
     actions = [e["action"] for e in events]
-    assert "package.completed" in actions
+    assert "package.completed" not in actions
     assert "package.created" in actions
 
 
@@ -526,7 +523,8 @@ def test_remove_media_on_completed_409(tmp_path: Path) -> None:
     token = pair_device(client, pairing)
     finalize_via_api(client, publishing, token, filename="photo.jpg")
     media_id = media_id_of(tmp_path, publishing)
-    client.post("/api/packages/active/complete", headers=bearer(token))
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(publishing)
 
     resp = client.post(f"/api/packages/active/media/{media_id}/remove", headers=bearer(token))
     assert resp.status_code == 409
@@ -537,7 +535,8 @@ def test_list_completed_packages(tmp_path: Path) -> None:
     publishing._media = StubMediaProcessor()
     token = pair_device(client, pairing)
     finalize_via_api(client, publishing, token, filename="photo.jpg")
-    client.post("/api/packages/active/complete", headers=bearer(token))
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(publishing)
 
     resp = client.get("/api/packages", headers=bearer(token))
 
@@ -552,7 +551,8 @@ def test_browse_completed_package(tmp_path: Path) -> None:
     publishing._media = StubMediaProcessor()
     token = pair_device(client, pairing)
     finalize_via_api(client, publishing, token, filename="photo.jpg")
-    client.post("/api/packages/active/complete", headers=bearer(token))
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(publishing)
     completed = client.get("/api/packages", headers=bearer(token)).json()[0]
 
     resp = client.get(f"/api/packages/{completed['folder_name']}", headers=bearer(token))
@@ -569,7 +569,8 @@ def test_download_completed_artifact(tmp_path: Path) -> None:
     token = pair_device(client, pairing)
     finalize_via_api(client, publishing, token, filename="photo.jpg")
     media_id = media_id_of(tmp_path, publishing)
-    client.post("/api/packages/active/complete", headers=bearer(token))
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(publishing)
     completed = client.get("/api/packages", headers=bearer(token)).json()[0]
 
     resp = client.post(
@@ -587,7 +588,8 @@ def test_download_artifact_traversal_400(tmp_path: Path) -> None:
     publishing._media = StubMediaProcessor()
     token = pair_device(client, pairing)
     finalize_via_api(client, publishing, token, filename="photo.jpg")
-    client.post("/api/packages/active/complete", headers=bearer(token))
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(publishing)
     completed = client.get("/api/packages", headers=bearer(token)).json()[0]
 
     resp = client.post(

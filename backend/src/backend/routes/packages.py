@@ -67,7 +67,10 @@ def get_active(
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> PackageOut:
-    package = publishing.get_or_create_active_package(requester=str(client.id))
+    try:
+        package = publishing.get_or_create_active_package(requester=str(client.id))
+    except PublicationInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return PackageOut(**package.__dict__)
 
 
@@ -78,7 +81,7 @@ def ensure_active(
 ) -> PackageOut:
     try:
         package = publishing.ensure_active_package(requester=str(client.id))
-    except ActivePackageExists as exc:
+    except (ActivePackageExists, PublicationInProgress) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return PackageOut(**package.__dict__)
 
@@ -92,10 +95,12 @@ def complete_active(
         package = publishing.complete_active_package(requester=str(client.id))
     except NoActivePackage as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PublicationNotReady as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return PackageOut(**package.__dict__)
 
 
-_MUTATION_STATUS = {
+_MUTATION_STATUS: dict[type[Exception], int] = {
     NoActivePackage: 404,
     MediaNotFound: 404,
     MediaNotRemovable: 409,

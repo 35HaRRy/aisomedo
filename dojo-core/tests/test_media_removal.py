@@ -178,7 +178,8 @@ def test_restore_media_returns_to_original_position(tmp_path):
 def test_remove_and_restore_on_completed_package_raises(tmp_path):
     store, seam = make_seam(tmp_path)
     media_id = finalize_one(tmp_path, seam, store)
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
 
     with pytest.raises(PackageCompleted):
         seam.remove_media(media_id)
@@ -189,7 +190,8 @@ def test_remove_and_restore_on_completed_package_raises(tmp_path):
 def test_list_completed_packages_returns_completed_only(tmp_path):
     store, seam = make_seam(tmp_path)
     finalize_one(tmp_path, seam, store)
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
 
     completed = seam.list_completed_packages()
 
@@ -201,7 +203,8 @@ def test_list_completed_packages_returns_completed_only(tmp_path):
 def test_browse_completed_package_returns_manifest_view(tmp_path):
     store, seam = make_seam(tmp_path)
     media_id = finalize_one(tmp_path, seam, store)
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
     completed = seam.list_completed_packages()[0]
 
     view = seam.browse_completed_package(completed.folder_name)
@@ -224,7 +227,8 @@ def test_browse_non_completed_or_missing_package_raises(tmp_path):
 def test_create_download_url_resolves_processed_and_removed(tmp_path):
     store, seam = make_seam(tmp_path)
     media_id = finalize_one(tmp_path, seam, store)
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
     completed = seam.list_completed_packages()[0]
 
     url = seam.create_download_url(completed.folder_name, f"media/{media_id}/processed.jpg")
@@ -234,7 +238,8 @@ def test_create_download_url_resolves_processed_and_removed(tmp_path):
 def test_create_download_url_rejects_traversal(tmp_path):
     store, seam = make_seam(tmp_path)
     finalize_one(tmp_path, seam, store)
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
     completed = seam.list_completed_packages()[0]
 
     for ref in ("../secret", "media/../../outside", "/abs/path"):
@@ -245,7 +250,8 @@ def test_create_download_url_rejects_traversal(tmp_path):
 def test_create_download_url_rejects_non_file_in_package(tmp_path):
     store, seam = make_seam(tmp_path)
     finalize_one(tmp_path, seam, store)
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
     completed = seam.list_completed_packages()[0]
 
     with pytest.raises(MediaNotFound):
@@ -255,7 +261,8 @@ def test_create_download_url_rejects_non_file_in_package(tmp_path):
 def test_create_download_url_rejects_unknown_file(tmp_path):
     store, seam = make_seam(tmp_path)
     media_id = finalize_one(tmp_path, seam, store)
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
     completed = seam.list_completed_packages()[0]
 
     with pytest.raises(MediaNotFound):

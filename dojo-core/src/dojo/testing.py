@@ -5,11 +5,34 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 FIXED_AT = datetime(2026, 8, 6, 14, 30, tzinfo=ISTANBUL)
 FFMPEG_IMAGE = "jrottenberg/ffmpeg:8-alpine"
+
+if TYPE_CHECKING:
+    from dojo.model import Package
+    from dojo.publishing import DojoPublishing
+
+
+def complete_confirmed_package(
+    publishing: DojoPublishing, *, requester: str | None = None,
+) -> Package:
+    """Seed confirmation for archive fixtures, then exercise local finalization.
+
+    Publication tests must use the Meta publisher seam instead of this helper.
+    """
+    package = publishing.get_active_package()
+    assert package is not None
+    path = publishing.media_root / package.folder_name / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest.setdefault("meta", {})["publication"] = {
+        "status": "completed", "container_id": "fixture-container", "media_id": "fixture-media",
+    }
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return publishing.complete_active_package(requester=requester)
 
 
 class FakeClock:

@@ -22,7 +22,10 @@ from dojo.exceptions import (
     MediaNotRemovable,
     MediaNotRestorable,
     MediaValidationError,
+    MetaNotConnected,
+    MetaPublishFailed,
     MetaPublishUncertain,
+    MetaTokenEncryptionError,
     MontageDurationExceeded,
     MontageOrderInvalid,
     MontageTrimInvalid,
@@ -228,6 +231,8 @@ class DojoPublishing:
         return self._create_active_package(requester=requester)
 
     def _create_active_package(self, *, requester: str | None = None) -> Package:
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("publication must be reconciled first")
         now = self._clock.now().astimezone(ISTANBUL)
         folder_name = now.strftime(PACKAGE_FOLDER_FORMAT)
         folder = self.media_root / folder_name
@@ -255,6 +260,9 @@ class DojoPublishing:
         existing = self._packages.get_active()
         if existing is None:
             raise NoActivePackage("no active package to complete")
+        record = self._publication_record(existing)
+        if record is None or record.get("status") != "completed":
+            raise PublicationNotReady("only confirmed Instagram publications can complete")
 
         now = self._clock.now().astimezone(ISTANBUL)
         completed_folder_name = f"{existing.folder_name}-completed"
@@ -1690,6 +1698,8 @@ class DojoPublishing:
         version: int,
         requester: str | None = None,
     ) -> YayinIncelemesi:
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("publication must be reconciled first")
         resolved = self._resolve_review(
             review_id,
             version,
@@ -1758,6 +1768,8 @@ class DojoPublishing:
         audit: bool = True,
     ) -> YayinIncelemesi:
         """Resolve one review with atomic CAS; reject stale or already-handled."""
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("publication must be reconciled first")
         review = self._reviews.get(review_id)
         if review is None:
             raise ReviewNotFound(f"review {review_id} not found")
@@ -2113,6 +2125,7 @@ class DojoPublishing:
         manifest = self._load_manifest(package)
         record = {
             "status": "publishing",
+            "publish_started": False,
             "revision": review.revision_digest,
             "review_id": review.id,
             "caption": review.caption,
@@ -2151,6 +2164,10 @@ class DojoPublishing:
         outcomes (timeouts) retain ``-publishing`` and block fresh publishes.
         """
         record = self._publication_record(package) or {}
+        if record.get("publish_started", True):
+            self._mark_uncertain(package, "publish already attempted; polling required",
+                                 requester=requester)
+            return
         manifest = self._load_manifest(package)
         caption = record.get("caption") or manifest.get("caption") or ""
         artifact = self.media_root / package.folder_name / "render" / "reel.mp4"
@@ -2184,8 +2201,12 @@ class DojoPublishing:
                 self._mark_uncertain(package, f"container creation uncertain: {exc}",
                                      requester=requester)
                 return
-            except Exception as exc:  # definite pre-acceptance failure
+            except (MetaPublishFailed, MetaNotConnected, MetaTokenEncryptionError) as exc:
                 self._restore_to_active(package, str(exc), requester=requester)
+                return
+            except Exception as exc:
+                self._mark_uncertain(package, f"container creation uncertain: {exc}",
+                                     requester=requester)
                 return
             record["container_id"] = container_id
             record["updated_at"] = self._clock.now().isoformat()
@@ -2205,7 +2226,12 @@ class DojoPublishing:
                                  requester=requester)
             return
         except Exception as exc:
-            self._restore_to_active(package, str(exc), requester=requester)
+            # Issue #19: once a container id is persisted, the external
+            # outcome is unknown on polling errors (timeout/network/auth).
+            # Restoring to active here would allow a fresh publish with a
+            # new container -> duplicate Reel. Keep -publishing uncertain.
+            self._mark_uncertain(package, f"container status check failed: {exc}",
+                                 requester=requester)
             return
         if status in ("ERROR", "EXPIRED"):
             self._restore_to_active(
@@ -2237,6 +2263,16 @@ class DojoPublishing:
                 details={"package": package.folder_name, "container_id": container_id},
             )
         )
+        # Persist before sending: a crash or lost response must never resend.
+        # Exclusive marker also arbitrates concurrent worker/API resumes.
+        marker = self.media_root / package.folder_name / f".publish-{container_id}"
+        try:
+            with marker.open("x", encoding="utf-8"):
+                pass
+        except FileExistsError:
+            return
+        record["publish_started"] = True
+        self._save_publication_record(package, record)
         try:
             media_id = self._meta.publish_container(str(container_id))
         except MetaPublishUncertain as exc:
@@ -2247,7 +2283,15 @@ class DojoPublishing:
                                  requester=requester)
             return
         except Exception as exc:
-            self._restore_to_active(package, str(exc), requester=requester)
+            # Issue #19: the container was already accepted (FINISHED), so a
+            # publish failure may still have created the Reel remotely.
+            # Keep -publishing uncertain and retry with the SAME container
+            # id on reconcile instead of minting a fresh container.
+            record = self._publication_record(package) or record
+            record["updated_at"] = self._clock.now().isoformat()
+            self._save_publication_record(package, record)
+            self._mark_uncertain(package, f"publish failed: {exc}",
+                                 requester=requester)
             return
         self._complete_publication(package, str(container_id), str(media_id),
                                    requester=requester)
@@ -2348,7 +2392,7 @@ class DojoPublishing:
         return restored
 
     def _complete_publication(self, package: Package, container_id: str,
-                              media_id: str, *, requester: str | None) -> Package:
+                              media_id: str | None, *, requester: str | None) -> Package:
         now = self._clock.now()
         record = self._publication_record(package) or {}
         record.update({
@@ -2425,16 +2469,81 @@ class DojoPublishing:
         )
         return path
 
+    def recover_publication(
+        self, action: str, *, confirmed: bool = False,
+        new_due_at: datetime | None = None, requester: str | None = None,
+    ) -> dict:
+        """Resolve a definite failure without treating its old approval as pending."""
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("publication must be reconciled first")
+        package = self._packages.get_active()
+        record = self._publication_record(package) if package else None
+        if package is None or record is None or record.get("status") != "failed":
+            raise PublicationNotReady("no failed publication to recover")
+        if action not in ("review", "skip", "reschedule"):
+            raise PublicationNotReady("unsupported recovery action")
+        if action == "skip" and not confirmed:
+            raise SkipRequiresConfirmation("skip requires explicit confirmation")
+        now = self._clock.now()
+        if action == "reschedule":
+            if new_due_at is not None and new_due_at.tzinfo is None:
+                new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
+            if new_due_at is None or new_due_at <= now:
+                raise RescheduleTimeInvalid("reschedule time must be in the future")
+        if action in ("review", "reschedule"):
+            due_at = new_due_at if action == "reschedule" and new_due_at else now
+            occurrence = self._schedule.create(
+                YayinZamani(
+                    id=0, kind="oneoff", due_at=due_at,
+                    status="pending", created_at=now,
+                )
+            )
+            record["recovery_occurrence_id"] = occurrence.id
+        recovered = {"review": "reviewing", "skip": "skipped", "reschedule": "rescheduled"}
+        record["status"] = recovered[action]
+        record["updated_at"] = now.isoformat()
+        self._save_publication_record(package, record)
+        self._audit.append(AuditEvent(
+            action=f"publication.{record['status']}", actor=requester or "system",
+            occurred_at=now, details={"package": package.folder_name},
+        ))
+        if action == "review":
+            self._ensure_reviews_for_due()
+        return {"package": package.folder_name, **record, "allowed_actions": []}
+
+    @staticmethod
+    def _recovery_actions(status: object) -> list[str]:
+        """Allowed recovery actions for a publication record (issue #19).
+
+        Definite failure on an editable active package exposes Retry,
+        Review, Skip and Reschedule. Uncertain or in-progress publishing
+        exposes only reconcile; a fresh publish is prohibited until the
+        saved Meta identifiers are reconciled.
+        """
+        if status == "failed":
+            return ["retry", "review", "skip", "reschedule"]
+        if status in ("publishing", "uncertain"):
+            return ["reconcile"]
+        return []
+
     def get_publication_status(self) -> dict | None:
         package = self._get_publishing_package()
         if package is not None:
             record = self._publication_record(package) or {}
-            return {"package": package.folder_name, **record}
+            return {
+                "package": package.folder_name,
+                **record,
+                "allowed_actions": self._recovery_actions(record.get("status")),
+            }
         active = self._packages.get_active()
         if active is not None:
             active_record = self._publication_record(active)
-            if active_record is not None and active_record.get("status") in ("failed", "uncertain"):
-                return {"package": active.folder_name, **active_record}
+            if active_record is not None:
+                return {
+                    "package": active.folder_name,
+                    **active_record,
+                    "allowed_actions": self._recovery_actions(active_record.get("status")),
+                }
         return None
 
     def retry_publication(self, *, requester: str | None = None) -> dict:
@@ -2490,20 +2599,27 @@ class DojoPublishing:
                                  requester=requester)
             return self.get_publication_status()
         except Exception as exc:
-            self._restore_to_active(package, str(exc), requester=requester)
+            # Issue #19: reconcile only polls saved identifiers; a polling
+            # error never restores to active (fresh publish stays prohibited).
+            self._mark_uncertain(package, f"container status check failed: {exc}",
+                                 requester=requester)
             return self.get_publication_status()
         if status in ("ERROR", "EXPIRED"):
+            if record.get("publish_started", True):
+                self._mark_uncertain(package, f"container {container_id} reported {status}",
+                                     requester=requester)
+                return self.get_publication_status()
             self._restore_to_active(
                 package, f"container {container_id} reported {status}",
                 requester=requester,
             )
             return self.get_publication_status()
-        if status == "FINISHED":
-            # Resume with the SAME saved container id: no fresh container is
-            # ever created here, so a resumed publish cannot mint a second
-            # Reel. A repeated publish_container for one container either
-            # returns its media or errors; only a new container would
-            # duplicate, and this path never creates one.
+        if status == "PUBLISHED":
+            self._complete_publication(package, str(container_id), record.get("media_id"),
+                                       requester=requester)
+            return self.get_publication_status()
+        if status == "FINISHED" and record.get("publish_started") is False:
+            # Resume ingestion only when no publish command was sent.
             self._attempt_publication(package, requester=requester)
             return self.get_publication_status()
         self._mark_uncertain(package, f"container {container_id} reported {status}",

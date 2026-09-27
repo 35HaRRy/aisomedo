@@ -99,7 +99,8 @@ def test_complete_creates_next_package_with_defaults(tmp_path):
     _, seam = make_seam(tmp_path)
     set_defaults(seam)
     seam.get_or_create_active_package()
-    seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam, requester="9")
     manifest = load_manifest(tmp_path, seam)
     assert manifest["branding"]["logo_asset"] == "logo.png"
     assert manifest["caption"] == "Bugün dojoda {{isim}}"

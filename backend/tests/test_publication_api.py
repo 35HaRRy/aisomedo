@@ -133,3 +133,133 @@ def test_publish_route_maps_not_ready_to_409(tmp_path: Path):
     token = pair_device(client, pairing)
     resp = client.post("/api/packages/active/publish", headers=bearer(token))
     assert resp.status_code == 409
+
+
+def test_retry_blocked_while_publishing_409(tmp_path: Path):
+    # Issue #19: fresh publish/retry prohibited until reconciled.
+    from dojo.adapters.stubs import StubMetaPublisher
+
+    client, publishing, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    meta = publishing._meta
+    assert isinstance(meta, StubMetaPublisher)
+    orig_create = meta.create_container
+
+    def create_then_queue(url, caption):
+        cid = orig_create(url, caption)
+        meta.status_queues[cid] = ["IN_PROGRESS"]
+        return cid
+
+    meta.create_container = create_then_queue  # type: ignore[method-assign]
+    prepare_approved(tmp_path, publishing)
+
+    resp = client.post("/api/packages/active/publication/retry", headers=bearer(token))
+    assert resp.status_code == 409
+    resp = client.post("/api/packages/active/publish", headers=bearer(token))
+    assert resp.status_code == 409
+
+
+def test_reconcile_poll_error_keeps_publishing_via_api(tmp_path: Path):
+    # Issue #19: reconcile polling errors keep -publishing via the endpoint.
+    from dojo.adapters.stubs import StubMetaPublisher
+
+    client, publishing, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    meta = publishing._meta
+    assert isinstance(meta, StubMetaPublisher)
+    orig_create = meta.create_container
+
+    def create_then_queue(url, caption):
+        cid = orig_create(url, caption)
+        meta.status_queues[cid] = ["IN_PROGRESS"]
+        return cid
+
+    meta.create_container = create_then_queue  # type: ignore[method-assign]
+    prepare_approved(tmp_path, publishing)
+    assert publishing._packages.get_publishing() is not None
+
+    orig_status = meta.get_container_status
+
+    def boom(container_id: str) -> str:
+        raise RuntimeError("status check timed out")
+
+    meta.get_container_status = boom  # type: ignore[method-assign]
+    try:
+        resp = client.post(
+            "/api/packages/active/publication/reconcile", headers=bearer(token)
+        )
+    finally:
+        meta.get_container_status = orig_status  # type: ignore[method-assign]
+
+    assert resp.status_code == 200
+    body = resp.json()["publication"]
+    assert body["status"] == "uncertain"
+    assert body["allowed_actions"] == ["reconcile"]
+    assert publishing._packages.get_publishing() is not None
+    assert publishing._packages.list_completed() == []
+
+
+def test_failed_status_exposes_recovery_actions_via_api(tmp_path: Path):
+    # Issue #19: definite failure exposes Retry/Review/Skip/Reschedule.
+    from dojo.adapters.stubs import StubMetaPublisher
+    from dojo.exceptions import MetaPublishFailed
+
+    client, publishing, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    meta = publishing._meta
+    assert isinstance(meta, StubMetaPublisher)
+    meta.fail_create = MetaPublishFailed("rejected: bad video")
+    prepare_approved(tmp_path, publishing)
+
+    resp = client.get("/api/packages/active/publication", headers=bearer(token))
+    assert resp.status_code == 200
+    body = resp.json()["publication"]
+    assert body["status"] == "failed"
+    assert set(body["allowed_actions"]) >= {"retry", "review", "skip", "reschedule"}
+
+
+def test_review_endpoints_manage_failed_package(tmp_path: Path):
+    # Issue #19: Review/Skip/Reschedule manageable via endpoints.
+    from dojo.adapters.stubs import StubMetaPublisher
+    from dojo.exceptions import MetaPublishFailed
+
+    client, publishing, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    meta = publishing._meta
+    assert isinstance(meta, StubMetaPublisher)
+    meta.fail_create = MetaPublishFailed("rejected: bad video")
+    prepare_approved(tmp_path, publishing)
+
+    resp = client.get("/api/reviews/pending", headers=bearer(token))
+    assert resp.status_code == 200
+    assert isinstance(resp.json()["reviews"], list)
+
+    # reschedule with a past time is rejected
+    resp = client.post(
+        "/api/reviews/1/reschedule",
+        json={"version": 1, "new_due_at": "2000-01-01T10:00:00+03:00"},
+        headers=bearer(token),
+    )
+    assert resp.status_code in (400, 422)
+
+
+def test_failed_package_recovery_skip_requires_confirmation(tmp_path: Path):
+    from dojo.exceptions import MetaPublishFailed
+
+    client, publishing, pairing, store = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    publishing._meta.fail_create = MetaPublishFailed("bad video")
+    prepare_approved(tmp_path, publishing)
+    path = "/api/packages/active/publication/recover"
+    resp = client.post(path, json={"action": "skip"}, headers=bearer(token))
+    assert resp.status_code == 400
+    response = client.post(
+        path, json={"action": "skip", "confirmed": True}, headers=bearer(token)
+    )
+    assert response.status_code == 200
+    assert response.json()["publication"]["status"] == "skipped"
+    retry = client.post("/api/packages/active/publication/retry", headers=bearer(token))
+    assert retry.status_code == 409
+    done = client.post("/api/packages/active/complete", headers=bearer(token))
+    assert done.status_code == 409
+    assert store.list_completed() == []

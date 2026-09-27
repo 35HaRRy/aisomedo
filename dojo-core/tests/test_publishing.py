@@ -159,7 +159,8 @@ def test_complete_active_package_renames_creates_next_and_audits(tmp_path):
     _, seam = make_seam(tmp_path)
     first = seam.ensure_active_package()
 
-    next_package = seam.complete_active_package(requester="9")
+    from dojo.testing import complete_confirmed_package
+    next_package = complete_confirmed_package(seam, requester="9")
 
     completed_dir = tmp_path / "06-08-2026 14-30-completed"
     assert completed_dir.is_dir()
@@ -189,7 +190,8 @@ def test_zero_or_one_invariant_after_completion(tmp_path):
     seam.ensure_active_package()
     with pytest.raises(ActivePackageExists):
         seam.ensure_active_package()
-    seam.complete_active_package()
+    from dojo.testing import complete_confirmed_package
+    complete_confirmed_package(seam)
     assert seam.get_active_package() is not None
     assert seam.get_active_package().status == "active"
     with pytest.raises(ActivePackageExists):

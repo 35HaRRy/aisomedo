@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
+
 from dojo import (
     Client,
     DojoPublishing,
     MediaNotFound,
     PublicationInProgress,
     PublicationNotReady,
+    RescheduleTimeInvalid,
+    SkipRequiresConfirmation,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from backend.deps import get_current_client
 
@@ -32,6 +38,29 @@ def fetch_artifact(token: str, request: Request) -> FileResponse:
 
 
 router = APIRouter(prefix="/api/packages/active/publication", tags=["publication"])
+
+
+class RecoveryIn(BaseModel):
+    action: Literal["review", "skip", "reschedule"]
+    confirmed: bool = False
+    new_due_at: datetime | None = None
+
+
+@router.post("/recover", response_model=dict[str, object])
+def recover_publication(
+    body: RecoveryIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return {"publication": publishing.recover_publication(
+            body.action, confirmed=body.confirmed, new_due_at=body.new_due_at,
+            requester=str(client.id),
+        )}
+    except (PublicationInProgress, PublicationNotReady) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (RescheduleTimeInvalid, SkipRequiresConfirmation) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("", response_model=dict[str, object])
