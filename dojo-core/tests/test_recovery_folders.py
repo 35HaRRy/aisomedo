@@ -150,3 +150,133 @@ def test_resolved_prevents_reimport(tmp_path: Path) -> None:
         seam.import_recovered_media("05-08-2026 14-30-recovered", requester="7")
     with pytest.raises(MediaNotFound):
         seam.import_recovered_media(resolved, requester="7")
+
+
+def test_collision_suffixed_folders_are_settled_not_open(tmp_path: Path) -> None:
+    _, seam = make_seam(tmp_path)
+    write_open_folder(tmp_path, "06-08-2026 14-30")
+    dup = tmp_path / "05-08-2026 14-30-recovered (2)"
+    (dup / "media").mkdir(parents=True, exist_ok=True)
+    (dup / "manifest.json").write_text(json.dumps({"media": [], "order": []}), encoding="utf-8")
+
+    result = seam.repair_open_folders()
+
+    assert result["active"] == "06-08-2026 14-30"
+    assert result["recovered"] == []
+    assert dup.is_dir()
+    assert "05-08-2026 14-30-recovered (2)" in seam.list_recovered_folders()
+
+
+def test_repair_defers_db_when_publishing_in_progress(tmp_path: Path) -> None:
+    from dojo.model import Package
+    from dojo.testing import FIXED_AT
+
+    store, seam = make_seam(tmp_path)
+    pub_folder = tmp_path / "06-08-2026 13-30-publishing"
+    pub_folder.mkdir(parents=True, exist_ok=True)
+    (pub_folder / "manifest.json").write_text(json.dumps({"media": []}), encoding="utf-8")
+    store.create(
+        Package(
+            id=0,
+            folder_name="06-08-2026 13-30-publishing",
+            created_at=FIXED_AT,
+            status="publishing",
+        )
+    )
+    write_open_folder(tmp_path, "05-08-2026 14-30")
+    write_open_folder(tmp_path, "06-08-2026 14-30")
+
+    result = seam.repair_open_folders()
+
+    assert result["active"] == "06-08-2026 14-30"
+    assert seam.get_active_package() is None
+    assert (tmp_path / "05-08-2026 14-30-recovered").is_dir()
+
+
+def test_all_unparseable_newest_mtime_wins(tmp_path: Path) -> None:
+    import os
+    import time
+
+    _, seam = make_seam(tmp_path)
+    old_dir = write_open_folder(tmp_path, "scratch-old")
+    write_open_folder(tmp_path, "scratch-new")
+    ancient = time.time() - 1000
+    os.utime(old_dir, (ancient, ancient))
+
+    result = seam.repair_open_folders()
+
+    assert result["active"] == "scratch-new"
+
+
+def test_single_folder_db_mismatch_audited(tmp_path: Path) -> None:
+    _, seam = make_seam(tmp_path)
+    seam.ensure_active_package()
+    write_open_folder(tmp_path, "07-08-2026 14-30")
+
+    result = seam.repair_open_folders()
+
+    assert result["active"] == "07-08-2026 14-30"
+    assert seam.get_active_package() is not None
+    assert seam.get_active_package().folder_name == "07-08-2026 14-30"
+    actions = [e.action for e in seam.list_audit()]
+    assert "package.recovery" in actions
+
+
+def test_import_isolates_missing_files_and_audits(tmp_path: Path) -> None:
+    from dojo.adapters.stubs import StubMediaProcessor
+
+    _, seam = make_seam(tmp_path)
+    seam._media = StubMediaProcessor()
+    seam.ensure_active_package()
+    folder = _seed_recovered_folder(tmp_path, "05-08-2026 14-30-recovered", {"good.jpg": b"g" * 20})
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    manifest["media"].append(
+        {
+            "media_id": "rec-ghost",
+            "filename": "ghost.jpg",
+            "content_type": "image/jpeg",
+            "size_bytes": 10,
+            "uploaded_at": "2026-08-06T14:30:00+03:00",
+            "status": "finalized",
+            "processed": {},
+        }
+    )
+    (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = seam.import_recovered_media("05-08-2026 14-30-recovered", requester="7")
+
+    assert result["imported"] == 1
+    assert [f["filename"] for f in result["failed"]] == ["ghost.jpg"]
+    actions = [e.action for e in seam.list_audit()]
+    assert "package.recovered_import" in actions
+
+
+def test_import_empty_recovered_audits_zero(tmp_path: Path) -> None:
+    _, seam = make_seam(tmp_path)
+    seam.ensure_active_package()
+    _seed_recovered_folder(tmp_path, "05-08-2026 14-30-recovered", {})
+
+    result = seam.import_recovered_media("05-08-2026 14-30-recovered", requester="7")
+
+    assert result == {
+        "folder": "05-08-2026 14-30-recovered",
+        "imported": 0,
+        "uploads": [],
+        "failed": [],
+    }
+    assert "package.recovered_import" in [e.action for e in seam.list_audit()]
+
+
+def test_reimport_without_resolve_duplicates_documented(tmp_path: Path) -> None:
+    from dojo.adapters.stubs import StubMediaProcessor
+
+    _, seam = make_seam(tmp_path)
+    seam._media = StubMediaProcessor()
+    seam.ensure_active_package()
+    _seed_recovered_folder(tmp_path, "05-08-2026 14-30-recovered", {"a.jpg": b"q" * 10})
+
+    first = seam.import_recovered_media("05-08-2026 14-30-recovered", requester="7")
+    second = seam.import_recovered_media("05-08-2026 14-30-recovered", requester="7")
+
+    assert first["imported"] == second["imported"] == 1
+    assert first["uploads"][0]["upload_id"] != second["uploads"][0]["upload_id"]

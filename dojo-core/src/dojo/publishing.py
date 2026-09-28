@@ -291,7 +291,22 @@ class DojoPublishing:
 
     # --- multi-open-folder recovery (issue #20) ---
 
-    _RECOVERY_SUFFIXES = ("-publishing", "-completed", "-recovered", "-resolved")
+    _SETTLED_SUFFIXES = ("-publishing", "-completed", "-recovered", "-resolved")
+
+    @classmethod
+    def _is_settled(cls, name: str) -> bool:
+        """Settled folders (plus ` (N)` collision variants) are never open."""
+        import re
+
+        pattern = r"-(publishing|completed|recovered|resolved)( \(\d+\))?$"
+        return re.search(pattern, name) is not None
+
+    @classmethod
+    def _is_recovered(cls, name: str) -> bool:
+        """Awaiting-import folders, including ` (N)` collision variants."""
+        import re
+
+        return re.search(r"-recovered( \(\d+\))?$", name) is not None
 
     def _list_open_folders(self) -> list[Path]:
         if not self.media_root.is_dir():
@@ -302,7 +317,7 @@ class DojoPublishing:
                 continue
             if entry.name == "tmp":
                 continue
-            if entry.name.endswith(self._RECOVERY_SUFFIXES):
+            if self._is_settled(entry.name):
                 continue
             candidates.append(entry)
         return candidates
@@ -315,10 +330,11 @@ class DojoPublishing:
             return None
         return naive.replace(tzinfo=ISTANBUL)
 
-    def _ensure_db_active(self, folder_name: str, parsed: datetime | None) -> None:
+    def _ensure_db_active(self, folder_name: str, parsed: datetime | None) -> bool:
+        """Align the active DB row with the winning folder; return True if changed."""
         existing = self._packages.get_active()
         if existing is not None and existing.folder_name == folder_name:
-            return
+            return False
         manifest_path = self.media_root / folder_name / "manifest.json"
         if not manifest_path.is_file():
             manifest_path.write_text(
@@ -331,8 +347,9 @@ class DojoPublishing:
             self._packages.create(
                 Package(id=0, folder_name=folder_name, created_at=created_at, status="active")
             )
-            return
+            return True
         self._packages.update(replace(existing, folder_name=folder_name, status="active"))
+        return True
 
     def _notify_recovery(self, *, active: str, recovered: list[str]) -> None:
         try:
@@ -359,7 +376,13 @@ class DojoPublishing:
                 pass
 
     def repair_open_folders(self, *, requester: str | None = None) -> dict:
-        """Reconcile multiple unsuffixed folders: newest wins, older → -recovered."""
+        """Reconcile multiple unsuffixed folders: newest wins, older → -recovered.
+
+        A `-publishing` claim (uncertain Meta outcome) prohibits fresh
+        publication until reconciled, so the DB row is left untouched while
+        such a claim exists; filesystem quarantine still restores the
+        zero-or-one-open invariant.
+        """
         candidates = self._list_open_folders()
         if not candidates:
             return {"active": None, "recovered": []}
@@ -372,32 +395,60 @@ class DojoPublishing:
                 mtime = path.stat().st_mtime
             except OSError:
                 mtime = 0.0
-            return (1, mtime, path.name)
+            return (1, -mtime, path.name)
 
         ordered = sorted(candidates, key=sort_key)
         active_path = ordered[0]
         recovered_names: list[str] = []
         for older in ordered[1:]:
-            target = self.media_root / f"{older.name}-recovered"
-            suffix = 1
-            while target.exists():
-                suffix += 1
-                target = self.media_root / f"{older.name}-recovered ({suffix})"
-            older.rename(target)
-            recovered_names.append(target.name)
-        self._ensure_db_active(active_path.name, self._parse_folder_time(active_path.name))
-        if recovered_names:
+            target = self._race_safe_recovered_target(older.name)
+            if target is None:
+                continue  # lost a startup race; another process quarantined it
+            recovered_names.append(target)
+        publishing = self._get_publishing_package()
+        db_changed = False
+        if publishing is None:
+            db_changed = self._ensure_db_active(
+                active_path.name, self._parse_folder_time(active_path.name)
+            )
+        if recovered_names or db_changed:
             now = self._clock.now()
+            details: dict[str, object] = {"active": active_path.name, "recovered": recovered_names}
+            if publishing is not None:
+                details["deferred_active_db"] = True
+                details["publishing"] = publishing.folder_name
             self._audit.append(
                 AuditEvent(
                     action="package.recovery",
                     actor=requester or "system",
                     occurred_at=now,
-                    details={"active": active_path.name, "recovered": recovered_names},
+                    details=details,
                 )
             )
-            self._notify_recovery(active=active_path.name, recovered=recovered_names)
+            if recovered_names:
+                self._notify_recovery(active=active_path.name, recovered=recovered_names)
         return {"active": active_path.name, "recovered": recovered_names}
+
+    def _race_safe_recovered_target(self, folder_name: str) -> str | None:
+        """Rename an older open folder; tolerate concurrent startup repairs."""
+        older = self.media_root / folder_name
+        target = self.media_root / f"{folder_name}-recovered"
+        while True:
+            try:
+                older.rename(target)
+            except FileNotFoundError:
+                return None
+            except FileExistsError:
+                suffix = 2
+                while (self.media_root / f"{folder_name}-recovered ({suffix})").exists():
+                    suffix += 1
+                target = self.media_root / f"{folder_name}-recovered ({suffix})"
+                continue
+            except OSError:
+                if not older.exists() or target.exists():
+                    return None
+                raise
+            return target.name
 
     def list_recovered_folders(self) -> list[str]:
         """Return `-recovered` folders awaiting import (resolved ones excluded)."""
@@ -405,12 +456,12 @@ class DojoPublishing:
             return []
         return sorted(
             p.name for p in self.media_root.iterdir()
-            if p.is_dir() and p.name.endswith("-recovered")
+            if p.is_dir() and self._is_recovered(p.name)
         )
 
     def _read_recovered_entries(self, folder_name: str) -> tuple[Path, list[dict]]:
         folder = self.media_root / folder_name
-        if not folder.is_dir() or not folder_name.endswith("-recovered"):
+        if not folder.is_dir() or not self._is_recovered(folder_name):
             raise MediaNotFound(f"recovered package {folder_name!r} not found")
         manifest_path = folder / "manifest.json"
         if not manifest_path.is_file():
@@ -448,8 +499,13 @@ class DojoPublishing:
         if package is None:
             raise NoActivePackage("no active package to import into")
         uploads: list[dict] = []
+        failed: list[dict] = []
         for entry in entries:
-            filename, content_type, body = self._recovered_bytes(folder, entry)
+            try:
+                filename, content_type, body = self._recovered_bytes(folder, entry)
+            except MediaNotFound as exc:
+                failed.append({"filename": str(entry.get("filename", "")), "error": str(exc)})
+                continue
             status = self.start_upload(
                 filename, content_type, len(body), requester=requester
             )
@@ -476,16 +532,27 @@ class DojoPublishing:
                 action="package.recovered_import",
                 actor=requester or "system",
                 occurred_at=self._clock.now(),
-                details={"folder": folder_name, "imported": len(uploads)},
+                details={
+                    "folder": folder_name,
+                    "imported": len(uploads),
+                    "failed": [f["filename"] for f in failed],
+                },
             )
         )
-        return {"folder": folder_name, "imported": len(uploads), "uploads": uploads}
+        return {
+            "folder": folder_name,
+            "imported": len(uploads),
+            "uploads": uploads,
+            "failed": failed,
+        }
 
     def mark_recovered_resolved(
         self, folder_name: str, *, requester: str | None = None
     ) -> str:
         """Mark a `-recovered` folder handled so it is never imported twice."""
-        if not folder_name.endswith("-recovered"):
+        import re
+
+        if not self._is_recovered(folder_name):
             raise MediaNotFound(f"recovered package {folder_name!r} not found")
         folder = self.media_root / folder_name
         if not folder.is_dir():
@@ -500,7 +567,7 @@ class DojoPublishing:
         manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        stem = folder_name[: -len("-recovered")]
+        stem = re.sub(r"-recovered( \(\d+\))?$", "", folder_name)
         target = self.media_root / f"{stem}-resolved"
         suffix = 1
         while target.exists():

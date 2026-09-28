@@ -15,9 +15,12 @@ from dojo import (
     MontageTrimInvalid,
     NoActivePackage,
     PackageCompleted,
+    PackageLimitExceeded,
     PublicationInProgress,
     PublicationNotReady,
     UploadConflict,
+    UploadInvalidFilename,
+    UploadTooLarge,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -276,7 +279,11 @@ def import_recovered(
         return publishing.import_recovered_media(folder_name, requester=str(client.id))
     except MediaNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (NoActivePackage, UploadConflict) as exc:
+    except UploadInvalidFilename as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UploadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except (NoActivePackage, PackageLimitExceeded, UploadConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

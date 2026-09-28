@@ -54,3 +54,20 @@ def test_recovered_routes_list_import_resolve(tmp_path: Path) -> None:
         "/api/packages/recovered/05-08-2026 14-30-recovered/resolve", headers=bearer(token)
     )
     assert again.status_code in (404, 409)
+
+
+def test_import_oversize_recovered_maps_to_413(tmp_path: Path) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    client, publishing, pairing, _ = make_app(tmp_path)
+    token = pair_device(client, pairing)
+    assert client.post("/api/packages/active", headers=bearer(token)).status_code == 201
+    now = datetime.now(ZoneInfo("Europe/Istanbul"))
+    publishing._settings.set("upload.max_file_bytes", 5, updated_at=now)
+    seed_recovered(tmp_path)
+
+    resp = client.post(
+        "/api/packages/recovered/05-08-2026 14-30-recovered/import", headers=bearer(token)
+    )
+    assert resp.status_code == 413
