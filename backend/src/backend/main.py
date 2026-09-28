@@ -38,6 +38,12 @@ def _wire_setup_meta(app: FastAPI) -> None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if not hasattr(app.state, "publishing"):
         app.state.publishing = build_publishing()
+    try:
+        app.state.publishing.repair_open_folders(requester="system")
+    except Exception:  # noqa: BLE001 - startup repair never blocks boot
+        import logging
+
+        logging.getLogger(__name__).exception("open-folder repair failed")
     if not hasattr(app.state, "pairing"):
         app.state.pairing = build_pairing()
     if not hasattr(app.state, "activity"):

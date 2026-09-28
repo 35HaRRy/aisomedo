@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from dojo import DojoPublishing, InMemoryStore
+import pytest
+from dojo import DojoPublishing, InMemoryStore, MediaNotFound
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
 from dojo.testing import FakeClock
 
@@ -136,10 +137,6 @@ def test_import_goes_through_conflict_workflow(tmp_path: Path) -> None:
 
 
 def test_resolved_prevents_reimport(tmp_path: Path) -> None:
-    import pytest
-
-    from dojo import MediaNotFound
-
     _, seam = make_seam(tmp_path)
     seam.ensure_active_package()
     _seed_recovered_folder(tmp_path, "05-08-2026 14-30-recovered", {"a.jpg": b"q" * 10})

@@ -17,6 +17,7 @@ from dojo import (
     PackageCompleted,
     PublicationInProgress,
     PublicationNotReady,
+    UploadConflict,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -255,6 +256,43 @@ def publish_active(
             raise HTTPException(status_code=502, detail=result.get("error") or status)
         return {"status": "published", "publication": result}
     return {"status": "published"}
+
+
+@router.get("/recovered", response_model=dict[str, object])
+def list_recovered(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    return {"recovered": publishing.list_recovered_folders()}
+
+
+@router.post("/recovered/{folder_name}/import", response_model=dict[str, object])
+def import_recovered(
+    folder_name: str,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.import_recovered_media(folder_name, requester=str(client.id))
+    except MediaNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (NoActivePackage, UploadConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/recovered/{folder_name}/resolve", response_model=dict[str, object])
+def resolve_recovered(
+    folder_name: str,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        resolved = publishing.mark_recovered_resolved(folder_name, requester=str(client.id))
+    except MediaNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except UploadConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"resolved": resolved}
 
 
 @router.get("", response_model=list[PackageOut])

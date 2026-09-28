@@ -57,7 +57,7 @@ def build_publishing() -> DojoPublishing:
             )
     except Exception:  # noqa: BLE001
         logger.warning("signed URL store not configured; using stub")
-    return DojoPublishing(
+    publishing = DojoPublishing(
         packages=store,
         audit=store,
         uploads=store,
@@ -66,6 +66,11 @@ def build_publishing() -> DojoPublishing:
         media_root=media_root,
         **kwargs,
     )
+    try:
+        publishing.repair_open_folders(requester="system")
+    except Exception:  # noqa: BLE001 - startup repair never blocks boot
+        logger.exception("open-folder repair failed")
+    return publishing
 
 
 def build_meta() -> object | None:
