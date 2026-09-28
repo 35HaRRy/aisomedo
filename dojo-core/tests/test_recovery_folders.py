@@ -152,6 +152,69 @@ def test_resolved_prevents_reimport(tmp_path: Path) -> None:
         seam.import_recovered_media(resolved, requester="7")
 
 
+def write_bom_folder(root: Path, name: str) -> Path:
+    """Simulate Windows PowerShell 5.1 `Set-Content -Encoding utf8`, which emits a BOM."""
+    folder = root / name
+    (folder / "media").mkdir(parents=True, exist_ok=True)
+    body = json.dumps({"media": [], "order": []}).encode("utf-8")
+    (folder / "manifest.json").write_bytes(b"\xef\xbb\xbf" + body)
+    return folder
+
+
+def test_bom_manifest_does_not_break_repair(tmp_path: Path) -> None:
+    _, seam = make_seam(tmp_path)
+    write_open_folder(tmp_path, "05-08-2026 14-30")
+    write_bom_folder(tmp_path, "06-08-2026 14-30")
+
+    result = seam.repair_open_folders()
+
+    assert result["active"] == "06-08-2026 14-30"
+    assert result["recovered"] == ["05-08-2026 14-30-recovered"]
+
+
+def test_bom_manifest_does_not_break_evaluate_due_work(tmp_path: Path) -> None:
+    _, seam = make_seam(tmp_path)
+    folder = write_bom_folder(tmp_path, "06-08-2026 14-30")
+    seam.repair_open_folders()
+
+    seam.evaluate_due_work()  # must not raise
+
+    assert (folder / "manifest.json").read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_bom_recovered_manifest_imports(tmp_path: Path) -> None:
+    from dojo.adapters.stubs import StubMediaProcessor
+
+    _, seam = make_seam(tmp_path)
+    seam._media = StubMediaProcessor()
+    seam.ensure_active_package()
+    folder = _seed_recovered_folder(tmp_path, "05-08-2026 14-30-recovered", {"a.jpg": b"q" * 10})
+    raw = (folder / "manifest.json").read_bytes()
+    (folder / "manifest.json").write_bytes(b"\xef\xbb\xbf" + raw)
+
+    result = seam.import_recovered_media("05-08-2026 14-30-recovered", requester="7")
+
+    assert result["imported"] == 1
+
+
+def test_folder_name_taken_by_settled_row_never_wins(tmp_path: Path) -> None:
+    """A completed row holding the name must not be re-activated (unique folder_name)."""
+    from dojo.model import Package
+    from dojo.testing import FIXED_AT
+
+    store, seam = make_seam(tmp_path)
+    write_open_folder(tmp_path, "05-08-2026 14-30")
+    write_open_folder(tmp_path, "06-08-2026 14-30")
+    store.create(
+        Package(id=0, folder_name="06-08-2026 14-30", created_at=FIXED_AT, status="completed")
+    )
+
+    result = seam.repair_open_folders()
+
+    assert result["active"] == "05-08-2026 14-30"
+    assert result["recovered"] == ["06-08-2026 14-30-recovered"]
+
+
 def test_collision_suffixed_folders_are_settled_not_open(tmp_path: Path) -> None:
     _, seam = make_seam(tmp_path)
     write_open_folder(tmp_path, "06-08-2026 14-30")

@@ -146,6 +146,18 @@ def _normalize(filename: str) -> str:
     return filename.casefold()
 
 
+def _read_json(path: Path) -> dict:
+    """Parse a manifest, tolerating a UTF-8 BOM.
+
+    Manifests are hand-authored during recovery and by external tools
+    (Windows PowerShell 5.1 ``Set-Content -Encoding utf8`` writes a BOM).
+    Plain ``utf-8`` decoding raises JSONDecodeError on that BOM, which would
+    take down the whole worker tick. ``utf-8-sig`` strips a BOM when present
+    and is byte-identical when absent.
+    """
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 def _first_free_suffixed_name(
     media: list[dict], stem: str, ext: str, *, start: int = 1
 ) -> str:
@@ -322,6 +334,19 @@ class DojoPublishing:
             candidates.append(entry)
         return candidates
 
+    def _name_held_by_other_row(self, folder_name: str) -> bool:
+        """A DB row other than the active one already owns this folder name.
+
+        ``folder_name`` is UNIQUE in Postgres. An unsuffixed folder that a
+        settled row already owns cannot become the active package, because the
+        alignment UPDATE would violate the index; it is quarantined instead.
+        """
+        row = self._packages.get_by_folder(folder_name)
+        if row is None:
+            return False
+        active = self._packages.get_active()
+        return active is None or row.id != active.id
+
     @staticmethod
     def _parse_folder_time(name: str) -> datetime | None:
         try:
@@ -382,6 +407,10 @@ class DojoPublishing:
         publication until reconciled, so the DB row is left untouched while
         such a claim exists; filesystem quarantine still restores the
         zero-or-one-open invariant.
+
+        A folder whose name a settled row already owns is never promoted to
+        active (``folder_name`` is UNIQUE, so the alignment would fail); it is
+        quarantined like any other loser.
         """
         candidates = self._list_open_folders()
         if not candidates:
@@ -398,25 +427,36 @@ class DojoPublishing:
             return (1, -mtime, path.name)
 
         ordered = sorted(candidates, key=sort_key)
-        active_path = ordered[0]
+        # A candidate whose name a settled row already owns can never be the
+        # active package, so it is quarantined even when it sorts newest.
+        claimable = [p for p in ordered if not self._name_held_by_other_row(p.name)]
+        active_path = claimable[0] if claimable else None
         recovered_names: list[str] = []
-        for older in ordered[1:]:
-            target = self._race_safe_recovered_target(older.name)
+        for loser in ordered:
+            if loser == active_path:
+                continue
+            target = self._race_safe_recovered_target(loser.name)
             if target is None:
                 continue  # lost a startup race; another process quarantined it
             recovered_names.append(target)
         publishing = self._get_publishing_package()
         db_changed = False
-        if publishing is None:
+        if publishing is None and active_path is not None:
             db_changed = self._ensure_db_active(
                 active_path.name, self._parse_folder_time(active_path.name)
             )
         if recovered_names or db_changed:
             now = self._clock.now()
-            details: dict[str, object] = {"active": active_path.name, "recovered": recovered_names}
+            details: dict[str, object] = {
+                "active": active_path.name if active_path is not None else None,
+                "recovered": recovered_names,
+            }
             if publishing is not None:
                 details["deferred_active_db"] = True
                 details["publishing"] = publishing.folder_name
+            elif active_path is None:
+                # Nothing claimable survived; the active row must not move.
+                details["deferred_active_db"] = "all_names_settled"
             self._audit.append(
                 AuditEvent(
                     action="package.recovery",
@@ -425,9 +465,12 @@ class DojoPublishing:
                     details=details,
                 )
             )
-            if recovered_names:
+            if recovered_names and active_path is not None:
                 self._notify_recovery(active=active_path.name, recovered=recovered_names)
-        return {"active": active_path.name, "recovered": recovered_names}
+        return {
+            "active": active_path.name if active_path is not None else None,
+            "recovered": recovered_names,
+        }
 
     def _race_safe_recovered_target(self, folder_name: str) -> str | None:
         """Rename an older open folder; tolerate concurrent startup repairs."""
@@ -466,7 +509,7 @@ class DojoPublishing:
         manifest_path = folder / "manifest.json"
         if not manifest_path.is_file():
             raise MediaNotFound(f"manifest for {folder_name} missing")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _read_json(manifest_path)
         if manifest.get("recovery", {}).get("resolved"):
             raise MediaNotFound(f"recovered package {folder_name!r} already resolved")
         entries = manifest.get("media", [])
@@ -559,7 +602,7 @@ class DojoPublishing:
             raise MediaNotFound(f"recovered package {folder_name!r} not found")
         manifest_path = folder / "manifest.json"
         if manifest_path.is_file():
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = _read_json(manifest_path)
         else:
             manifest = {}
         manifest.setdefault("recovery", {})["resolved"] = True
@@ -788,14 +831,14 @@ class DojoPublishing:
         manifest_path = self.media_root / package.folder_name / "manifest.json"
         if not manifest_path.is_file():
             return 0
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _read_json(manifest_path)
         return sum(int(entry.get("size_bytes", 0)) for entry in manifest.get("media", []))
 
     def _manifest_media(self, package: Package) -> list[dict]:
         manifest_path = self.media_root / package.folder_name / "manifest.json"
         if not manifest_path.is_file():
             return []
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _read_json(manifest_path)
         return manifest.get("media", [])
 
     def _manifest_collisions(self, package: Package, filename: str) -> list[dict]:
@@ -903,7 +946,7 @@ class DojoPublishing:
         shutil.move(str(processed.processed_path), str(processed_dst))
 
         manifest_path = self.media_root / package.folder_name / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _read_json(manifest_path)
         manifest["render_revision"] = None
         display_name = upload.filename
         overwrite_target: str | None = None
@@ -1614,7 +1657,7 @@ class DojoPublishing:
         manifest_path = self.media_root / package.folder_name / "manifest.json"
         if not manifest_path.is_file():
             raise MediaNotFound(f"manifest for {package.folder_name} missing")
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        return _read_json(manifest_path)
 
     def _write_manifest(self, package: Package, manifest: dict) -> None:
         manifest_path = self.media_root / package.folder_name / "manifest.json"
