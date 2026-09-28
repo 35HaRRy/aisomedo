@@ -289,6 +289,234 @@ class DojoPublishing:
         """Return the current active package, if any."""
         return self._packages.get_active()
 
+    # --- multi-open-folder recovery (issue #20) ---
+
+    _RECOVERY_SUFFIXES = ("-publishing", "-completed", "-recovered", "-resolved")
+
+    def _list_open_folders(self) -> list[Path]:
+        if not self.media_root.is_dir():
+            return []
+        candidates: list[Path] = []
+        for entry in self.media_root.iterdir():
+            if not entry.is_dir():
+                continue
+            if entry.name == "tmp":
+                continue
+            if entry.name.endswith(self._RECOVERY_SUFFIXES):
+                continue
+            candidates.append(entry)
+        return candidates
+
+    @staticmethod
+    def _parse_folder_time(name: str) -> datetime | None:
+        try:
+            naive = datetime.strptime(name, PACKAGE_FOLDER_FORMAT)
+        except ValueError:
+            return None
+        return naive.replace(tzinfo=ISTANBUL)
+
+    def _ensure_db_active(self, folder_name: str, parsed: datetime | None) -> None:
+        existing = self._packages.get_active()
+        if existing is not None and existing.folder_name == folder_name:
+            return
+        manifest_path = self.media_root / folder_name / "manifest.json"
+        if not manifest_path.is_file():
+            manifest_path.write_text(
+                json.dumps(Manifest().to_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        now = self._clock.now().astimezone(ISTANBUL)
+        if existing is None:
+            created_at = parsed or now
+            self._packages.create(
+                Package(id=0, folder_name=folder_name, created_at=created_at, status="active")
+            )
+            return
+        self._packages.update(replace(existing, folder_name=folder_name, status="active"))
+
+    def _notify_recovery(self, *, active: str, recovered: list[str]) -> None:
+        try:
+            regs = self._push_regs.list_active_device_tokens()
+        except Exception:  # noqa: BLE001 - notifications never block repair
+            return
+        if not regs:
+            return
+        tokens = [r.token for r in regs]
+        notification = Notification(
+            title="Kurtarma tamamlandı",
+            body=f"{active} aktif; {len(recovered)} klasör -recovered olarak ayrıldı.",
+            data={"type": "package_recovery", "package_folder": active, "recovered": recovered},
+        )
+        try:
+            result = self._notifier.send(notification, tokens)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("recovery notification failed")
+            return
+        for tok in getattr(result, "invalid_tokens", []):
+            try:
+                self._push_regs.remove_by_token(tok)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def repair_open_folders(self, *, requester: str | None = None) -> dict:
+        """Reconcile multiple unsuffixed folders: newest wins, older → -recovered."""
+        candidates = self._list_open_folders()
+        if not candidates:
+            return {"active": None, "recovered": []}
+
+        def sort_key(path: Path) -> tuple[int, float, str]:
+            parsed = self._parse_folder_time(path.name)
+            if parsed is not None:
+                return (0, -parsed.timestamp(), path.name)
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            return (1, mtime, path.name)
+
+        ordered = sorted(candidates, key=sort_key)
+        active_path = ordered[0]
+        recovered_names: list[str] = []
+        for older in ordered[1:]:
+            target = self.media_root / f"{older.name}-recovered"
+            suffix = 1
+            while target.exists():
+                suffix += 1
+                target = self.media_root / f"{older.name}-recovered ({suffix})"
+            older.rename(target)
+            recovered_names.append(target.name)
+        self._ensure_db_active(active_path.name, self._parse_folder_time(active_path.name))
+        if recovered_names:
+            now = self._clock.now()
+            self._audit.append(
+                AuditEvent(
+                    action="package.recovery",
+                    actor=requester or "system",
+                    occurred_at=now,
+                    details={"active": active_path.name, "recovered": recovered_names},
+                )
+            )
+            self._notify_recovery(active=active_path.name, recovered=recovered_names)
+        return {"active": active_path.name, "recovered": recovered_names}
+
+    def list_recovered_folders(self) -> list[str]:
+        """Return `-recovered` folders awaiting import (resolved ones excluded)."""
+        if not self.media_root.is_dir():
+            return []
+        return sorted(
+            p.name for p in self.media_root.iterdir()
+            if p.is_dir() and p.name.endswith("-recovered")
+        )
+
+    def _read_recovered_entries(self, folder_name: str) -> tuple[Path, list[dict]]:
+        folder = self.media_root / folder_name
+        if not folder.is_dir() or not folder_name.endswith("-recovered"):
+            raise MediaNotFound(f"recovered package {folder_name!r} not found")
+        manifest_path = folder / "manifest.json"
+        if not manifest_path.is_file():
+            raise MediaNotFound(f"manifest for {folder_name} missing")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("recovery", {}).get("resolved"):
+            raise MediaNotFound(f"recovered package {folder_name!r} already resolved")
+        entries = manifest.get("media", [])
+        return folder, [e for e in entries if e.get("status", "finalized") == "finalized"]
+
+    @staticmethod
+    def _recovered_bytes(folder: Path, entry: dict) -> tuple[str, str, bytes]:
+        media_id = str(entry.get("media_id", ""))
+        filename = str(entry.get("filename", ""))
+        content_type = str(entry.get("content_type", "image/jpeg"))
+        entry_dir = folder / "media" / media_id
+        candidate = entry_dir / filename if media_id and filename else None
+        if candidate is not None and candidate.is_file():
+            return filename, content_type, candidate.read_bytes()
+        if entry_dir.is_dir():
+            files = [p for p in entry_dir.iterdir() if p.is_file()]
+            if files:
+                return filename, content_type, files[0].read_bytes()
+        flat = folder / filename
+        if filename and flat.is_file():
+            return filename, content_type, flat.read_bytes()
+        raise MediaNotFound(f"recovered media {filename!r} missing")
+
+    def import_recovered_media(
+        self, folder_name: str, *, requester: str | None = None
+    ) -> dict:
+        """Feed recovered files through the active package's conflict workflow."""
+        folder, entries = self._read_recovered_entries(folder_name)
+        package = self._packages.get_active()
+        if package is None:
+            raise NoActivePackage("no active package to import into")
+        uploads: list[dict] = []
+        for entry in entries:
+            filename, content_type, body = self._recovered_bytes(folder, entry)
+            status = self.start_upload(
+                filename, content_type, len(body), requester=requester
+            )
+            if status.status == "receiving":
+                digest = hashlib.sha256(body).hexdigest()
+                self.append_upload_range(
+                    status.upload_id, 0, len(body), digest, body
+                )
+                try:
+                    completed = self.complete_upload(status.upload_id, requester=requester)
+                except (UploadIncomplete, UploadConflict):
+                    completed = self.get_upload_status(status.upload_id)
+                uploads.append({
+                    "filename": filename, "status": completed.status,
+                    "upload_id": completed.upload_id,
+                })
+            else:
+                uploads.append({
+                    "filename": filename, "status": status.status,
+                    "upload_id": status.upload_id,
+                })
+        self._audit.append(
+            AuditEvent(
+                action="package.recovered_import",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"folder": folder_name, "imported": len(uploads)},
+            )
+        )
+        return {"folder": folder_name, "imported": len(uploads), "uploads": uploads}
+
+    def mark_recovered_resolved(
+        self, folder_name: str, *, requester: str | None = None
+    ) -> str:
+        """Mark a `-recovered` folder handled so it is never imported twice."""
+        if not folder_name.endswith("-recovered"):
+            raise MediaNotFound(f"recovered package {folder_name!r} not found")
+        folder = self.media_root / folder_name
+        if not folder.is_dir():
+            raise MediaNotFound(f"recovered package {folder_name!r} not found")
+        manifest_path = folder / "manifest.json"
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        else:
+            manifest = {}
+        manifest.setdefault("recovery", {})["resolved"] = True
+        manifest["recovery"]["resolved_at"] = self._clock.now().isoformat()
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        stem = folder_name[: -len("-recovered")]
+        target = self.media_root / f"{stem}-resolved"
+        suffix = 1
+        while target.exists():
+            suffix += 1
+            target = self.media_root / f"{stem}-resolved ({suffix})"
+        folder.rename(target)
+        self._audit.append(
+            AuditEvent(
+                action="package.recovered_resolved",
+                actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details={"folder": folder_name, "resolved": target.name},
+            )
+        )
+        return target.name
+
     def get_upload_limits(self) -> UploadLimits:
         max_file = self._settings.get("upload.max_file_bytes") or DEFAULT_MAX_FILE_BYTES
         max_package = self._settings.get("upload.max_package_bytes") or DEFAULT_MAX_PACKAGE_BYTES
