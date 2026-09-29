@@ -4,11 +4,13 @@ import logging
 import os
 import signal
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 from dojo import DojoPublishing
 from dojo.adapters.db import PostgresStore
+from dojo.observability import configure_logging
 from dojo.scheduler import try_emission_leadership
 
 from worker.health import DEFAULT_PATH as WORKER_HEALTH_DEFAULT_PATH
@@ -26,7 +28,10 @@ SKIP_CREATE_ALL_VALUE = "1"
 def _maybe_create_all(store: PostgresStore) -> None:
     """Create schema unless SKIP_CREATE_ALL=1 (initializer owns prod schema)."""
     if os.environ.get("SKIP_CREATE_ALL") == SKIP_CREATE_ALL_VALUE:
-        logger.info("SKIP_CREATE_ALL=1; skipping create_all (initializer owns schema)")
+        logger.info(
+            "SKIP_CREATE_ALL=1; skipping create_all (initializer owns schema)",
+            extra={"event": "schema.create_all_skipped"},
+        )
         return
     store.create_all()
 
@@ -73,6 +78,7 @@ def _emission_store(publishing: DojoPublishing) -> object | None:
             len({id(store) for _, store in pairs}),
             first_attr,
             ",".join(others),
+            extra={"event": "emission.split_store", "status": first_attr},
         )
     return first
 
@@ -137,7 +143,10 @@ def build_publishing() -> DojoPublishing:
                 graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
             )
     except Exception:  # noqa: BLE001
-        logger.warning("meta publisher not configured; using stub")
+        logger.warning(
+            "meta publisher not configured; using stub",
+            extra={"event": "publisher.stub_fallback", "status": "meta"},
+        )
     try:
         from dojo.adapters.signed_urls import HmacSignedUrlStore
 
@@ -148,7 +157,10 @@ def build_publishing() -> DojoPublishing:
                 secret=secret,
             )
     except Exception:  # noqa: BLE001
-        logger.warning("signed URL store not configured; using stub")
+        logger.warning(
+            "signed URL store not configured; using stub",
+            extra={"event": "publisher.stub_fallback", "status": "signed_urls"},
+        )
     publishing = DojoPublishing(
         packages=store,
         audit=store,
@@ -161,7 +173,10 @@ def build_publishing() -> DojoPublishing:
     try:
         publishing.repair_open_folders(requester="system")
     except Exception:  # noqa: BLE001 - startup repair never blocks boot
-        logger.exception("open-folder repair failed")
+        logger.exception(
+            "open-folder repair failed",
+            extra={"event": "startup.folder_repair_failed", "status": "error"},
+        )
     return publishing
 
 
@@ -198,7 +213,11 @@ def build_meta() -> object | None:
             allowed_return_uris=[u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",") if u.strip()],
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("meta connection not configured: %s", exc)
+        logger.warning(
+            "meta connection not configured: %s",
+            exc,
+            extra={"event": "startup.meta_unavailable"},
+        )
         return None
 
 
@@ -217,7 +236,10 @@ def _run_emission_turn(publishing: DojoPublishing) -> bool:
         try:
             publishing.evaluate_due_work()
         except Exception:  # noqa: BLE001
-            logger.exception("emission turn failed; will retry next tick")
+            logger.exception(
+                "emission turn failed; will retry next tick",
+                extra={"event": "emission.turn_failed", "status": "error"},
+            )
         return False
     try:
         with try_emission_leadership(store) as leader:  # type: ignore[arg-type]
@@ -225,7 +247,10 @@ def _run_emission_turn(publishing: DojoPublishing) -> bool:
                 publishing.evaluate_due_work()
             return leader
     except Exception:  # noqa: BLE001
-        logger.exception("emission turn failed; will retry next tick")
+        logger.exception(
+            "emission turn failed; will retry next tick",
+            extra={"event": "emission.turn_failed", "status": "error"},
+        )
         return False
 
 
@@ -243,19 +268,26 @@ def _run_singleton_turn(publishing: DojoPublishing, meta: object | None) -> None
         try:
             meta.maintain()  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
-            logger.exception("meta maintain failed")
-    try:
-        publishing.reconcile_publication()
-    except Exception:  # noqa: BLE001
-        logger.exception("reconcile_publication failed")
-    try:
-        publishing.send_due_reminders()
-    except Exception:  # noqa: BLE001
-        logger.exception("send_due_reminders failed")
-    try:
-        publishing.sweep_stale_uploads()
-    except Exception:  # noqa: BLE001
-        logger.exception("sweep_stale_uploads failed")
+            logger.exception(
+                "meta maintain failed",
+                extra={"event": "singleton.meta_maintain_failed", "status": "error"},
+            )
+    for operation, call in (
+        ("reconcile_publication", lambda: publishing.reconcile_publication()),
+        ("send_due_reminders", lambda: publishing.send_due_reminders()),
+        ("sweep_stale_uploads", lambda: publishing.sweep_stale_uploads()),
+    ):
+        try:
+            call()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "%s failed", operation, extra={"event": f"singleton.{operation}_failed"}
+            )
+
+
+def _elapsed_ms(started: float) -> float:
+    """Monotonic milliseconds, rounded so records stay compact."""
+    return round((time.perf_counter() - started) * 1000, 3)
 
 
 def _run_job_turn(publishing: DojoPublishing) -> None:
@@ -264,17 +296,45 @@ def _run_job_turn(publishing: DojoPublishing) -> None:
     ``claim_next_job`` uses SELECT ... FOR UPDATE SKIP LOCKED, so followers
     may process while the leader emits; render/HTTP work stays outside the
     emission transaction by construction (the scope already closed).
+
+    Job outcomes are logged with a stable ``job.outcome`` event carrying only
+    the job id and status: ``process_job`` records expected failures itself, so
+    this is the per-execution outcome, not the durable failure alert that
+    monitoring derives from persisted state.
     """
     try:
         job = publishing.claim_next_job()
     except Exception:  # noqa: BLE001
-        logger.exception("claim_next_job failed")
+        logger.exception(
+            "claim_next_job failed", extra={"event": "job.claim_failed", "status": "error"}
+        )
         return
-    if job is not None:
-        try:
-            publishing.process_job(job.job_id)
-        except Exception:  # noqa: BLE001
-            logger.exception("process_job failed for job %s", job.job_id)
+    if job is None:
+        return
+    job_id = str(job.job_id)
+    started = time.perf_counter()
+    try:
+        publishing.process_job(job.job_id)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "process_job raised",
+            extra={
+                "event": "job.outcome",
+                "job_id": job_id,
+                "status": "error",
+                "duration_ms": _elapsed_ms(started),
+            },
+        )
+        return
+    logger.info(
+        "job processed",
+        extra={
+            "event": "job.outcome",
+            "job_id": job_id,
+            "status": "processed",
+            "duration_ms": _elapsed_ms(started),
+        },
+    )
 
 
 def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
@@ -324,11 +384,14 @@ def _mark_health(write: Callable[[], None], phase: str) -> None:
             "worker health %s write failed; probe will report unhealthy",
             phase,
             exc_info=True,
+            extra={"event": "worker.health_write_failed", "status": phase},
         )
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    # Configured before any dependency construction so boot failures are
+    # already structured JSON rather than the bare basicConfig format.
+    configure_logging("worker")
     publishing = build_publishing()
     meta = build_meta()
     interval = float(os.environ.get("WORKER_INTERVAL_SECONDS", "10"))
@@ -348,19 +411,23 @@ def main() -> None:
     # in-flight render runs at most until the container orchestrator's
     # stop_grace_period ends it (Task 4 owns that Compose value; this worker
     # assumes 120s — see the task-2 handoff report).
+    logger.info("worker started", extra={"event": "service.startup"})
     try:
         while not stop.is_set():
             _mark_health(health.busy, "busy")
             try:
                 run_tick(publishing, meta)
             except Exception:  # noqa: BLE001 - belt and braces; run_tick is isolated
-                logger.exception("worker tick failed; continuing")
+                logger.exception(
+                    "worker tick failed; continuing",
+                    extra={"event": "worker.tick_failed", "status": "error"},
+                )
             _mark_health(health.idle, "idle")
             stop.wait(interval)
     finally:
         _mark_health(health.stopped, "stopped")
 
-    logger.info("worker stopped")
+    logger.info("worker stopped", extra={"event": "service.shutdown"})
 
 
 if __name__ == "__main__":

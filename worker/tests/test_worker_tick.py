@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -9,6 +11,7 @@ import pytest
 import worker.main as worker_main
 from dojo import DojoPublishing, InMemoryStore, Job
 from dojo.adapters.stubs import StubMediaProcessor
+from dojo.observability import JsonFormatter
 from worker.main import (
     _emission_store,
     _maybe_create_all,
@@ -223,6 +226,38 @@ def test_emission_store_split_stores_warn_loudly(
     mock_logger.warning.assert_called_once()
     msg = mock_logger.warning.call_args.args[0]
     assert "do not share one emission store" in msg
+
+
+def test_job_outcome_is_logged_with_safe_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Job outcomes carry a stable event plus job_id/status/duration only."""
+    with caplog.at_level(logging.INFO, logger="worker.main"):
+        run_tick(TickSpy(), None)
+    outcomes = [r for r in caplog.records if getattr(r, "event", None) == "job.outcome"]
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.job_id == "j-1"
+    assert outcome.status == "processed"
+    assert isinstance(outcome.duration_ms, float)
+    assert JsonFormatter("worker").format(outcome).count("\n") == 0
+
+
+def test_job_outcome_logs_raised_failure_with_error_type(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _raise(self: TickSpy, job_id: str) -> None:
+        raise RuntimeError("render failed with token=s3cr3t-bearer-token")
+
+    monkeypatch.setattr(TickSpy, "process_job", _raise)
+    with caplog.at_level(logging.INFO, logger="worker.main"):
+        run_tick(TickSpy(), None)
+    (outcome,) = [r for r in caplog.records if getattr(r, "event", None) == "job.outcome"]
+    assert outcome.status == "error"
+    assert outcome.job_id == "j-1"
+    line = JsonFormatter("worker").format(outcome)
+    assert "s3cr3t-bearer-token" not in line
+    assert json.loads(line)["error_type"] == "RuntimeError"
 
 
 def test_no_coordinator_emits_directly_without_leadership() -> None:

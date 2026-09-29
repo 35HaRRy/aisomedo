@@ -19,4 +19,6 @@ RUN uv sync --frozen --no-dev --package backend
 
 EXPOSE 8000
 
-CMD [".venv/bin/python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# backend.serve installs the shared JSON log formatter before Uvicorn starts
+# and passes log_config=None so Uvicorn does not replace it.
+CMD [".venv/bin/python", "-m", "backend.serve"]
