@@ -8,6 +8,8 @@ from datetime import datetime
 from threading import RLock
 from typing import overload
 
+from sqlalchemy.exc import IntegrityError
+
 from dojo.model import (
     AuditEvent,
     Client,
@@ -90,6 +92,17 @@ class InMemoryStore:
         self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
     ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
         if isinstance(obj, YayinIncelemesi):
+            # Parity with PostgresStore.create: duplicates raise; use
+            # create_review_once for race-safe insertion.
+            if (
+                self.get_by_occurrence_revision(
+                    obj.occurrence_id, obj.revision_digest,
+                )
+                is not None
+            ):
+                raise IntegrityError(
+                    "INSERT INTO yayin_incelemesi", {}, Exception("duplicate review"),
+                )
             return self.create_review_once(obj)[0]
         if isinstance(obj, YayinZamani):
             with self._creation_lock:
@@ -107,6 +120,13 @@ class InMemoryStore:
             self._uploads.append(created_upload)
             return created_upload
         if isinstance(obj, Job):
+            # Parity with PostgresStore.create: duplicate job_id raises; use
+            # create_job_once for race-safe insertion.
+            for candidate in self._jobs:
+                if candidate.job_id == obj.job_id:
+                    raise IntegrityError(
+                        "INSERT INTO jobs", {}, Exception("duplicate job"),
+                    )
             return self.create_job_once(obj)[0]
         created_package = replace(obj, id=self._next_id)
         self._next_id += 1

@@ -243,3 +243,19 @@ def test_explicit_preview_retry(pg_store, tmp_path, terminal):
     retry = publishing.claim_next_job()
     assert retry is not None and retry.id != claimed.id
     assert retry.payload == claimed.payload
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_legacy_create_raises_on_duplicates(pg_store, memory):
+    store = InMemoryStore() if memory else pg_store
+    store.create(job("dup"))
+    with pytest.raises(Exception):
+        store.create(job("dup"))
+    occ = store.create(YayinZamani(id=0, kind="regular", due_at=FIXED_AT,
+                                   status="pending", created_at=FIXED_AT))
+    review = YayinIncelemesi(id=0, occurrence_id=occ.id, package_folder="p",
+                             revision_digest="d", caption=None, status="pending",
+                             created_at=FIXED_AT)
+    store.create(review)
+    with pytest.raises(Exception):
+        store.create(review)
