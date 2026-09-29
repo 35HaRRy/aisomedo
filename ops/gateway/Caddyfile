@@ -1,0 +1,25 @@
+{$SITE_ADDRESS::80} {
+	encode gzip
+
+	root * /srv
+
+	# API and signed publication artifacts proxy to the backend verbatim
+	# (no rewrite). This matcher must stay ahead of the SPA fallback so
+	# these routes never fall through to index.html.
+	@backend {
+		path /api/* /pub/* /health
+	}
+	handle @backend {
+		reverse_proxy backend:8000 {
+			trusted_proxies {$TRUSTED_PROXIES:private_ranges}
+		}
+	}
+
+	# Frontend deep links: serve static assets, fall back to the SPA.
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
+
+	log
+}

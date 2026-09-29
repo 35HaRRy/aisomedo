@@ -48,5 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.yml config
+      - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml config
+      - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml config
       - run: docker build -f backend/Dockerfile .
       - run: docker build -f worker/Dockerfile .
+      - run: docker build -f ops/gateway/Dockerfile .

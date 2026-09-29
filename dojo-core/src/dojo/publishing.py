@@ -1117,7 +1117,16 @@ class DojoPublishing:
         shutil.rmtree(self.media_root / "tmp" / f"render-{job.job_id}", ignore_errors=True)
 
     def evaluate_due_work(self) -> None:
-        """Scheduler trigger: materialize due slots, then create durable reviews."""
+        """Scheduler trigger: materialize due slots, then create durable reviews.
+
+        Must run inside ``try_emission_leadership`` on the one shared store
+        backing every port of this instance (the worker's ``run_tick`` owns
+        that scope). All writes then join the lock-holding transaction, so a
+        disconnected former leader cannot keep emitting and an emission
+        exception rolls the whole turn back for a later-tick retry. Render
+        and HTTP work stays outside: ``process_job`` is called separately,
+        after the scope closes.
+        """
         self.ensure_schedule_upto()
         self._ensure_reviews_for_due()
 
@@ -1159,7 +1168,7 @@ class DojoPublishing:
                 is not None
             ):
                 continue
-            review = self._reviews.create(
+            self._reviews.create_review_once(
                 YayinIncelemesi(
                     id=0,
                     occurrence_id=occurrence.id,
@@ -1168,15 +1177,12 @@ class DojoPublishing:
                     caption=caption,
                     status="pending",
                     created_at=now,
-                )
-            )
-            self._audit.append(
-                AuditEvent(
+                ),
+                audit=AuditEvent(
                     action="review.created",
                     actor="worker",
                     occurred_at=now,
                     details={
-                        "review_id": review.id,
                         "occurrence_id": occurrence.id,
                         "package": package.folder_name,
                         "revision_digest": digest,
@@ -2232,8 +2238,8 @@ class DojoPublishing:
         )
         return resolved_review
 
-    def render_preview(self) -> dict:
-        """Render on explicit preview (or when stale) and return the render digest."""
+    def render_preview(self, *, retry: bool = False) -> dict:
+        """Render when stale; explicit retry also allows failed/completed revisions."""
         package = self._require_active_package()
         self._assert_logo_configured()
         status = self.get_montage_status()
@@ -2245,8 +2251,8 @@ class DojoPublishing:
         manifest = self._load_manifest(package)
         digest = self._render_digest(package, manifest)
         stale = manifest.get("render_revision") != digest
-        if stale:
-            self._enqueue_render(package, digest)
+        if stale or retry:
+            self._enqueue_render(package, digest, retry=retry)
         return {"stale": stale, "render_revision": digest}
 
     def render_if_stale(self) -> bool:
@@ -2289,11 +2295,11 @@ class DojoPublishing:
         canonical = json.dumps(inputs, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def _enqueue_render(self, package: Package, digest: str) -> None:
-        if self._render_failed_digest(package) == digest:
+    def _enqueue_render(self, package: Package, digest: str, *, retry: bool = False) -> None:
+        if not retry and self._render_failed_digest(package) == digest:
             return
         now = self._clock.now()
-        self._jobs.create(
+        self._jobs.create_job_once(
             Job(
                 id=0,
                 job_id=uuid.uuid4().hex,
@@ -2302,10 +2308,8 @@ class DojoPublishing:
                 status="queued",
                 payload={"package": package.folder_name, "digest": digest},
                 created_at=now,
-            )
-        )
-        self._audit.append(
-            AuditEvent(
+            ),
+            audit=AuditEvent(
                 action="render.queued",
                 actor="system",
                 occurred_at=now,

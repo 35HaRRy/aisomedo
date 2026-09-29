@@ -3,13 +3,100 @@ from __future__ import annotations
 import logging
 import os
 import signal
-import time
+import threading
 from pathlib import Path
 
 from dojo import DojoPublishing
 from dojo.adapters.db import PostgresStore
+from dojo.scheduler import try_emission_leadership
 
 logger = logging.getLogger(__name__)
+
+#: Exact production-DDL contract: only the literal string "1" skips schema
+#: creation. Unset or any other value keeps the current dev behavior
+#: (create_all on boot). Production sets SKIP_CREATE_ALL=1 and lets the
+#: initializer (`python -m dojo.schema`) own the schema instead.
+SKIP_CREATE_ALL_VALUE = "1"
+
+
+def _maybe_create_all(store: PostgresStore) -> None:
+    """Create schema unless SKIP_CREATE_ALL=1 (initializer owns prod schema)."""
+    if os.environ.get("SKIP_CREATE_ALL") == SKIP_CREATE_ALL_VALUE:
+        logger.info("SKIP_CREATE_ALL=1; skipping create_all (initializer owns schema)")
+        return
+    store.create_all()
+
+
+def _emission_store(publishing: DojoPublishing) -> object | None:
+    """Return the shared store backing emission writes, if it coordinates.
+
+    Production wires one PostgresStore through every DojoPublishing port, so
+    ``_packages`` is that instance. The scan fallback keeps directly built
+    publishing objects working without coupling run_tick to a new public API.
+
+    Single-store expectation: production wires one PostgresStore through every
+    port. When coordinator-capable ports are DISTINCT instances, leadership is
+    elected on the returned store while emission may write through another —
+    so log loudly (names + count) instead of silently picking first. Distinct
+    per-port stores remain supported (dev/test pattern); the warning makes a
+    production miswire visible rather than silent.
+
+    Fallback contract: ``None`` (no coordinator-capable port) means emit
+    directly without leadership gating. That path exists for directly built
+    dev/test publishing objects only; production always wires a coordinating
+    PostgresStore, so leadership always gates there.
+    """
+    attrs = (
+        "_packages", "_schedule", "_jobs", "_reviews",
+        "_audit", "_uploads", "_settings",
+    )
+    pairs: list[tuple[str, object]] = []
+    for attr in attrs:
+        store = getattr(publishing, attr, None)
+        if hasattr(store, "emission_transaction") and hasattr(
+            store, "try_advisory_xact_lock"
+        ):
+            pairs.append((attr, store))
+    if not pairs:
+        return None
+    first_attr, first = pairs[0]
+    others = sorted(attr for attr, store in pairs[1:] if store is not first)
+    if others:
+        logger.warning(
+            "publishing ports do not share one emission store: "
+            "%d distinct coordinator instances (first=%s, others=%s); "
+            "leadership gates on the first",
+            len({id(store) for _, store in pairs}),
+            first_attr,
+            ",".join(others),
+        )
+    return first
+
+
+def resolve_public_base_url(cookie_secure: bool | None = None) -> str:
+    """Canonical public origin (mirrors backend.deps; worker has no backend dep).
+
+    Fail-closed on operator typo: non-localhost http origin raises while
+    COOKIE_SECURE resolves true (default true); dev localhost exempt.
+    """
+    from urllib.parse import urlparse
+
+    raw = os.environ.get("PUBLIC_HTTPS_ORIGIN", "").strip()
+    origin = raw or os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").strip()
+    origin = origin.rstrip("/") or "http://localhost:8000"
+    secure = (
+        cookie_secure
+        if cookie_secure is not None
+        else os.environ.get("COOKIE_SECURE", "true").lower() == "true"
+    )
+    if secure:
+        host = (urlparse(origin).hostname or "").lower()
+        if urlparse(origin).scheme != "https" and host not in ("localhost", "127.0.0.1", "::1"):
+            raise RuntimeError(
+                f"refusing non-https public origin {origin!r} while COOKIE_SECURE is true; "
+                "fix PUBLIC_HTTPS_ORIGIN to an https:// URL (dev localhost exempt)"
+            )
+    return origin
 
 
 def _build_notifier() -> object | None:
@@ -24,12 +111,13 @@ def _build_notifier() -> object | None:
 
 
 def build_publishing() -> DojoPublishing:
+    resolve_public_base_url()  # fail fast on non-https origin while secure
     url = os.environ.get(
         "DATABASE_URL", "postgresql+psycopg://dojo:dojo@localhost:5432/dojo"
     )
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
     store = PostgresStore(url)
-    store.create_all()
+    _maybe_create_all(store)
     kwargs: dict = {}
     notifier = _build_notifier()
     if notifier is not None:
@@ -52,7 +140,7 @@ def build_publishing() -> DojoPublishing:
         secret = os.environ.get("SIGNED_URL_SECRET", "")
         if secret:
             kwargs["signed_urls"] = HmacSignedUrlStore(
-                base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
+                base_url=resolve_public_base_url(),
                 secret=secret,
             )
     except Exception:  # noqa: BLE001
@@ -84,7 +172,7 @@ def build_meta() -> object | None:
 
         url = os.environ.get("DATABASE_URL", "postgresql+psycopg://dojo:dojo@localhost:5432/dojo")
         store = PostgresStore(url)
-        store.create_all()
+        _maybe_create_all(store)
         key = os.environ.get("META_TOKEN_ENCRYPTION_KEY", "")
         if not key:
             raise RuntimeError("META_TOKEN_ENCRYPTION_KEY is required")
@@ -100,7 +188,8 @@ def build_meta() -> object | None:
             audit=store,
             app_id=os.environ.get("META_APP_ID", "dev_app_id"),
             app_secret=os.environ.get("META_APP_SECRET", "dev_secret"),
-            redirect_uri=os.environ.get("META_REDIRECT_URI", "http://localhost:8000/api/meta/oauth/callback"),
+            redirect_uri=os.environ.get("META_REDIRECT_URI", "").strip()
+            or f"{resolve_public_base_url()}/api/meta/oauth/callback",
             graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
             allowed_return_uris=[u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",") if u.strip()],
         )
@@ -109,25 +198,92 @@ def build_meta() -> object | None:
         return None
 
 
-def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
+def _run_emission_turn(publishing: DojoPublishing) -> bool:
+    """Schedule evaluation under per-turn advisory leadership.
+
+    Only the lock holder emits; followers skip. The exception must propagate
+    through ``try_emission_leadership`` so the turn rolls back — it is caught
+    outside the scope and the next tick retries. Returns True for the leader.
+    """
+    store = _emission_store(publishing)
+    if store is None:
+        # Fallback contract (see _emission_store): no coordinator means emit
+        # directly; production never takes this path (PostgresStore always
+        # coordinates), so this stays ungated by design, not by accident.
+        try:
+            publishing.evaluate_due_work()
+        except Exception:  # noqa: BLE001
+            logger.exception("emission turn failed; will retry next tick")
+        return False
+    try:
+        with try_emission_leadership(store) as leader:  # type: ignore[arg-type]
+            if leader:
+                publishing.evaluate_due_work()
+            return leader
+    except Exception:  # noqa: BLE001
+        logger.exception("emission turn failed; will retry next tick")
+        return False
+
+
+def _run_singleton_turn(publishing: DojoPublishing, meta: object | None) -> None:
+    """Leader-only follow-ups, each fault-isolated, outside the emission txn.
+
+    Reconciliation polls saved Meta identifiers over HTTP, reminders send
+    push, sweeps abort stale uploads, and meta.maintain refreshes tokens on
+    its own separately constructed store — none of them may hold the emission
+    transaction across those calls, and none may run concurrently on two
+    workers merely because followers can claim jobs. Gating on the emission
+    leader flag coordinates them as singletons without sharing transactions.
+    """
     if meta is not None:
         try:
             meta.maintain()  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             logger.exception("meta maintain failed")
-    publishing.evaluate_due_work()
     try:
         publishing.reconcile_publication()
     except Exception:  # noqa: BLE001
         logger.exception("reconcile_publication failed")
-    job = publishing.claim_next_job()
-    if job is not None:
-        publishing.process_job(job.job_id)
     try:
         publishing.send_due_reminders()
     except Exception:  # noqa: BLE001
         logger.exception("send_due_reminders failed")
-    publishing.sweep_stale_uploads()
+    try:
+        publishing.sweep_stale_uploads()
+    except Exception:  # noqa: BLE001
+        logger.exception("sweep_stale_uploads failed")
+
+
+def _run_job_turn(publishing: DojoPublishing) -> None:
+    """Concurrent-safe job execution on every worker via atomic claims.
+
+    ``claim_next_job`` uses SELECT ... FOR UPDATE SKIP LOCKED, so followers
+    may process while the leader emits; render/HTTP work stays outside the
+    emission transaction by construction (the scope already closed).
+    """
+    try:
+        job = publishing.claim_next_job()
+    except Exception:  # noqa: BLE001
+        logger.exception("claim_next_job failed")
+        return
+    if job is not None:
+        try:
+            publishing.process_job(job.job_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("process_job failed for job %s", job.job_id)
+
+
+def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
+    """One scheduler turn: leadership-gated emission, leader singletons, jobs.
+
+    Never raises: every operation is fault-isolated so an uncaught tick error
+    cannot kill the worker; the main loop keeps the normal interval instead
+    of tight-looping on DB-unavailable.
+    """
+    leader = _run_emission_turn(publishing)
+    if leader:
+        _run_singleton_turn(publishing, meta)
+    _run_job_turn(publishing)
 
 
 def main() -> None:
@@ -136,18 +292,25 @@ def main() -> None:
     meta = build_meta()
     interval = float(os.environ.get("WORKER_INTERVAL_SECONDS", "10"))
 
-    running = True
+    stop = threading.Event()
 
     def _stop(_signum: int, _frame: object) -> None:
-        nonlocal running
-        running = False
+        stop.set()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    while running:
-        run_tick(publishing, meta)
-        time.sleep(interval)
+    # SIGTERM sets the flag AND bounds in-flight work: the sleep is
+    # interruptible (no new wait after stop), no new tick starts, and an
+    # in-flight render runs at most until the container orchestrator's
+    # stop_grace_period ends it (Task 4 owns that Compose value; this worker
+    # assumes 120s — see the task-2 handoff report).
+    while not stop.is_set():
+        try:
+            run_tick(publishing, meta)
+        except Exception:  # noqa: BLE001 - belt and braces; run_tick is isolated
+            logger.exception("worker tick failed; continuing")
+        stop.wait(interval)
 
     logger.info("worker stopped")
 

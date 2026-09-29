@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime
 from threading import RLock
 from typing import overload
+
+from sqlalchemy.exc import IntegrityError
 
 from dojo.model import (
     AuditEvent,
@@ -53,6 +58,24 @@ class InMemoryStore:
         self._meta_expires_at: datetime | None = None
         self._meta_attempts: dict[str, dict] = {}
         self._meta_lock = RLock()
+        self._creation_lock = RLock()
+        self._emission_active: ContextVar[bool] = ContextVar("emission_active", default=False)
+
+    @contextmanager
+    def emission_transaction(self) -> Iterator[None]:
+        """Single-process test adapter: no persistence rollback or distributed lock."""
+        if self._emission_active.get():
+            raise RuntimeError("nested emission transactions are not supported")
+        token = self._emission_active.set(True)
+        try:
+            yield
+        finally:
+            self._emission_active.reset(token)
+
+    def try_advisory_xact_lock(self, key: int) -> bool:
+        if not self._emission_active.get():
+            raise RuntimeError("advisory lock requires an emission transaction")
+        return True
 
     @overload
     def create(self, obj: Package) -> Package: ...
@@ -69,29 +92,80 @@ class InMemoryStore:
         self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
     ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
         if isinstance(obj, YayinIncelemesi):
-            created_review = replace(obj, id=self._next_review_id)
-            self._next_review_id += 1
-            self._reviews.append(created_review)
-            return created_review
+            # Parity with PostgresStore.create: duplicates raise; use
+            # create_review_once for race-safe insertion.
+            if (
+                self.get_by_occurrence_revision(
+                    obj.occurrence_id, obj.revision_digest,
+                )
+                is not None
+            ):
+                raise IntegrityError(
+                    "INSERT INTO yayin_incelemesi", {}, Exception("duplicate review"),
+                )
+            return self.create_review_once(obj)[0]
         if isinstance(obj, YayinZamani):
-            created_occ = replace(obj, id=self._next_occ_id)
-            self._next_occ_id += 1
-            self._occurrences.append(created_occ)
-            return created_occ
+            with self._creation_lock:
+                if obj.kind == "regular":
+                    for existing in self._occurrences:
+                        if existing.kind == "regular" and existing.due_at == obj.due_at:
+                            return existing
+                created_occ = replace(obj, id=self._next_occ_id)
+                self._next_occ_id += 1
+                self._occurrences.append(created_occ)
+                return created_occ
         if isinstance(obj, Upload):
             created_upload = replace(obj, id=self._next_upload_id)
             self._next_upload_id += 1
             self._uploads.append(created_upload)
             return created_upload
         if isinstance(obj, Job):
-            created_job = replace(obj, id=self._next_job_id)
-            self._next_job_id += 1
-            self._jobs.append(created_job)
-            return created_job
+            # Parity with PostgresStore.create: duplicate job_id raises; use
+            # create_job_once for race-safe insertion.
+            for candidate in self._jobs:
+                if candidate.job_id == obj.job_id:
+                    raise IntegrityError(
+                        "INSERT INTO jobs", {}, Exception("duplicate job"),
+                    )
+            return self.create_job_once(obj)[0]
         created_package = replace(obj, id=self._next_id)
         self._next_id += 1
         self._packages.append(created_package)
         return created_package
+
+    def create_job_once(
+        self, job: Job, *, audit: AuditEvent | None = None,
+    ) -> tuple[Job, bool]:
+        with self._creation_lock:
+            if job.kind == "render" and job.status in ("queued", "processing"):
+                for existing in self._jobs:
+                    if (existing.kind == "render"
+                            and existing.status in ("queued", "processing")
+                            and existing.payload.get("package") == job.payload.get("package")
+                            and existing.payload.get("digest") == job.payload.get("digest")):
+                        return existing, False
+            created = replace(job, id=self._next_job_id)
+            if audit is not None:
+                self.append(audit)
+            self._next_job_id += 1
+            self._jobs.append(created)
+            return created, True
+
+    def create_review_once(
+        self, review: YayinIncelemesi, *, audit: AuditEvent | None = None,
+    ) -> tuple[YayinIncelemesi, bool]:
+        with self._creation_lock:
+            existing = self.get_by_occurrence_revision(
+                review.occurrence_id, review.revision_digest,
+            )
+            if existing is not None:
+                return existing, False
+            created = replace(review, id=self._next_review_id)
+            if audit is not None:
+                self.append(replace(audit, details={**audit.details, "review_id": created.id}))
+            self._next_review_id += 1
+            self._reviews.append(created)
+            return created, True
 
     def get_active(self) -> Package | None:
         for package in reversed(self._packages):

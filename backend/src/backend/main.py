@@ -15,6 +15,7 @@ from backend.deps import (
     build_setup,
     get_current_client,
 )
+from backend.proxy import ProxyHeadersMiddleware, parse_trusted_proxies
 from backend.routes import activity as activity_router
 from backend.routes import health, packages
 from backend.routes import media as media_router
@@ -71,6 +72,7 @@ def create_app(
     setup: DojoSetup | None = None,
     meta: DojoMetaConnection | None = None,
     cookie_secure: bool | None = None,
+    trusted_proxies: str | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Dojo publishing API",
@@ -91,9 +93,19 @@ def create_app(
     if meta is not None:
         app.state.meta = meta
     _wire_setup_meta(app)
+    if trusted_proxies is None:
+        trusted_proxies = os.environ.get("TRUSTED_PROXIES", "private_ranges")
+    try:
+        parse_trusted_proxies(trusted_proxies)
+    except ValueError as exc:
+        raise ValueError(f"invalid TRUSTED_PROXIES {trusted_proxies!r}: {exc}") from exc
+    app.add_middleware(ProxyHeadersMiddleware, trusted_proxies=trusted_proxies)
     if cookie_secure is None:
         cookie_secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
     app.state.cookie_secure = cookie_secure
+    from backend.deps import resolve_public_base_url as _resolve_origin
+
+    _resolve_origin(cookie_secure)
     app.state.throttle = IpThrottle()
     app.include_router(health.router)
     app.include_router(packages.router, dependencies=[Depends(get_current_client)])
