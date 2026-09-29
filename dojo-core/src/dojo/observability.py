@@ -9,17 +9,20 @@ construction rather than filtered afterwards:
   legacy ``logger.warning("token=%s", token)`` calls cannot leak credentials
   (suppressing the text is cheaper and more reliable than trying to recognize
   every possible secret);
+- ``event`` must be a dotted lowercase literal. It is the one field a caller
+  supplies as free text, so it is validated against ``EVENT_PATTERN``; anything
+  else falls back to the logger name, which is itself validated;
 - only ``extra`` keys on the allowlist below reach a record, so request
   headers/bodies and raw SQL parameters are dropped even when a caller passes
   them;
 - unexpected exceptions contribute their class name and stack frames
   (file/function/line) only, never the exception text, local variables or
   source lines;
-- access logs drop query strings, client addresses, and signed artifact paths
-  collapse to a fixed route label.
+- access logs drop query strings, client addresses, and signed artifact routes
+  collapse to a fixed label however the route is spelled.
 
-Callers opt in to structure by passing an explicit ``event`` literal;
-records without one fall back to the logger name so legacy call sites still
+Callers opt in to structure by passing an explicit ``event`` literal; records
+without a usable one fall back to the logger name so legacy call sites still
 produce a searchable event.
 """
 
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import UTC, datetime
 from types import TracebackType
@@ -47,12 +51,29 @@ ALLOWED_FIELDS = (
     "http_status",
 )
 
+#: Computed by the formatter from the record itself, never read from ``extra``:
+#: ``path`` from a Uvicorn access target, ``stack`` from ``exc_info``. Keeping
+#: them out of ``ALLOWED_FIELDS`` means a caller cannot spoof either field.
+DERIVED_FIELDS = ("path", "stack")
+
+#: ``event`` is caller-supplied free text, so it is the one field that must be
+#: a stable dotted lowercase literal rather than anything a caller passed.
+EVENT_PATTERN = re.compile(r"^[a-z_]+(\.[a-z_]+)*$")
+
+#: Used when neither an explicit event nor the logger name is a safe literal.
+UNKNOWN_EVENT = "unknown"
+
 #: Uvicorn emits access records on this logger with a fixed argument tuple.
 ACCESS_LOGGER = "uvicorn.access"
 ACCESS_EVENT = "http.access"
 
-#: Signed artifact URLs carry an unguessable token in the path.
-SIGNED_PATH_PREFIX = "/pub/"
+#: Signed artifact URLs put an unguessable token in the path. Matched as a
+#: route segment rather than a bare string prefix, because the request path
+#: can carry an ASGI mount/root path (``/api/pub/<token>``) that a prefix check
+#: would miss and let the token through. ``/pubx/...`` and ``/public/...`` are
+#: different routes and keep their real path; every spelling of the signed
+#: route collapses to the label.
+SIGNED_ROUTE_PATTERN = re.compile(r"(^|/)pub(/|$)")
 SIGNED_ROUTE_LABEL = "/pub/{token}"
 
 #: Records longer than this are dropped whole: truncation could otherwise
@@ -60,6 +81,13 @@ SIGNED_ROUTE_LABEL = "/pub/{token}"
 MAX_VALUE_CHARS = 256
 
 _MANAGED_HANDLER_FLAG = "_dojo_json_handler"
+
+
+def _safe_event(value: object) -> str | None:
+    """A stable event literal, or ``None`` when the value must not be emitted."""
+    if not isinstance(value, str) or not EVENT_PATTERN.fullmatch(value):
+        return None
+    return value if len(value) <= MAX_VALUE_CHARS else None
 
 
 def _safe_text(value: object) -> str | None:
@@ -114,8 +142,8 @@ def _access_fields(record: logging.LogRecord) -> dict[str, object]:
     Uvicorn formats these with
     ``'%s - "%s %s HTTP/%s" %d'`` and arguments
     ``(client_addr, method, full_path, http_version, status_code)``. The client
-    address and the query string are deliberately not read; a signed artifact
-    path is replaced by a fixed label so the token never reaches the log.
+    address and the query string are deliberately not read; the signed artifact
+    route is collapsed to a fixed label so the token never reaches the log.
     """
     args = record.args
     if not isinstance(args, tuple) or len(args) != 5:
@@ -128,7 +156,7 @@ def _access_fields(record: logging.LogRecord) -> dict[str, object]:
     if isinstance(status, int) and not isinstance(status, bool):
         fields["http_status"] = status
     path = target.split("?", 1)[0] if isinstance(target, str) else ""
-    if path.startswith(SIGNED_PATH_PREFIX):
+    if SIGNED_ROUTE_PATTERN.search(path):
         path = SIGNED_ROUTE_LABEL
     safe_path = _safe_text(path)
     if safe_path is not None:
@@ -144,13 +172,15 @@ class JsonFormatter(logging.Formatter):
         self._service = service
 
     def format(self, record: logging.LogRecord) -> str:
-        explicit = _safe_text(getattr(record, "event", None))
+        explicit = _safe_event(getattr(record, "event", None))
         if explicit is not None:
             event = explicit
         elif record.name == ACCESS_LOGGER:
             event = ACCESS_EVENT
         else:
-            event = record.name
+            # Logger names are code identifiers, but validate anyway: an
+            # unusable name must not become a free-text channel either.
+            event = _safe_event(record.name) or UNKNOWN_EVENT
         payload: dict[str, object] = {
             "timestamp": _timestamp(record.created),
             "level": record.levelname,

@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -42,6 +43,25 @@ def instagram_response(request):
             "access_token": "renewed-private-token", "token_type": "bearer", "expires_in": 5180000,
         })
     raise AssertionError(f"Unexpected request path: {request.url.path}")
+
+
+def test_instagram_provider_never_logs_the_access_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The token is a query parameter, so it must not reach any log record.
+
+    Console scripts and `python -m dojo.schema` never call configure_logging,
+    so logging.lastResort would print a warning message verbatim to stderr.
+    """
+    provider = adapters.HttpInstagramTokenProvider(
+        http_client=httpx.Client(transport=httpx.MockTransport(instagram_response)),
+        clock=FakeClock(NOW),
+    )
+    with caplog.at_level(logging.DEBUG, logger="dojo.adapters.meta"):
+        provider.get_account(TOKEN)
+        provider.refresh_token(TOKEN)
+    assert TOKEN not in caplog.text
+    assert "renewed-private-token" not in caplog.text
 
 
 def test_import_discovers_account_encrypts_token_and_does_not_invent_expiry():

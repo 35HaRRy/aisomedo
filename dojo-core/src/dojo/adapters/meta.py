@@ -330,7 +330,13 @@ class HttpInstagramTokenProvider:
     def _get(self, path: str, token: str, params: dict[str, str] | None = None) -> dict:
         url = f"https://graph.instagram.com/{path}"
         merged = {**(params or {}), "access_token": token}
-        logger.warning("Instagram request path: path=%s params=%s", path, merged)
+        # Parameter keys only: values include the Instagram access token, and
+        # console scripts and `python -m dojo.schema` never call
+        # configure_logging, so logging.lastResort would print any value here
+        # in plaintext to stderr.
+        logger.warning(
+            "Instagram request: path=%s params=%s", path, sorted(merged)
+        )
         try:
             if self._http is None:
                 with httpx.Client(timeout=20, follow_redirects=False) as client:
