@@ -1117,7 +1117,16 @@ class DojoPublishing:
         shutil.rmtree(self.media_root / "tmp" / f"render-{job.job_id}", ignore_errors=True)
 
     def evaluate_due_work(self) -> None:
-        """Scheduler trigger: materialize due slots, then create durable reviews."""
+        """Scheduler trigger: materialize due slots, then create durable reviews.
+
+        Must run inside ``try_emission_leadership`` on the one shared store
+        backing every port of this instance (the worker's ``run_tick`` owns
+        that scope). All writes then join the lock-holding transaction, so a
+        disconnected former leader cannot keep emitting and an emission
+        exception rolls the whole turn back for a later-tick retry. Render
+        and HTTP work stays outside: ``process_job`` is called separately,
+        after the scope closes.
+        """
         self.ensure_schedule_upto()
         self._ensure_reviews_for_due()
 

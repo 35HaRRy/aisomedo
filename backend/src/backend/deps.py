@@ -13,11 +13,22 @@ COOKIE_NAME = "dojo_session"
 SESSION_MAX_AGE = 30 * 24 * 3600
 
 
+def _maybe_create_all(store: PostgresStore) -> None:
+    """Create schema unless SKIP_CREATE_ALL=1 (initializer owns prod schema).
+
+    Same contract as the worker: only the literal string "1" skips; unset or
+    any other value keeps dev behavior.
+    """
+    if os.environ.get("SKIP_CREATE_ALL") == "1":
+        return
+    store.create_all()
+
+
 def build_publishing() -> DojoPublishing:
     url = os.environ.get("DATABASE_URL", DEFAULT_URL)
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
     store = PostgresStore(url)
-    store.create_all()
+    _maybe_create_all(store)
     kwargs: dict = {}
     try:
         from dojo.adapters.meta import FernetCipher, HttpMetaPublisher
@@ -56,21 +67,21 @@ def build_publishing() -> DojoPublishing:
 def build_pairing() -> DojoPairing:
     url = os.environ.get("DATABASE_URL", DEFAULT_URL)
     store = PostgresStore(url)
-    store.create_all()
+    _maybe_create_all(store)
     return DojoPairing(pairing=store, audit=store)
 
 
 def build_activity() -> DojoActivity:
     url = os.environ.get("DATABASE_URL", DEFAULT_URL)
     store = PostgresStore(url)
-    store.create_all()
+    _maybe_create_all(store)
     return DojoActivity(audit=store, pairing=store)
 
 
 def build_meta() -> DojoMetaConnection:
     url = os.environ.get("DATABASE_URL", DEFAULT_URL)
     store = PostgresStore(url)
-    store.create_all()
+    _maybe_create_all(store)
     key = os.environ.get("META_TOKEN_ENCRYPTION_KEY", "")
     if not key:
         raise RuntimeError("META_TOKEN_ENCRYPTION_KEY is required")
@@ -95,7 +106,7 @@ def build_meta() -> DojoMetaConnection:
 def build_setup(meta: DojoMetaConnection | None = None) -> DojoSetup:
     url = os.environ.get("DATABASE_URL", DEFAULT_URL)
     store = PostgresStore(url)
-    store.create_all()
+    _maybe_create_all(store)
     return DojoSetup(setup=store, audit=store, pairing=store, meta=meta)
 
 
