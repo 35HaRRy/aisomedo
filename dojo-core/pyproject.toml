@@ -31,6 +31,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dojo"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "dojo/migrations"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

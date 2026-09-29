@@ -56,6 +56,7 @@ class InMemoryStore:
         self._meta_expires_at: datetime | None = None
         self._meta_attempts: dict[str, dict] = {}
         self._meta_lock = RLock()
+        self._creation_lock = RLock()
         self._emission_active: ContextVar[bool] = ContextVar("emission_active", default=False)
 
     @contextmanager
@@ -89,29 +90,62 @@ class InMemoryStore:
         self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
     ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
         if isinstance(obj, YayinIncelemesi):
-            created_review = replace(obj, id=self._next_review_id)
-            self._next_review_id += 1
-            self._reviews.append(created_review)
-            return created_review
+            return self.create_review_once(obj)[0]
         if isinstance(obj, YayinZamani):
-            created_occ = replace(obj, id=self._next_occ_id)
-            self._next_occ_id += 1
-            self._occurrences.append(created_occ)
-            return created_occ
+            with self._creation_lock:
+                if obj.kind == "regular":
+                    for existing in self._occurrences:
+                        if existing.kind == "regular" and existing.due_at == obj.due_at:
+                            return existing
+                created_occ = replace(obj, id=self._next_occ_id)
+                self._next_occ_id += 1
+                self._occurrences.append(created_occ)
+                return created_occ
         if isinstance(obj, Upload):
             created_upload = replace(obj, id=self._next_upload_id)
             self._next_upload_id += 1
             self._uploads.append(created_upload)
             return created_upload
         if isinstance(obj, Job):
-            created_job = replace(obj, id=self._next_job_id)
-            self._next_job_id += 1
-            self._jobs.append(created_job)
-            return created_job
+            return self.create_job_once(obj)[0]
         created_package = replace(obj, id=self._next_id)
         self._next_id += 1
         self._packages.append(created_package)
         return created_package
+
+    def create_job_once(
+        self, job: Job, *, audit: AuditEvent | None = None,
+    ) -> tuple[Job, bool]:
+        with self._creation_lock:
+            if job.kind == "render" and job.status in ("queued", "processing"):
+                for existing in self._jobs:
+                    if (existing.kind == "render"
+                            and existing.status in ("queued", "processing")
+                            and existing.payload.get("package") == job.payload.get("package")
+                            and existing.payload.get("digest") == job.payload.get("digest")):
+                        return existing, False
+            created = replace(job, id=self._next_job_id)
+            if audit is not None:
+                self.append(audit)
+            self._next_job_id += 1
+            self._jobs.append(created)
+            return created, True
+
+    def create_review_once(
+        self, review: YayinIncelemesi, *, audit: AuditEvent | None = None,
+    ) -> tuple[YayinIncelemesi, bool]:
+        with self._creation_lock:
+            existing = self.get_by_occurrence_revision(
+                review.occurrence_id, review.revision_digest,
+            )
+            if existing is not None:
+                return existing, False
+            created = replace(review, id=self._next_review_id)
+            if audit is not None:
+                self.append(replace(audit, details={**audit.details, "review_id": created.id}))
+            self._next_review_id += 1
+            self._reviews.append(created)
+            return created, True
 
     def get_active(self) -> Package | None:
         for package in reversed(self._packages):

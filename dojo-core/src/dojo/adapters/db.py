@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Any, cast, overload
 
@@ -144,6 +145,13 @@ class UploadRow(Base):
 
 class JobRow(Base):
     __tablename__ = "jobs"
+    __table_args__ = (
+        Index(
+            "uq_jobs_active_render", text("(payload ->> 'package')"),
+            text("(payload ->> 'digest')"), unique=True,
+            postgresql_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
@@ -167,7 +175,11 @@ class SettingRow(Base):
 
 class YayinZamaniRow(Base):
     __tablename__ = "yayin_zamani"
-    __table_args__ = (Index("ix_yayin_zamani_status_due", "status", "due_at"),)
+    __table_args__ = (
+        Index("ix_yayin_zamani_status_due", "status", "due_at"),
+        Index("uq_yayin_zamani_regular_due", "due_at", unique=True,
+              postgresql_where=text("kind = 'regular'")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -355,6 +367,8 @@ class PostgresStore:
             return self._upload_from_row(row)
 
     def _create_job(self, job: Job) -> Job:
+        # Legacy single-insert path: duplicates raise (IntegrityError). Race-safe
+        # callers must use create_job_once instead.
         with self._session() as session:
             row = JobRow(
                 job_id=job.job_id,
@@ -371,6 +385,49 @@ class PostgresStore:
             session.commit()
             session.refresh(row)
             return self._job_from_row(row)
+
+    def create_job_once(
+        self, job: Job, *, audit: AuditEvent | None = None,
+    ) -> tuple[Job, bool]:
+        """Return (durable job, created); only new rows get the atomic audit.
+
+        Active render identity is package/digest. Terminal history is never reused.
+        Conflict-aware insertion preserves any enclosing emission transaction.
+        """
+        values = asdict(job)
+        values.pop("id")
+        stmt = pg_insert(JobRow).values(**values)
+        active_render = job.kind == "render" and job.status in ("queued", "processing")
+        if active_render:
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=[text("(payload ->> 'package')"), text("(payload ->> 'digest')")],
+                index_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
+            )
+        with self._session() as session:
+            while True:
+                row = session.scalar(stmt.returning(JobRow))
+                created = row is not None
+                if row is None:
+                    # A separate statement gets a fresh READ COMMITTED snapshot.
+                    # Lock the winner against completion until our transaction ends.
+                    row = session.scalar(select(JobRow).where(
+                        JobRow.kind == "render",
+                        JobRow.status.in_(("queued", "processing")),
+                        JobRow.payload["package"].as_string() == job.payload["package"],
+                        JobRow.payload["digest"].as_string() == job.payload["digest"],
+                    ).with_for_update())
+                if row is not None:
+                    if created and audit is not None:
+                        self._add_audit(session, audit)
+                    session.commit()
+                    return self._job_from_row(row), created
+                # Winner completed/deleted between INSERT and SELECT: try anew.
+
+    @staticmethod
+    def _add_audit(session: Session, event: AuditEvent) -> None:
+        values = asdict(event)
+        values.pop("id")
+        session.add(AuditRow(**values))
 
     def get_active(self) -> Package | None:
         with self._session() as session:
@@ -876,18 +933,26 @@ class PostgresStore:
             session.commit()
 
     def _create_occurrence(self, occ: YayinZamani) -> YayinZamani:
-        with self._session() as session:
-            row = YayinZamaniRow(
-                kind=occ.kind,
-                due_at=occ.due_at,
-                status=occ.status,
-                created_at=occ.created_at,
-                resolved_at=occ.resolved_at,
+        # Regular due-time identity: repeated creation returns the existing row
+        # (conflict-aware, preserves the enclosing emission transaction); one-off
+        # occurrences always insert. Legacy callers relied on has_regular_at guards.
+        values = asdict(occ)
+        values.pop("id")
+        stmt = pg_insert(YayinZamaniRow).values(**values)
+        if occ.kind == "regular":
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=[YayinZamaniRow.due_at], index_where=text("kind = 'regular'"),
             )
-            session.add(row)
-            session.commit()
-            session.refresh(row)
-            return self._occ_from_row(row)
+        with self._session() as session:
+            while True:
+                row = session.scalar(stmt.returning(YayinZamaniRow))
+                if row is None:
+                    row = session.scalar(select(YayinZamaniRow).where(
+                        YayinZamaniRow.kind == "regular", YayinZamaniRow.due_at == occ.due_at,
+                    ).with_for_update())
+                if row is not None:
+                    session.commit()
+                    return self._occ_from_row(row)
 
     def max_regular_due_at(self) -> datetime | None:
         with self._session() as session:
@@ -951,6 +1016,8 @@ class PostgresStore:
         )
 
     def _create_review(self, review: YayinIncelemesi) -> YayinIncelemesi:
+        # Legacy single-insert path: duplicates raise (IntegrityError). Race-safe
+        # callers must use create_review_once instead.
         with self._session() as session:
             row = YayinIncelemesiRow(
                 occurrence_id=review.occurrence_id,
@@ -969,6 +1036,32 @@ class PostgresStore:
             session.commit()
             session.refresh(row)
             return self._review_from_row(row)
+
+    def create_review_once(
+        self, review: YayinIncelemesi, *, audit: AuditEvent | None = None,
+    ) -> tuple[YayinIncelemesi, bool]:
+        """Insert once per occurrence/revision; add review_id to a new row's audit."""
+        values = asdict(review)
+        values.pop("id")
+        stmt = pg_insert(YayinIncelemesiRow).values(**values).on_conflict_do_nothing(
+            constraint="uq_yayin_incelemesi_occ_rev",
+        )
+        with self._session() as session:
+            while True:
+                row = session.scalar(stmt.returning(YayinIncelemesiRow))
+                created = row is not None
+                if row is None:
+                    row = session.scalar(select(YayinIncelemesiRow).where(
+                        YayinIncelemesiRow.occurrence_id == review.occurrence_id,
+                        YayinIncelemesiRow.revision_digest == review.revision_digest,
+                    ).with_for_update())
+                if row is not None:
+                    if created and audit is not None:
+                        self._add_audit(session, replace(
+                            audit, details={**audit.details, "review_id": row.id},
+                        ))
+                    session.commit()
+                    return self._review_from_row(row), created
 
     def get_by_occurrence_revision(
         self, occurrence_id: int, revision_digest: str
