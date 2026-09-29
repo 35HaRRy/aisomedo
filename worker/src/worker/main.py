@@ -4,6 +4,7 @@ import logging
 import os
 import signal
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from dojo import DojoPublishing
@@ -307,13 +308,32 @@ def build_worker_health(interval_seconds: float) -> WorkerHealth:
     return health
 
 
+def _mark_health(write: Callable[[], None], phase: str) -> None:
+    """Record a worker phase without ever failing the caller.
+
+    Health is diagnostic: a full disk, a read-only ``/tmp`` or a bad
+    permission must not stop publication and review processing, and a failed
+    ``stopped()`` write in the shutdown ``finally`` must not mask an
+    in-flight exception. Every failure is logged and the probe simply
+    reports unhealthy, which is the truthful outcome.
+    """
+    try:
+        write()
+    except Exception:  # noqa: BLE001 - health writes are never load-bearing
+        logger.warning(
+            "worker health %s write failed; probe will report unhealthy",
+            phase,
+            exc_info=True,
+        )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     publishing = build_publishing()
     meta = build_meta()
     interval = float(os.environ.get("WORKER_INTERVAL_SECONDS", "10"))
     health = build_worker_health(interval)
-    health.idle()
+    _mark_health(health.idle, "idle")
 
     stop = threading.Event()
 
@@ -330,15 +350,15 @@ def main() -> None:
     # assumes 120s — see the task-2 handoff report).
     try:
         while not stop.is_set():
-            health.busy()
+            _mark_health(health.busy, "busy")
             try:
                 run_tick(publishing, meta)
             except Exception:  # noqa: BLE001 - belt and braces; run_tick is isolated
                 logger.exception("worker tick failed; continuing")
-            health.idle()
+            _mark_health(health.idle, "idle")
             stop.wait(interval)
     finally:
-        health.stopped()
+        _mark_health(health.stopped, "stopped")
 
     logger.info("worker stopped")
 

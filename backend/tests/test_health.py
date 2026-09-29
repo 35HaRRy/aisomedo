@@ -81,6 +81,31 @@ def test_readiness_check_false_on_unreachable_database() -> None:
         probe.close()
 
 
+def test_readiness_rejects_url_whose_driver_ignores_connect_args() -> None:
+    with pytest.raises(ValueError, match="postgresql") as excinfo:
+        DatabaseReadiness("sqlite+pysqlite:///./dojo.db")
+    # The message must name the scheme only: no DSN, no credentials.
+    assert "dojo.db" not in str(excinfo.value)
+    assert "sqlite" in str(excinfo.value)
+
+
+def test_readiness_logs_non_secret_failure_reason_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    probe = DatabaseReadiness("postgresql+psycopg://dojo:supersecret@127.0.0.1:1/db")
+    try:
+        with caplog.at_level("WARNING"):
+            assert probe.check() is False
+            assert probe.check() is False
+    finally:
+        probe.close()
+    reasons = [r for r in caplog.records if "readiness probe failed" in r.getMessage()]
+    assert len(reasons) == 1  # one line per outage streak, not per probe
+    assert "OperationalError" in reasons[0].getMessage()
+    assert "supersecret" not in caplog.text
+    assert "postgresql+psycopg" not in caplog.text
+
+
 def test_lifespan_installs_and_disposes_real_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
