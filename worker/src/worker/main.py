@@ -46,12 +46,30 @@ def _emission_store(publishing: DojoPublishing) -> object | None:
     return None
 
 
-def resolve_public_base_url() -> str:
-    """Canonical public origin (mirrors backend.deps; worker has no backend dep)."""
-    origin = os.environ.get("PUBLIC_HTTPS_ORIGIN", "").strip() or os.environ.get(
-        "PUBLIC_BASE_URL", "http://localhost:8000"
-    ).strip()
-    return origin.rstrip("/") or "http://localhost:8000"
+def resolve_public_base_url(cookie_secure: bool | None = None) -> str:
+    """Canonical public origin (mirrors backend.deps; worker has no backend dep).
+
+    Fail-closed on operator typo: non-localhost http origin raises while
+    COOKIE_SECURE resolves true (default true); dev localhost exempt.
+    """
+    from urllib.parse import urlparse
+
+    raw = os.environ.get("PUBLIC_HTTPS_ORIGIN", "").strip()
+    origin = raw or os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").strip()
+    origin = origin.rstrip("/") or "http://localhost:8000"
+    secure = (
+        cookie_secure
+        if cookie_secure is not None
+        else os.environ.get("COOKIE_SECURE", "true").lower() == "true"
+    )
+    if secure:
+        host = (urlparse(origin).hostname or "").lower()
+        if urlparse(origin).scheme != "https" and host not in ("localhost", "127.0.0.1", "::1"):
+            raise RuntimeError(
+                f"refusing non-https public origin {origin!r} while COOKIE_SECURE is true; "
+                "fix PUBLIC_HTTPS_ORIGIN to an https:// URL (dev localhost exempt)"
+            )
+    return origin
 
 
 def _build_notifier() -> object | None:
@@ -66,6 +84,7 @@ def _build_notifier() -> object | None:
 
 
 def build_publishing() -> DojoPublishing:
+    resolve_public_base_url()  # fail fast on non-https origin while secure
     url = os.environ.get(
         "DATABASE_URL", "postgresql+psycopg://dojo:dojo@localhost:5432/dojo"
     )

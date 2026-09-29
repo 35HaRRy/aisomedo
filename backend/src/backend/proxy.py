@@ -94,10 +94,14 @@ class ProxyHeadersMiddleware:
     def __init__(self, app: ASGIApp, trusted_proxies: str = "private_ranges") -> None:
         self.app = app
         self.raw = trusted_proxies
+        try:
+            self.networks, self.trust_testclient = parse_trusted_proxies(trusted_proxies)
+        except ValueError as exc:
+            raise ValueError(f"invalid TRUSTED_PROXIES {trusted_proxies!r}: {exc}") from exc
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] in ("http", "websocket"):
-            networks, trust_testclient = parse_trusted_proxies(self.raw)
+            networks, trust_testclient = self.networks, self.trust_testclient
             peer = (scope.get("client") or [None])[0]
             if is_trusted_peer(peer, networks, trust_testclient):
                 headers = MutableHeaders(scope=scope)

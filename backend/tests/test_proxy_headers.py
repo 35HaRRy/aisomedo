@@ -118,3 +118,53 @@ def test_public_origin_prefers_https_origin_env(monkeypatch, tmp_path: Path) -> 
     assert deps.resolve_public_base_url() == "https://dojo.example.com"
     monkeypatch.delenv("PUBLIC_HTTPS_ORIGIN")
     assert deps.resolve_public_base_url() == "http://localhost:8000"
+
+
+def test_public_origin_rejects_http_when_secure(monkeypatch, tmp_path: Path) -> None:
+    import pytest
+
+    from backend import deps
+    from backend.main import create_app as _create
+
+    monkeypatch.setenv("PUBLIC_HTTPS_ORIGIN", "http://dojo.example.com")
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    with pytest.raises(RuntimeError, match="non-https public origin"):
+        deps.resolve_public_base_url()
+    # Startup fails fast through create_app.
+    store = InMemoryStore()
+    pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
+    with pytest.raises(RuntimeError, match="non-https public origin"):
+        _create(None, pairing, cookie_secure=True, trusted_proxies="testclient")
+    # Dev localhost default unaffected even while secure.
+    monkeypatch.delenv("PUBLIC_HTTPS_ORIGIN")
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    assert deps.resolve_public_base_url() == "http://localhost:8000"
+    # Explicit opt-out (COOKIE_SECURE=false) allows http.
+    monkeypatch.setenv("PUBLIC_HTTPS_ORIGIN", "http://dojo.example.com")
+    assert deps.resolve_public_base_url(False) == "http://dojo.example.com"
+
+
+def test_trusted_proxies_typo_fails_at_startup(tmp_path: Path) -> None:
+    import pytest
+    from dojo import DojoPairing, InMemoryStore
+    from dojo.testing import FakeClock
+
+    from backend.main import create_app as _create
+    from backend.proxy import ProxyHeadersMiddleware
+
+    async def _noop(scope, receive, send): ...  # noqa: ANN001, ANN202
+
+    with pytest.raises(ValueError, match="invalid TRUSTED_PROXIES"):
+        ProxyHeadersMiddleware(_noop, trusted_proxies="not-a-cidr")
+    store = InMemoryStore()
+    pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
+    with pytest.raises(ValueError, match="invalid TRUSTED_PROXIES"):
+        _create(None, pairing, cookie_secure=True, trusted_proxies="not-a-cidr")
+    # Per-request path never raises on config: garbage headers are ignored.
+    client = make_client("10.0.0.0/8", tmp_path)
+    resp = client.get(
+        "/_scheme",
+        headers={"X-Forwarded-For": "garbage!!!", "X-Forwarded-Proto": "gopher"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"scheme": "http"}

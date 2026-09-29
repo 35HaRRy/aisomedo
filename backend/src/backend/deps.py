@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dojo import Client, DojoActivity, DojoMetaConnection, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.db import PostgresStore
@@ -13,17 +14,35 @@ COOKIE_NAME = "dojo_session"
 SESSION_MAX_AGE = 30 * 24 * 3600
 
 
-def resolve_public_base_url() -> str:
+def resolve_cookie_secure(explicit: bool | None = None) -> bool:
+    """COOKIE_SECURE contract: default true; only explicit false disables."""
+    if explicit is not None:
+        return explicit
+    return os.environ.get("COOKIE_SECURE", "true").lower() == "true"
+
+
+def resolve_public_base_url(cookie_secure: bool | None = None) -> str:
     """Canonical public origin for browser/OAuth/signed URLs.
 
     ``PUBLIC_HTTPS_ORIGIN`` wins when set (prod contract: https); falls back
     to ``PUBLIC_BASE_URL``; localhost default is dev-only. Frontend stays
     same-origin and never consumes this.
+
+    Fail-closed on operator typo: an explicitly configured non-https origin
+    (or any non-localhost http origin) raises while COOKIE_SECURE resolves
+    true. Dev ``localhost`` default stays unaffected.
     """
-    origin = os.environ.get("PUBLIC_HTTPS_ORIGIN", "").strip() or os.environ.get(
-        "PUBLIC_BASE_URL", "http://localhost:8000"
-    ).strip()
-    return origin.rstrip("/") or "http://localhost:8000"
+    raw_origin = os.environ.get("PUBLIC_HTTPS_ORIGIN", "").strip()
+    origin = raw_origin or os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").strip()
+    origin = origin.rstrip("/") or "http://localhost:8000"
+    if resolve_cookie_secure(cookie_secure):
+        host = (urlparse(origin).hostname or "").lower()
+        if urlparse(origin).scheme != "https" and host not in ("localhost", "127.0.0.1", "::1"):
+            raise RuntimeError(
+                f"refusing non-https public origin {origin!r} while COOKIE_SECURE is true; "
+                "fix PUBLIC_HTTPS_ORIGIN to an https:// URL (dev localhost exempt)"
+            )
+    return origin
 
 
 def _maybe_create_all(store: PostgresStore) -> None:
