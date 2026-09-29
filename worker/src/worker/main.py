@@ -46,6 +46,14 @@ def _emission_store(publishing: DojoPublishing) -> object | None:
     return None
 
 
+def resolve_public_base_url() -> str:
+    """Canonical public origin (mirrors backend.deps; worker has no backend dep)."""
+    origin = os.environ.get("PUBLIC_HTTPS_ORIGIN", "").strip() or os.environ.get(
+        "PUBLIC_BASE_URL", "http://localhost:8000"
+    ).strip()
+    return origin.rstrip("/") or "http://localhost:8000"
+
+
 def _build_notifier() -> object | None:
     if os.environ.get("FCM_ENABLED", "false").lower() not in ("1", "true", "yes"):
         return None
@@ -86,7 +94,7 @@ def build_publishing() -> DojoPublishing:
         secret = os.environ.get("SIGNED_URL_SECRET", "")
         if secret:
             kwargs["signed_urls"] = HmacSignedUrlStore(
-                base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
+                base_url=resolve_public_base_url(),
                 secret=secret,
             )
     except Exception:  # noqa: BLE001
@@ -134,7 +142,8 @@ def build_meta() -> object | None:
             audit=store,
             app_id=os.environ.get("META_APP_ID", "dev_app_id"),
             app_secret=os.environ.get("META_APP_SECRET", "dev_secret"),
-            redirect_uri=os.environ.get("META_REDIRECT_URI", "http://localhost:8000/api/meta/oauth/callback"),
+            redirect_uri=os.environ.get("META_REDIRECT_URI", "").strip()
+            or f"{resolve_public_base_url()}/api/meta/oauth/callback",
             graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
             allowed_return_uris=[u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",") if u.strip()],
         )

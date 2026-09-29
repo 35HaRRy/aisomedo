@@ -13,6 +13,19 @@ COOKIE_NAME = "dojo_session"
 SESSION_MAX_AGE = 30 * 24 * 3600
 
 
+def resolve_public_base_url() -> str:
+    """Canonical public origin for browser/OAuth/signed URLs.
+
+    ``PUBLIC_HTTPS_ORIGIN`` wins when set (prod contract: https); falls back
+    to ``PUBLIC_BASE_URL``; localhost default is dev-only. Frontend stays
+    same-origin and never consumes this.
+    """
+    origin = os.environ.get("PUBLIC_HTTPS_ORIGIN", "").strip() or os.environ.get(
+        "PUBLIC_BASE_URL", "http://localhost:8000"
+    ).strip()
+    return origin.rstrip("/") or "http://localhost:8000"
+
+
 def _maybe_create_all(store: PostgresStore) -> None:
     """Create schema unless SKIP_CREATE_ALL=1 (initializer owns prod schema).
 
@@ -48,7 +61,7 @@ def build_publishing() -> DojoPublishing:
         secret = os.environ.get("SIGNED_URL_SECRET", "")
         if secret:
             kwargs["signed_urls"] = HmacSignedUrlStore(
-                base_url=os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000"),
+                base_url=resolve_public_base_url(),
                 secret=secret,
             )
     except Exception:  # noqa: BLE001
@@ -97,7 +110,8 @@ def build_meta() -> DojoMetaConnection:
         audit=store,
         app_id=os.environ.get("META_APP_ID", "dev_app_id"),
         app_secret=os.environ.get("META_APP_SECRET", "dev_secret"),
-        redirect_uri=os.environ.get("META_REDIRECT_URI", "http://localhost:8000/api/meta/oauth/callback"),
+        redirect_uri=os.environ.get("META_REDIRECT_URI", "").strip()
+        or f"{resolve_public_base_url()}/api/meta/oauth/callback",
         graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
         allowed_return_uris=[u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",") if u.strip()],
     )
