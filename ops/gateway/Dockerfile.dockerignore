@@ -1,0 +1,3 @@
+# Gateway build context hygiene: never bake local install/output dirs into the image.
+web/node_modules
+web/dist

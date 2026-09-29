@@ -1,0 +1,25 @@
+# Mode override: existing reverse proxy. The upstream proxy owns TLS; the
+# gateway serves plain HTTP only.
+#
+# Host-based proxy (default): reach http://127.0.0.1:${GATEWAY_HTTP_PORT:-9080}.
+# Container-based proxy: uncomment the network block below and set
+# EXTERNAL_NETWORK_NAME to the proxy's Docker network; point the upstream at
+# http://gateway:80 (service name on the shared network).
+#
+# Up:
+#   docker compose --env-file ops/.env -p dojo-prod \
+#     -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml up -d --build
+services:
+  gateway:
+    environment:
+      SITE_ADDRESS: ":80"
+    ports:
+      - "127.0.0.1:${GATEWAY_HTTP_PORT:-9080}:80"
+    # networks:
+    #   - default
+    #   - proxy-upstream
+
+# networks:
+#   proxy-upstream:
+#     name: ${EXTERNAL_NETWORK_NAME:?set EXTERNAL_NETWORK_NAME to join a container-based proxy}
+#     external: true

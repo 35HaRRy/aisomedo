@@ -1,0 +1,16 @@
+# Mode override: dedicated domain. Caddy owns ports 80/443, obtains and
+# renews public TLS certificates (state persists in caddy-data).
+#
+# Up:
+#   docker compose --env-file ops/.env -p dojo-prod \
+#     -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml up -d --build
+#
+# Requires DOMAIN (public origin, e.g. example.com) and DNS pointing at the VPS.
+services:
+  gateway:
+    environment:
+      SITE_ADDRESS: ${DOMAIN:?set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"

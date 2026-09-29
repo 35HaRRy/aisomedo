@@ -1,0 +1,142 @@
+# Production deployment. STANDALONE base file: do NOT combine with
+# ops/docker-compose.yml (Compose merge cannot clear inherited dev ports or
+# bind-backed driver_opts volumes). Pair with exactly one mode override:
+#
+#   Dedicated-domain (Caddy owns :80/:443, auto TLS):
+#     docker compose --env-file ops/.env -p dojo-prod \
+#       -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml up -d --build
+#
+#   Existing-proxy (upstream owns TLS, gateway on loopback HTTP):
+#     docker compose --env-file ops/.env -p dojo-prod \
+#       -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml up -d --build
+#
+# The top-level `name` freezes project/volume naming: volumes are
+# dojo-prod_db-data, dojo-prod_media-data, dojo-prod_caddy-data. Never start
+# production under a different project name against existing data without the
+# adoption procedure in the Task 4 report (a new prefix = empty volumes next
+# to a live installation).
+name: dojo-prod
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dojo}
+      POSTGRES_USER: ${POSTGRES_USER:-dojo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-dojo} -d $${POSTGRES_DB:-dojo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  # Serialized schema initialization. Runs `python -m dojo.schema` (Task 3
+  # contract) once to completion before backend/worker start; those set
+  # SKIP_CREATE_ALL=1 so the initializer owns the schema.
+  init:
+    image: dojo-backend:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    # No env_file: production env arrives explicitly via --env-file (or the
+    # shell environment), keeping the contract visible in `config` output.
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dojo}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-dojo}
+    command: [".venv/bin/python", "-m", "dojo.schema"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: dojo-backend:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dojo}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-dojo}
+      MEDIA_ROOT: /media
+      SKIP_CREATE_ALL: "1"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
+      SIGNED_URL_SECRET: ${SIGNED_URL_SECRET:?set SIGNED_URL_SECRET in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_REDIRECT_URI: ${META_REDIRECT_URI:-}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v26.0}
+      META_ALLOWED_RETURN_URIS: ${META_ALLOWED_RETURN_URIS:-}
+      META_TOKEN_ENCRYPTION_KEY: ${META_TOKEN_ENCRYPTION_KEY:-}
+      META_OAUTH_SCOPE: ${META_OAUTH_SCOPE:-}
+    volumes:
+      - media-data:/media
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", ".venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  worker:
+    image: dojo-worker:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: worker/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dojo}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-dojo}
+      MEDIA_ROOT: /media
+      SKIP_CREATE_ALL: "1"
+      WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-10}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
+      SIGNED_URL_SECRET: ${SIGNED_URL_SECRET:?set SIGNED_URL_SECRET in .env}
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v26.0}
+      META_TOKEN_ENCRYPTION_KEY: ${META_TOKEN_ENCRYPTION_KEY:-}
+    volumes:
+      - media-data:/media
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Task 2 contract: a synchronous worker cannot preempt in-flight ffmpeg
+    # work, so the in-flight render bound IS the orchestrator kill timeout.
+    stop_grace_period: 120s
+
+  gateway:
+    image: dojo-gateway:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: ops/gateway/Dockerfile
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-private_ranges}
+    volumes:
+      - caddy-data:/data
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/health > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  media-data:
+  caddy-data:
