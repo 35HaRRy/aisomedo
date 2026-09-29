@@ -101,19 +101,21 @@ class OperationalAlert:
 
 
 class _RedactedToken(str):
-    """A token that renders as ``***`` but is still a usable ``str``.
+    """A token whose ``repr`` is redacted but whose value semantics are intact.
 
-    ``field(repr=False)`` alone hides the value from ``repr(lease)`` while
-    leaving it in ``asdict()``, ``str()`` and any interpolated log line. This
-    closes those paths without changing the lease's public type.
+    Only ``__repr__`` is overridden. Overriding ``__str__`` as well would make
+    ``str(lease.token)`` return ``***`` everywhere, so a transport would send
+    the literal redaction marker, or collide every lease on one cache key.
+    Redaction belongs in representations, not in the value.
+
+    ``field(repr=False)`` on the lease covers ``repr(lease)``; this covers a
+    bare ``repr(lease.token)`` reaching a log line on its own.
     """
 
     __slots__ = ()
 
     def __repr__(self) -> str:
         return "***"
-
-    __str__ = __repr__
 
 
 @dataclass(frozen=True)
@@ -132,7 +134,7 @@ class DeliveryLease:
     alert: OperationalAlert
     client_id: int
     token: str = field(repr=False)
-    attempt: int = 0
+    attempt: int
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "token", _RedactedToken(self.token))
@@ -219,3 +221,4 @@ def job_failure_alert(
         created_at=created_at,
         extra={"job_id": job_id},
     )
+

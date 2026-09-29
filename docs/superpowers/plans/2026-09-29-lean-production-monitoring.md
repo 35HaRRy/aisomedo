@@ -48,7 +48,7 @@
 
 1. Health: new `worker/health.py`, backend readiness adapter, health asset and gateway routing; probe tests.
 2. Logging: new shared `dojo/observability.py`, backend logging entry point; secret-safe formatter tests.
-3. Durable state: new monitoring models/ports, migration `0015_operational_monitoring.py`, matching PostgreSQL/in-memory methods; migration/concurrency tests.
+3. Durable state: new monitoring models/ports, migrations `0015_operational_monitoring.py` and `0016_monitoring_checks.py`, matching PostgreSQL/in-memory methods; migration/concurrency tests.
 4. Delivery: real FCM adapter and new `dojo/monitoring.py` delivery service; per-recipient retries/tests.
 5. Collection/integration: disk sampling/config and worker monitoring invocation; end-to-end failure/incident tests.
 6. Deployment: Compose health/logging/secrets wiring, runtime gateway verification, operator runbook.
@@ -100,7 +100,7 @@ Fields: `timestamp` (UTC ISO 8601), `level`, `service`, `event`; optional allowl
 
 ### Task 3: Durable failure events, disk incidents, and delivery claims
 
-**Files:** Create `dojo-core/src/dojo/monitoring_models.py`, `dojo-core/src/dojo/monitoring_ports.py`, `dojo-core/migrations/versions/0015_operational_monitoring.py`, `dojo-core/tests/test_monitoring_store.py`. Modify `dojo-core/src/dojo/adapters/db.py`, `dojo-core/src/dojo/adapters/memory.py`, `dojo-core/tests/conftest.py`, `dojo-core/tests/test_schema_init.py`.
+**Files:** Create `dojo-core/src/dojo/monitoring_models.py`, `dojo-core/src/dojo/monitoring_ports.py`, `dojo-core/migrations/versions/0015_operational_monitoring.py`, `dojo-core/migrations/versions/0016_monitoring_checks.py` (CHECK constraints on alert kind, delivery status and attempts), `dojo-core/tests/test_monitoring_store.py`. Modify `dojo-core/src/dojo/adapters/db.py`, `dojo-core/src/dojo/adapters/memory.py`, `dojo-core/src/dojo/schema_checks.py`, `dojo-core/tests/conftest.py`, `dojo-core/tests/test_schema_init.py`.
 
 **Data contract:**
 - `DiskSample(target: str, free_bytes: int, total_bytes: int, sampled_at: datetime)`.

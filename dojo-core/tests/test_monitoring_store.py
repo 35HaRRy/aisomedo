@@ -8,6 +8,7 @@ connections and is PostgreSQL only.
 import copy
 import io
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict, replace
 from datetime import timedelta
@@ -19,6 +20,7 @@ from dojo.adapters.memory import InMemoryStore
 from dojo.model import Client, Job
 from dojo.monitoring_models import (
     DELIVERY_PENDING,
+    DeliveryLease,
     DiskSample,
     OperationalAlert,
     retry_delay_seconds,
@@ -224,11 +226,47 @@ def alert_insert_attempts(pg_store):
             row = conn.execute(text("SELECT n FROM alert_insert_attempts")).first()
             return row[0] if row is not None else 0
 
+
     yield attempts
     with pg_store._engine.begin() as conn:
         conn.execute(text("DROP TRIGGER IF EXISTS t_alert_insert ON operational_alerts"))
         conn.execute(text("DROP FUNCTION IF EXISTS count_alert_insert()"))
         conn.execute(text("DROP TABLE IF EXISTS alert_insert_attempts"))
+
+
+def _fail_job_now(store, job):
+    """One plain _update_job call, wrapped in the store's own transaction.
+
+    ``job`` is prepared before the race starts, so this performs NO read of its
+    own: any read here would happen outside the forced overlap window and could
+    observe an already-committed status, hiding the race. The only read that
+    matters is the one _update_job performs itself.
+    """
+    with store.emission_transaction():
+        store.update(replace(job, status="failed", finished_at=FIXED_AT, error_reason="boom"))
+
+
+def _wait_for(predicate, timeout=10.0, interval=0.05):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _writer_parked(pg_store) -> bool:
+    """True while a writer sits in the trigger's pg_sleep, mid-transaction.
+
+    Read from ``pg_stat_activity`` rather than from a column the writer itself
+    updates: a column written inside the parked transaction stays invisible to
+    other sessions until it commits, which would only prove the opposite of
+    what this test needs.
+    """
+    with pg_store._engine.connect() as conn:
+        return bool(conn.scalar(text("""
+            SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'PgSleep'
+        """)))
 
 
 def test_failure_generation_lock_prevents_a_second_emitter(pg_store, other, alert_insert_attempts):
@@ -237,28 +275,68 @@ def test_failure_generation_lock_prevents_a_second_emitter(pg_store, other, aler
     Without ``with_for_update=True`` both transactions read the same pre-image
     of the job row, both compute ``0 + 1 = 1``, and ``ON CONFLICT DO NOTHING``
     silently discards the loser's alert: one persisted row, but two emitters.
-    Counting attempts separates those cases.
+    Counting attempted inserts separates those cases.
 
-    The gate sits *between* the read and the update, so both transactions are
-    forced onto the same pre-image. A barrier placed only before the read would
-    let the first writer commit first, and the second would correctly read
-    status='failed' and emit nothing even without the lock.
+    A gate in the test cannot do this on its own. The pre-image that decides
+    ``newly_failed`` is read *inside* ``_update_job``, so synchronizing entry to
+    the method only orders two arbitrary interleavings; the loser can still read
+    ``status='failed'`` and legitimately emit nothing even with the lock
+    removed. The overlap has to be forced from inside the database.
+
+    So transaction A parks *after* it has read the job row and taken its write
+    lock, inside its own transaction: ``hold_job_update`` sleeps in a
+    ``BEFORE UPDATE`` trigger, which fires only once A's UPDATE is in flight.
+    While A is parked and uncommitted, B runs ``_update_job`` and issues its
+    ``SELECT``:
+
+    - with ``with_for_update=True``, B's ``SELECT ... FOR UPDATE`` blocks on A's
+      row lock; after A commits, PostgreSQL re-reads the updated row, so B sees
+      ``status='failed'`` and emits nothing;
+    - without it, B's plain ``SELECT`` reads the still-visible pre-image
+      ``status='queued'`` and emits a second alert.
+
+    The forced interleaving is therefore:
+    A: read queued -> UPDATE (row lock) -> park in trigger -> commit
+    B:                    SELECT .................... -> emit? -> UPDATE
     """
-    pg_store.create(queued_job())
-    gate = Barrier(2)
+    job = pg_store.create(queued_job())
+    with pg_store._engine.begin() as conn:
+        conn.execute(text("DROP TRIGGER IF EXISTS t_hold_job_update ON jobs"))
+        conn.execute(text("DROP FUNCTION IF EXISTS hold_job_update()"))
+        conn.execute(text("""
+            CREATE FUNCTION hold_job_update() RETURNS trigger AS $$
+            BEGIN
+                -- BEFORE UPDATE fires with the row's write lock already held, so
+                -- sleeping here parks the writer mid-transaction with the lock
+                -- uncommitted. That is the window B has to contend for.
+                PERFORM pg_sleep(3);
+                RETURN NEW;
+            END $$ LANGUAGE plpgsql;
+        """))
+        conn.execute(text("""
+            CREATE TRIGGER t_hold_job_update BEFORE UPDATE ON jobs
+            FOR EACH ROW EXECUTE FUNCTION hold_job_update();
+        """))
 
-    def fail(store):
-        with store.emission_transaction():
-            job = stored_job(store)
-            gate.wait(timeout=10)  # both now hold the same pre-image
-            store.update(replace(job, status="failed", finished_at=FIXED_AT,
-                                 error_reason="boom"))
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            first = pool.submit(_fail_job_now, pg_store, job)
+            # pg_stat_activity is visible across transactions, so this proves A
+            # is parked mid-UPDATE (holding the row lock, uncommitted) rather
+            # than merely scheduled. A signal written by A itself would stay
+            # invisible until A committed, which is exactly the bug this
+            # replaces: it let B start only after A had already finished.
+            assert _wait_for(lambda: _writer_parked(pg_store)), "writer A never parked"
+            second = pool.submit(_fail_job_now, other, job)
+            first.result(timeout=30)
+            second.result(timeout=30)
+    finally:
+        with pg_store._engine.begin() as conn:
+            conn.execute(text("DROP TRIGGER IF EXISTS t_hold_job_update ON jobs"))
+            conn.execute(text("DROP FUNCTION IF EXISTS hold_job_update()"))
 
-    with ThreadPoolExecutor(2) as pool:
-        futures = [pool.submit(fail, store) for store in (pg_store, other)]
-        for future in futures:
-            future.result(timeout=20)
-    # The loser re-reads the locked row, sees status='failed', and never emits.
+    # With the row lock B blocks, re-reads status='failed' and emits nothing.
+    # Without it B reads the stale pre-image and emits a discarded second alert.
     assert alert_insert_attempts() == 1
     assert kinds(pg_store) == ["job.failed"]
     with pg_store._engine.connect() as conn:
@@ -487,8 +565,22 @@ def test_partial_success_is_never_reclaimed(pg_store, memory):
     assert again.delivery_id == retried.delivery_id
 
 
-def test_lease_never_exposes_the_token_in_repr_or_serialization(pg_store):
-    """The token reaches the transport, never a log line or a serialized lease."""
+def test_lease_requires_an_explicit_attempt():
+    """N1: a defaulted attempt=0 would back off 60s while looking like attempt 1."""
+    alert = OperationalAlert(
+        alert_id="a", event_key="e", kind="job.failed", title="t", body="b",
+        data={}, created_at=FIXED_AT,
+    )
+    with pytest.raises(TypeError):
+        DeliveryLease(delivery_id=1, claim_id="c", alert=alert, client_id=1, token="t")
+    lease = DeliveryLease(
+        delivery_id=1, claim_id="c", alert=alert, client_id=1, token="t", attempt=1,
+    )
+    assert lease.attempt == 1
+
+
+def test_lease_redacts_the_token_in_representations_only(pg_store):
+    """The token reaches the transport intact; only representations hide it."""
     failed_alert(pg_store)
     register_device(pg_store, "phone", "super-secret-fcm-token")
     pg_store.prepare_alert_deliveries(FIXED_AT)
@@ -496,20 +588,28 @@ def test_lease_never_exposes_the_token_in_repr_or_serialization(pg_store):
     assert lease is not None
     secret = "super-secret-fcm-token"
 
-    # repr() must not even carry the field.
+    # repr(lease) drops the field entirely; a bare repr of the token redacts.
     assert "token" not in repr(lease)
     assert secret not in repr(lease)
-    # asdict()/str() are the realistic accidental-leak paths.
-    assert secret not in str(asdict(lease))
-    assert secret not in str(lease)
+    assert secret not in repr(lease.token)
     assert secret not in repr(copy.deepcopy(lease))
-    # ...but the transport can still read it, and it is still a plain str.
+
+    # Value semantics MUST survive redaction: a transport sends str(token) and
+    # compares it for equality. Redacting __str__ would send "***" to FCM.
     assert lease.token == secret
+    assert str(lease.token) == secret
     assert isinstance(lease.token, str)
+    assert asdict(lease)["token"] == secret
+    assert len({secret, str(lease.token)}) == 1
 
 
-def test_lease_token_survives_the_logging_formatter(pg_store, caplog):
-    """A lease interpolated into a log record must not leak the token."""
+def test_lease_token_survives_the_logging_formatter(pg_store):
+    """A lease and its token interpolated into a log record must not leak.
+
+    The record is actually emitted (message, args and exception text all
+    carrying the lease) so this is a real observation of the output, not an
+    assertion about a log call that never happened.
+    """
     from dojo.observability import configure_logging
 
     failed_alert(pg_store)
@@ -517,15 +617,33 @@ def test_lease_token_survives_the_logging_formatter(pg_store, caplog):
     pg_store.prepare_alert_deliveries(FIXED_AT)
     lease = pg_store.claim_alert_delivery(FIXED_AT)
     assert lease is not None
+    secret = "super-secret-fcm-token"
 
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
     stream = io.StringIO()
-    configure_logging("test", stream=stream)
-    logging.getLogger("dojo.monitoring").warning(
-        "delivering alert to client %s", lease.client_id,
-        extra={"alert_id": lease.alert.alert_id},
-    )
-    assert "super-secret-fcm-token" not in stream.getvalue()
-    assert "super-secret-fcm-token" not in caplog.text
+    try:
+        configure_logging("test", stream=stream)
+        logger = logging.getLogger("dojo.monitoring")
+        # Every plausible accidental-leak shape, each actually emitted.
+        logger.warning("sending %s", lease)
+        logger.warning("token=%s", lease.token)
+        logger.warning("lease=%r", lease)
+        try:
+            raise RuntimeError(f"send failed for {lease}")
+        except RuntimeError:
+            logger.exception("delivery failed for %s", lease)
+        output = stream.getvalue()
+        assert output.strip(), "nothing was logged, so nothing was actually checked"
+        assert secret not in output
+        # The formatter drops message text by design, so it cannot discriminate
+        # the repr layer. Assert that separately, or this test proves nothing
+        # about the lease itself.
+        assert secret not in repr(lease)
+        assert secret not in repr(lease.token)
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
 
 
 def test_database_rejects_an_unknown_delivery_status_or_kind(pg_store):
