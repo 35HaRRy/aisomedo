@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, cast, overload
 
@@ -19,9 +22,9 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.engine import CursorResult
+from sqlalchemy.engine import Connection, CursorResult
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from dojo.model import (
     AuditEvent,
@@ -245,7 +248,42 @@ class MetaOAuthAttemptRow(Base):
 class PostgresStore:
     def __init__(self, url: str) -> None:
         self._engine = create_engine(url)
-        self._session = sessionmaker(bind=self._engine, expire_on_commit=False)
+        self._session_factory = sessionmaker(bind=self._engine, expire_on_commit=False)
+        self._emission_connection: ContextVar[Connection | None] = ContextVar(
+            "emission_connection", default=None,
+        )
+
+    def _session(self) -> Session:
+        connection = self._emission_connection.get()
+        if connection is None:
+            return self._session_factory()
+        # Method-local sessions flush on commit, but neither commit nor close
+        # the outer transaction. Reads/refreshes also use the lock connection.
+        return self._session_factory(bind=connection, join_transaction_mode="rollback_only")
+
+    @contextmanager
+    def emission_transaction(self) -> Iterator[None]:
+        """Own one turn's commit/rollback; nesting on this store is an error.
+
+        Context-local connection state isolates concurrent worker threads.
+        Always reset it, including on disconnect, before a later turn can run.
+        """
+        if self._emission_connection.get() is not None:
+            raise RuntimeError("nested emission transactions are not supported")
+        with self._engine.begin() as connection:
+            token = self._emission_connection.set(connection)
+            try:
+                yield
+            finally:
+                self._emission_connection.reset(token)
+
+    def try_advisory_xact_lock(self, key: int) -> bool:
+        connection = self._emission_connection.get()
+        if connection is None:
+            raise RuntimeError("advisory lock requires an emission transaction")
+        return bool(connection.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key},
+        ).scalar_one())
 
     def create_all(self) -> None:
         Base.metadata.create_all(self._engine)

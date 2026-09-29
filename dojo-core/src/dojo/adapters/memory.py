@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime
 from threading import RLock
@@ -53,6 +56,23 @@ class InMemoryStore:
         self._meta_expires_at: datetime | None = None
         self._meta_attempts: dict[str, dict] = {}
         self._meta_lock = RLock()
+        self._emission_active: ContextVar[bool] = ContextVar("emission_active", default=False)
+
+    @contextmanager
+    def emission_transaction(self) -> Iterator[None]:
+        """Single-process test adapter: no persistence rollback or distributed lock."""
+        if self._emission_active.get():
+            raise RuntimeError("nested emission transactions are not supported")
+        token = self._emission_active.set(True)
+        try:
+            yield
+        finally:
+            self._emission_active.reset(token)
+
+    def try_advisory_xact_lock(self, key: int) -> bool:
+        if not self._emission_active.get():
+            raise RuntimeError("advisory lock requires an emission transaction")
+        return True
 
     @overload
     def create(self, obj: Package) -> Package: ...
