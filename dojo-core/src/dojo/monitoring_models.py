@@ -13,7 +13,7 @@ raw filesystem paths.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -40,6 +40,27 @@ ALERT_DATA_TYPE = "operational_alert"
 DELIVERY_PENDING = "pending"
 DELIVERY_COMPLETE = "complete"
 DELIVERY_SKIPPED = "skipped"
+DELIVERY_STATUSES = (DELIVERY_PENDING, DELIVERY_COMPLETE, DELIVERY_SKIPPED)
+
+#: Every alert kind the schema accepts, in the CHECK constraint sense.
+ALERT_KINDS = (
+    ALERT_KIND_DISK_LOW,
+    ALERT_KIND_DISK_RECOVERED,
+    ALERT_KIND_JOB_FAILED,
+)
+
+
+def _in_list(column: str, values: tuple[str, ...]) -> str:
+    """PostgreSQL CHECK body; single-quoted and sorted for stable DDL."""
+    rendered = ", ".join(f"'{value}'" for value in sorted(values))
+    return f"{column} IN ({rendered})"
+
+
+#: Enforced by the database, not only by the writers: a typo in either adapter
+#: would otherwise persist a row nothing ever claims again.
+DELIVERY_STATUS_CHECK = _in_list("status", DELIVERY_STATUSES)
+DELIVERY_ATTEMPTS_CHECK = "attempts >= 0"
+ALERT_KIND_CHECK = _in_list("kind", ALERT_KINDS)
 
 DeliveryOutcome = Literal["accepted", "invalid", "retry"]
 
@@ -79,21 +100,42 @@ class OperationalAlert:
     created_at: datetime
 
 
+class _RedactedToken(str):
+    """A token that renders as ``***`` but is still a usable ``str``.
+
+    ``field(repr=False)`` alone hides the value from ``repr(lease)`` while
+    leaving it in ``asdict()``, ``str()`` and any interpolated log line. This
+    closes those paths without changing the lease's public type.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "***"
+
+    __str__ = __repr__
+
+
 @dataclass(frozen=True)
 class DeliveryLease:
     """A single-recipient send claim.
 
     ``token`` is the current registration value for ``client_id`` at claim time.
     It exists only to reach the transport and to compare exact-token deletion;
-    it never belongs in a log line or in notification data.
+    it never belongs in a log line or in notification data. It is excluded from
+    ``repr`` and renders as ``***`` through ``str``/``asdict`` so that an
+    accidental interpolation or serialization cannot leak it.
     """
 
     delivery_id: int
     claim_id: str
     alert: OperationalAlert
     client_id: int
-    token: str
-    attempt: int
+    token: str = field(repr=False)
+    attempt: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "token", _RedactedToken(self.token))
 
 
 def disk_event_key(target: str, incident_id: str, transition: str) -> str:

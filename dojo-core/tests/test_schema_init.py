@@ -49,7 +49,7 @@ def legacy(engine):
 def assert_head(engine):
     with engine.connect() as conn:
         version = conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0015_operational_monitoring"
+        assert version == "0016_monitoring_checks"
     for table, expected in [
         ("jobs", "uq_jobs_active_render"), ("yayin_zamani", "uq_yayin_zamani_regular_due"),
     ]:
@@ -57,6 +57,25 @@ def assert_head(engine):
         assert any(i["name"] == expected and i["unique"] for i in indexes)
     assert {"monitoring_incidents", "operational_alerts",
             "operational_deliveries"} <= set(inspect(engine).get_table_names())
+
+
+def test_monitoring_check_constraints_are_created_and_enforced(database):
+    from sqlalchemy.exc import IntegrityError
+
+    url, engine = database
+    command.upgrade(config(url), "head")
+    for table, expected in [
+        ("operational_alerts", "ck_operational_alerts_kind"),
+        ("operational_deliveries", "ck_operational_deliveries_status"),
+        ("operational_deliveries", "ck_operational_deliveries_attempts"),
+    ]:
+        checks = {c["name"]: c["sqltext"] for c in inspect(engine).get_check_constraints(table)}
+        assert expected in checks
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(text("""INSERT INTO operational_alerts
+                (alert_id, event_key, kind, title, body, data, created_at)
+                VALUES ('a', 'e', 'not-a-kind', 't', 'b', '{}', now())"""))
 
 
 def _shape(engine, table):
@@ -78,6 +97,36 @@ def _shape(engine, table):
             (i["name"], tuple(i["column_names"]), i["unique"]) for i in inspector.get_indexes(table)
         ),
     }
+
+
+def test_0015_shape_is_stamped_and_upgraded_through_0016(database):
+    """A database at 0015 must run 0016 rather than collide with create_all DDL."""
+    from dojo.schema import initialize_database
+
+    url, engine = database
+    command.upgrade(config(url), "0015_operational_monitoring")
+    with engine.connect() as conn:
+        assert not inspect(engine).get_check_constraints("operational_alerts")
+    initialize_database(url)
+    assert_head(engine)
+    checks = {c["name"] for c in inspect(engine).get_check_constraints("operational_alerts")}
+    assert "ck_operational_alerts_kind" in checks
+
+
+def test_damaged_check_constraint_is_not_silently_accepted(database):
+    """An unversioned database with a wrong constraint body is unsupported."""
+    from dojo.schema import initialize_database
+
+    url, engine = database
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE operational_alerts"
+                          " DROP CONSTRAINT ck_operational_alerts_kind"))
+        conn.execute(text("ALTER TABLE operational_alerts"
+                          " ADD CONSTRAINT ck_operational_alerts_kind CHECK (kind = 'never')"))
+    with pytest.raises(RuntimeError, match="Unsupported unversioned schema"):
+        initialize_database(url)
+    assert "alembic_version" not in inspect(engine).get_table_names()
 
 
 def test_migration_and_create_all_agree_on_new_objects(database, _pg_session):
@@ -355,3 +404,4 @@ def test_installed_wheel_initializer_from_unrelated_directory(database, tmp_path
     )
     assert result.returncode == 0, result.stderr
     assert_head(engine)
+

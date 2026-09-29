@@ -6,12 +6,18 @@ import re
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import MetaData, inspect, text
+from sqlalchemy import CheckConstraint, MetaData, inspect, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.engine.reflection import Inspector
 
 EMISSION_INDEXES = {"uq_jobs_active_render", "uq_yayin_zamani_regular_due"}
 MONITORING_TABLES = {"monitoring_incidents", "operational_alerts", "operational_deliveries"}
 MONITORING_INDEXES = {"ix_operational_deliveries_due"}
+MONITORING_CHECKS = {
+    "ck_operational_alerts_kind",
+    "ck_operational_deliveries_status",
+    "ck_operational_deliveries_attempts",
+}
 
 
 def preflight_emission_conflicts(connection: Connection) -> None:
@@ -47,6 +53,14 @@ def preflight_emission_conflicts(connection: Connection) -> None:
                            + "\n".join(conflicts))
 
 
+def _check_sqltext(inspector: Inspector, table: str, name: str) -> str | None:
+    """The reflected CHECK body for ``name``, or None if the table has none."""
+    for check in inspector.get_check_constraints(table):
+        if check["name"] == name:
+            return str(check["sqltext"])
+    return None
+
+
 def _predicate(value: object) -> str:
     # PostgreSQL adds casts/parentheses when deparsing index predicates.
     result = re.sub(r"::(?:text|character varying)(?:\[\])?", "", str(value))
@@ -58,6 +72,7 @@ def _predicate(value: object) -> str:
 OLDEST_BASELINE = "0013_instagram_login"
 EMISSION_REVISION = "0014_emission_idempotency"
 MONITORING_REVISION = "0015_operational_monitoring"
+MONITORING_CHECKS_REVISION = "0016_monitoring_checks"
 
 
 def _is_pending_monitoring(difference: tuple) -> bool:
@@ -69,6 +84,13 @@ def _is_pending_monitoring(difference: tuple) -> bool:
     # compare_metadata tuples carry a schema slot before the table name.
     return difference[0] == "add_column" and difference[2] == "jobs" \
         and difference[3].name == "failure_generation"
+
+
+def _is_pending_check(difference: tuple) -> bool:
+    """True for exactly the constraints revision 0016 adds."""
+    if difference[0] != "add_constraint" or not isinstance(difference[1], CheckConstraint):
+        return False
+    return difference[1].name in MONITORING_CHECKS
 
 
 def validate_legacy_schema(connection: Connection) -> str:
@@ -86,10 +108,20 @@ def validate_legacy_schema(connection: Connection) -> str:
     tables = set(inspector.get_table_names()) - {"alembic_version"}
     if tables not in (set(Base.metadata.tables), set(Base.metadata.tables) - MONITORING_TABLES):
         raise RuntimeError("Unsupported unversioned schema: table set differs from baseline")
-    pending_monitoring = not MONITORING_TABLES <= tables
     indexes = {
         table: {index["name"]: index for index in inspector.get_indexes(table)}
         for table in tables
+    }
+    checks = {
+        table: {check["name"] for check in inspector.get_check_constraints(table)}
+        for table in tables
+    }
+    pending_monitoring = not MONITORING_TABLES <= tables
+    # 0016 only adds constraints, so a 0015 shape is recognized by their absence
+    # and stamped accordingly: create_all already has them, a 0015 database
+    # must still run 0016 rather than collide with it.
+    pending_checks = not MONITORING_CHECKS <= {
+        name for group in checks.values() for name in group
     }
     present = EMISSION_INDEXES & {name for group in indexes.values() for name in group}
     if present and present != EMISSION_INDEXES:
@@ -117,10 +149,29 @@ def validate_legacy_schema(connection: Connection) -> str:
             actual_predicate = actual.get("dialect_options", {}).get("postgresql_where")
             if _predicate(predicate) != _predicate(actual_predicate):
                 differences.append(("index_predicate", table.name, index.name))
+        # compare_metadata does not compare CHECK bodies, so a constraint kept
+        # under the expected name but with a weaker predicate would pass review.
+        for constraint in table.constraints:
+            if not isinstance(constraint, CheckConstraint):
+                continue
+            name = constraint.name
+            if not isinstance(name, str):
+                continue  # Unnamed CHECK: compare_metadata's business, not ours.
+            if name in MONITORING_CHECKS and pending_checks:
+                continue  # 0016 adds this one.
+            actual_sql = _check_sqltext(inspector, table.name, name)
+            if actual_sql is None:
+                continue  # Already reported as a difference by compare_metadata.
+            if _predicate(constraint.sqltext) != _predicate(actual_sql):
+                differences.append(("check_predicate", table.name, name))
     if pending_monitoring:
         differences = [d for d in differences if not _is_pending_monitoring(d)]
+    if pending_checks:
+        differences = [d for d in differences if not _is_pending_check(d)]
     if differences:
         raise RuntimeError(f"Unsupported unversioned schema: {differences!r}")
     if pending_monitoring:
         return EMISSION_REVISION if present else OLDEST_BASELINE
-    return MONITORING_REVISION if present else EMISSION_REVISION
+    if pending_checks:
+        return MONITORING_REVISION if present else EMISSION_REVISION
+    return MONITORING_CHECKS_REVISION if present else MONITORING_REVISION

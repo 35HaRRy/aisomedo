@@ -26,6 +26,10 @@ class MonitoringStore(Protocol):
         readings cannot duplicate an incident or fake a recovery. Opening below
         ``low_percent`` and recovering at or above ``recovery_percent`` each
         emit exactly one alert per incident, atomically with the state change.
+
+        Raises ``ValueError`` if the sample has no measurable capacity
+        (``total_bytes <= 0``): an unreadable target must never be recorded as
+        a reading, let alone interpreted as a recovery.
         """
         ...
 

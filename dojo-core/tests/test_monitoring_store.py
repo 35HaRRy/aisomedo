@@ -5,8 +5,11 @@ without PostgreSQL; restart, rollback and concurrency behaviour needs real
 connections and is PostgreSQL only.
 """
 
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+import copy
+import io
+import logging
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import asdict, replace
 from datetime import timedelta
 from threading import Barrier
 
@@ -15,6 +18,7 @@ from dojo.adapters.db import PostgresStore
 from dojo.adapters.memory import InMemoryStore
 from dojo.model import Client, Job
 from dojo.monitoring_models import (
+    DELIVERY_PENDING,
     DiskSample,
     OperationalAlert,
     retry_delay_seconds,
@@ -22,6 +26,7 @@ from dojo.monitoring_models import (
 )
 from dojo.testing import FIXED_AT
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 TARGET = "media"
 LOW = 15.0
@@ -183,6 +188,81 @@ def test_failed_transition_rollback_persists_neither_job_nor_alert(pg_store):
             raise RuntimeError("later step failed")
     assert stored_job(pg_store).status == "queued"
     assert persisted_alerts(pg_store) == []
+
+
+@pytest.fixture
+def alert_insert_attempts(pg_store):
+    """Count *attempted* operational_alerts inserts, not persisted rows.
+
+    ``ON CONFLICT DO NOTHING`` hides a duplicate insert from a plain SELECT, so
+    counting rows cannot tell "one writer emitted" from "two writers raced and
+    one was silently dropped". A BEFORE INSERT trigger also fires for the
+    discarded row, which is exactly the signal needed to prove the row lock.
+    The counter is a real table, not TEMP: the trigger fires in the *other*
+    store's session, which cannot see this connection's temporary tables.
+    """
+    with pg_store._engine.begin() as conn:
+        conn.execute(text("DROP TRIGGER IF EXISTS t_alert_insert ON operational_alerts"))
+        conn.execute(text("DROP FUNCTION IF EXISTS count_alert_insert()"))
+        conn.execute(text("DROP TABLE IF EXISTS alert_insert_attempts"))
+        conn.execute(text("CREATE TABLE alert_insert_attempts (n int NOT NULL DEFAULT 0)"))
+        conn.execute(text("INSERT INTO alert_insert_attempts (n) VALUES (0)"))
+        conn.execute(text("""
+            CREATE FUNCTION count_alert_insert() RETURNS trigger AS $$
+            BEGIN
+                UPDATE alert_insert_attempts SET n = n + 1;
+                RETURN NEW;
+            END $$ LANGUAGE plpgsql;
+        """))
+        conn.execute(text("""
+            CREATE TRIGGER t_alert_insert BEFORE INSERT ON operational_alerts
+            FOR EACH ROW EXECUTE FUNCTION count_alert_insert();
+        """))
+
+    def attempts():
+        with pg_store._engine.connect() as conn:
+            row = conn.execute(text("SELECT n FROM alert_insert_attempts")).first()
+            return row[0] if row is not None else 0
+
+    yield attempts
+    with pg_store._engine.begin() as conn:
+        conn.execute(text("DROP TRIGGER IF EXISTS t_alert_insert ON operational_alerts"))
+        conn.execute(text("DROP FUNCTION IF EXISTS count_alert_insert()"))
+        conn.execute(text("DROP TABLE IF EXISTS alert_insert_attempts"))
+
+
+def test_failure_generation_lock_prevents_a_second_emitter(pg_store, other, alert_insert_attempts):
+    """Only the row lock keeps two concurrent failures from both emitting.
+
+    Without ``with_for_update=True`` both transactions read the same pre-image
+    of the job row, both compute ``0 + 1 = 1``, and ``ON CONFLICT DO NOTHING``
+    silently discards the loser's alert: one persisted row, but two emitters.
+    Counting attempts separates those cases.
+
+    The gate sits *between* the read and the update, so both transactions are
+    forced onto the same pre-image. A barrier placed only before the read would
+    let the first writer commit first, and the second would correctly read
+    status='failed' and emit nothing even without the lock.
+    """
+    pg_store.create(queued_job())
+    gate = Barrier(2)
+
+    def fail(store):
+        with store.emission_transaction():
+            job = stored_job(store)
+            gate.wait(timeout=10)  # both now hold the same pre-image
+            store.update(replace(job, status="failed", finished_at=FIXED_AT,
+                                 error_reason="boom"))
+
+    with ThreadPoolExecutor(2) as pool:
+        futures = [pool.submit(fail, store) for store in (pg_store, other)]
+        for future in futures:
+            future.result(timeout=20)
+    # The loser re-reads the locked row, sees status='failed', and never emits.
+    assert alert_insert_attempts() == 1
+    assert kinds(pg_store) == ["job.failed"]
+    with pg_store._engine.connect() as conn:
+        assert conn.scalar(text("SELECT failure_generation FROM jobs")) == 1
 
 
 def test_concurrent_failure_transitions_emit_one_alert(pg_store, other):
@@ -405,6 +485,100 @@ def test_partial_success_is_never_reclaimed(pg_store, memory):
     assert again.client_id == retried.client_id
     assert again.attempt == 2
     assert again.delivery_id == retried.delivery_id
+
+
+def test_lease_never_exposes_the_token_in_repr_or_serialization(pg_store):
+    """The token reaches the transport, never a log line or a serialized lease."""
+    failed_alert(pg_store)
+    register_device(pg_store, "phone", "super-secret-fcm-token")
+    pg_store.prepare_alert_deliveries(FIXED_AT)
+    lease = pg_store.claim_alert_delivery(FIXED_AT)
+    assert lease is not None
+    secret = "super-secret-fcm-token"
+
+    # repr() must not even carry the field.
+    assert "token" not in repr(lease)
+    assert secret not in repr(lease)
+    # asdict()/str() are the realistic accidental-leak paths.
+    assert secret not in str(asdict(lease))
+    assert secret not in str(lease)
+    assert secret not in repr(copy.deepcopy(lease))
+    # ...but the transport can still read it, and it is still a plain str.
+    assert lease.token == secret
+    assert isinstance(lease.token, str)
+
+
+def test_lease_token_survives_the_logging_formatter(pg_store, caplog):
+    """A lease interpolated into a log record must not leak the token."""
+    from dojo.observability import configure_logging
+
+    failed_alert(pg_store)
+    register_device(pg_store, "phone", "super-secret-fcm-token")
+    pg_store.prepare_alert_deliveries(FIXED_AT)
+    lease = pg_store.claim_alert_delivery(FIXED_AT)
+    assert lease is not None
+
+    stream = io.StringIO()
+    configure_logging("test", stream=stream)
+    logging.getLogger("dojo.monitoring").warning(
+        "delivering alert to client %s", lease.client_id,
+        extra={"alert_id": lease.alert.alert_id},
+    )
+    assert "super-secret-fcm-token" not in stream.getvalue()
+    assert "super-secret-fcm-token" not in caplog.text
+
+
+def test_database_rejects_an_unknown_delivery_status_or_kind(pg_store):
+    """A typo must fail loudly instead of persisting a row nothing claims."""
+    failed_alert(pg_store)
+    client = register_device(pg_store, "phone", "token-1")
+    pg_store.prepare_alert_deliveries(FIXED_AT)
+    with pg_store._engine.connect() as conn:
+        alert_id = conn.scalar(text("SELECT alert_id FROM operational_alerts"))
+    for bad_status, bad_attempts in [("pendign", 0), (DELIVERY_PENDING, -1)]:
+        with pytest.raises(IntegrityError), pg_store._engine.begin() as conn:
+            conn.execute(text("""INSERT INTO operational_deliveries
+                (alert_id, client_id, status, attempts, due_at)
+                VALUES (:alert_id, :client_id, :status, :attempts, now())"""),
+                {"alert_id": alert_id, "client_id": client.id, "status": bad_status,
+                 "attempts": bad_attempts})
+    with pytest.raises(IntegrityError), pg_store._engine.begin() as conn:
+        conn.execute(text("""INSERT INTO operational_alerts
+            (alert_id, event_key, kind, title, body, data, created_at)
+            VALUES ('a-1', 'e-1', 'disk.loww', 't', 'b', '{}', now())"""))
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_unmeasurable_disk_sample_is_rejected(pg_store, memory):
+    """A target with no capacity must not be recorded, and never 'recover'."""
+    store = contract(pg_store, memory)
+    for total in (0, -1):
+        bad = DiskSample(target=TARGET, free_bytes=0, total_bytes=total, sampled_at=FIXED_AT)
+        with pytest.raises(ValueError, match="measurable capacity"):
+            store.record_disk_sample(bad, low_percent=LOW, recovery_percent=RECOVERY)
+    assert recorded_alerts(store) == []
+
+
+def test_memory_store_registration_writes_are_serialized_with_snapshots():
+    """M6: a registration mutation must not interleave with a monitoring read.
+
+    ``prepare_alert_deliveries`` and ``claim_alert_delivery`` read the push
+    registration collections while holding the monitoring lock. A writer that
+    does not take that same lock can therefore be observed half-applied. While
+    this thread holds the lock, a concurrent rotation must not complete.
+    """
+    store = InMemoryStore()
+    store.create(queued_job())
+    fail_job(store)
+    client = register_device(store, "phone", "token-1")
+
+    with ThreadPoolExecutor(1) as pool:
+        with store._monitoring_lock:
+            rotating = pool.submit(store.register_token, client.id, "token-2", FIXED_AT)
+            escaped, _ = wait([rotating], timeout=0.5)
+            assert not escaped, "rotation escaped the monitoring lock"
+        assert rotating.result(timeout=10).token == "token-2"
+    assert [reg.token for reg in store.list_active_device_tokens()] == ["token-2"]
 
 
 @pytest.mark.parametrize("memory", [False, True])

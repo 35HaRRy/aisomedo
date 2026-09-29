@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -45,9 +46,12 @@ from dojo.model import (
     YayinZamani,
 )
 from dojo.monitoring_models import (
+    ALERT_KIND_CHECK,
+    DELIVERY_ATTEMPTS_CHECK,
     DELIVERY_COMPLETE,
     DELIVERY_PENDING,
     DELIVERY_SKIPPED,
+    DELIVERY_STATUS_CHECK,
     DISK_OPENED,
     DISK_RECOVERED,
     DeliveryLease,
@@ -202,6 +206,7 @@ class MonitoringIncidentRow(Base):
 
 class OperationalAlertRow(Base):
     __tablename__ = "operational_alerts"
+    __table_args__ = (CheckConstraint(ALERT_KIND_CHECK, name="ck_operational_alerts_kind"),)
 
     alert_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     event_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
@@ -223,6 +228,8 @@ class OperationalDeliveryRow(Base):
         UniqueConstraint(
             "alert_id", "client_id", name="uq_operational_deliveries_alert_client",
         ),
+        CheckConstraint(DELIVERY_STATUS_CHECK, name="ck_operational_deliveries_status"),
+        CheckConstraint(DELIVERY_ATTEMPTS_CHECK, name="ck_operational_deliveries_attempts"),
         Index("ix_operational_deliveries_due", "status", "due_at"),
     )
 
@@ -1238,7 +1245,9 @@ class PostgresStore:
             session.commit()
             row = session.get(PushRegistrationRow, client_id)
             assert row is not None
-            return PushRegistration(client_id=row.client_id, token=row.token, updated_at=row.updated_at)
+            return PushRegistration(
+                client_id=row.client_id, token=row.token, updated_at=row.updated_at
+            )
 
     def remove_by_client(self, client_id: int) -> None:
         with self._session() as session:
@@ -1413,7 +1422,9 @@ class PostgresStore:
         client = session.get(ClientRow, client_id)
         if client is None or client.revoked_at is not None or client.kind != "device":
             return None
-        return PushRegistration(client_id=row.client_id, token=row.token, updated_at=row.updated_at)
+        return PushRegistration(
+            client_id=row.client_id, token=row.token, updated_at=row.updated_at
+        )
 
     def finish_alert_delivery(
         self, lease: DeliveryLease, *, outcome: DeliveryOutcome, now: datetime,
