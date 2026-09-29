@@ -41,11 +41,6 @@ komutlarıyla yapılır; python ve SQL kodu gerekmez.
   başlıkları yalnız `TRUSTED_PROXIES` içinden gelirse sayılır. Açık köken
   (`PUBLIC_HTTPS_ORIGIN`) backend VE worker imza/OAuth üreticilerine bağlandı.
 
-## Gerekenler
-
-- Docker Desktop çalışır durumda.
-- Repo kökü: `C:\Users\35.HaRRy\Desktop\Projects\aisomedo` (aşağıdaki komutlar
-  PowerShell'de bu dizinden çalıştırılır).
 
 ## Deneme A — tarayıcıda (yerel, mevcut-vekil modu)
 
