@@ -4,8 +4,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, cast, overload
+from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     create_engine,
     delete,
     func,
+    or_,
     select,
     text,
     update,
@@ -41,6 +43,24 @@ from dojo.model import (
     Upload,
     YayinIncelemesi,
     YayinZamani,
+)
+from dojo.monitoring_models import (
+    DELIVERY_COMPLETE,
+    DELIVERY_PENDING,
+    DELIVERY_SKIPPED,
+    DISK_OPENED,
+    DISK_RECOVERED,
+    DeliveryLease,
+    DeliveryOutcome,
+    DiskSample,
+    OperationalAlert,
+    disk_event_key,
+    disk_low_alert,
+    disk_recovered_alert,
+    job_failure_alert,
+    job_failure_event_key,
+    retry_delay_seconds,
+    token_fingerprint,
 )
 
 
@@ -163,6 +183,62 @@ class JobRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_generation: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default=text("0"),
+    )
+
+
+class MonitoringIncidentRow(Base):
+    """One row per monitored target: the active incident and the last sample."""
+
+    __tablename__ = "monitoring_incidents"
+
+    target: Mapped[str] = mapped_column(String(64), primary_key=True)
+    active_incident_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_sampled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class OperationalAlertRow(Base):
+    __tablename__ = "operational_alerts"
+
+    alert_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    body: Mapped[str] = mapped_column(String(512), nullable=False)
+    data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recipients_snapshotted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class OperationalDeliveryRow(Base):
+    """One recipient's attempts for one alert; no plaintext token is stored."""
+
+    __tablename__ = "operational_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "alert_id", "client_id", name="uq_operational_deliveries_alert_client",
+        ),
+        Index("ix_operational_deliveries_due", "status", "due_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    alert_id: Mapped[str] = mapped_column(
+        ForeignKey("operational_alerts.alert_id"), nullable=False
+    )
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    token_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SettingRow(Base):
@@ -619,9 +695,12 @@ class PostgresStore:
 
     def _update_job(self, job: Job) -> Job:
         with self._session() as session:
-            row = session.get(JobRow, job.id)
+            # The lock makes "nonfailed -> failed" a one-writer transition, so the
+            # generation and its alert cannot race or be emitted twice.
+            row = session.get(JobRow, job.id, with_for_update=True)
             if row is None:
                 raise ValueError(f"job {job.id} not found")
+            newly_failed = row.status != "failed" and job.status == "failed"
             row.job_id = job.job_id
             row.upload_id = job.upload_id
             row.kind = job.kind
@@ -631,6 +710,15 @@ class PostgresStore:
             row.created_at = job.created_at
             row.claimed_at = job.claimed_at
             row.finished_at = job.finished_at
+            if newly_failed:
+                row.failure_generation = row.failure_generation + 1
+                self._add_alert(session, job_failure_alert(
+                    alert_id=str(uuid4()),
+                    event_key=job_failure_event_key(row.job_id, row.failure_generation),
+                    job_id=row.job_id,
+                    kind=row.kind,
+                    created_at=row.finished_at or row.created_at,
+                ))
             session.commit()
             return job
 
@@ -1164,14 +1252,212 @@ class PostgresStore:
 
     def list_active_device_tokens(self) -> list[PushRegistration]:
         with self._session() as session:
-            rows = session.scalars(select(PushRegistrationRow)).all()
-            result: list[PushRegistration] = []
-            for r in rows:
-                client = session.get(ClientRow, r.client_id)
-                if client is None or client.revoked_at is not None or client.kind != "device":
+            return self._active_device_registrations(session)
+
+    @staticmethod
+    def _active_device_registrations(session: Session) -> list[PushRegistration]:
+        """Active paired Android registrations, read inside the caller's transaction."""
+        rows = session.scalars(
+            select(PushRegistrationRow)
+            .join(ClientRow, ClientRow.id == PushRegistrationRow.client_id)
+            .where(ClientRow.revoked_at.is_(None), ClientRow.kind == "device")
+            .order_by(PushRegistrationRow.client_id)
+        ).all()
+        return [
+            PushRegistration(client_id=r.client_id, token=r.token, updated_at=r.updated_at)
+            for r in rows
+        ]
+
+    # Operational monitoring
+    @staticmethod
+    def _add_alert(session: Session, alert: OperationalAlert) -> None:
+        # Event keys are unique, so a replayed insert is dropped rather than
+        # failing the job transition that produced it.
+        session.execute(
+            pg_insert(OperationalAlertRow).values(
+                alert_id=alert.alert_id,
+                event_key=alert.event_key,
+                kind=alert.kind,
+                title=alert.title,
+                body=alert.body,
+                data=alert.data,
+                created_at=alert.created_at,
+                recipients_snapshotted_at=None,
+            ).on_conflict_do_nothing(index_elements=[OperationalAlertRow.event_key])
+        )
+
+    def record_disk_sample(
+        self, sample: DiskSample, *, low_percent: float, recovery_percent: float,
+    ) -> None:
+        free_percent = sample.free_percent
+        with self._session() as session:
+            session.execute(
+                pg_insert(MonitoringIncidentRow)
+                .values(target=sample.target, active_incident_id=None, last_sampled_at=None)
+                .on_conflict_do_nothing(index_elements=[MonitoringIncidentRow.target])
+            )
+            # The target row lock serializes concurrent samplers of one target.
+            row = session.get(MonitoringIncidentRow, sample.target, with_for_update=True)
+            assert row is not None
+            if row.last_sampled_at is not None and sample.sampled_at <= row.last_sampled_at:
+                return  # Stale or repeated reading: cannot open or close anything.
+            row.last_sampled_at = sample.sampled_at
+            if row.active_incident_id is None:
+                if free_percent < low_percent:
+                    incident_id = str(uuid4())
+                    row.active_incident_id = incident_id
+                    self._add_alert(session, disk_low_alert(
+                        alert_id=str(uuid4()),
+                        event_key=disk_event_key(sample.target, incident_id, DISK_OPENED),
+                        target=sample.target,
+                        created_at=sample.sampled_at,
+                    ))
+            elif free_percent >= recovery_percent:
+                incident_id = row.active_incident_id
+                row.active_incident_id = None
+                self._add_alert(session, disk_recovered_alert(
+                    alert_id=str(uuid4()),
+                    event_key=disk_event_key(sample.target, incident_id, DISK_RECOVERED),
+                    target=sample.target,
+                    created_at=sample.sampled_at,
+                ))
+            session.commit()
+
+    def prepare_alert_deliveries(self, now: datetime, *, limit: int = 100) -> int:
+        prepared = 0
+        with self._session() as session:
+            recipients = self._active_device_registrations(session)
+            if not recipients:
+                return 0  # No recipient is not a delivery: alerts stay pending.
+            # Locking the alerts makes the snapshot single-writer: a concurrent
+            # preparer skips them instead of racing the unique recipient rows.
+            unsnapshotted = session.scalars(
+                select(OperationalAlertRow)
+                .where(OperationalAlertRow.recipients_snapshotted_at.is_(None))
+                .order_by(OperationalAlertRow.created_at, OperationalAlertRow.alert_id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            ).all()
+            for alert in unsnapshotted:
+                # One snapshot for the whole batch: devices paired after this
+                # point are not historical recipients of these alerts.
+                for registration in recipients:
+                    session.add(OperationalDeliveryRow(
+                        alert_id=alert.alert_id,
+                        client_id=registration.client_id,
+                        status=DELIVERY_PENDING,
+                        attempts=0,
+                        due_at=now,
+                    ))
+                alert.recipients_snapshotted_at = now
+                prepared += 1
+            session.commit()
+        return prepared
+
+    def claim_alert_delivery(
+        self, now: datetime, *, lease_seconds: int = 60,
+    ) -> DeliveryLease | None:
+        with self._session() as session:
+            while True:
+                row = session.scalar(
+                    select(OperationalDeliveryRow)
+                    .where(
+                        OperationalDeliveryRow.status == DELIVERY_PENDING,
+                        OperationalDeliveryRow.due_at <= now,
+                        or_(
+                            OperationalDeliveryRow.claim_id.is_(None),
+                            OperationalDeliveryRow.lease_expires_at <= now,
+                        ),
+                    )
+                    .order_by(OperationalDeliveryRow.due_at, OperationalDeliveryRow.id)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                )
+                if row is None:
+                    return None
+                registration = self._current_registration(session, row.client_id)
+                if registration is None:
+                    # Revoked, de-paired or non-device recipients are terminal:
+                    # resending to them can only fail forever.
+                    row.status = DELIVERY_SKIPPED
+                    row.claim_id = None
+                    row.lease_expires_at = None
+                    session.commit()
                     continue
-                result.append(PushRegistration(client_id=r.client_id, token=r.token, updated_at=r.updated_at))
-            return result
+                claim_id = str(uuid4())
+                row.claim_id = claim_id
+                row.attempts = row.attempts + 1
+                row.token_fingerprint = token_fingerprint(registration.token)
+                row.lease_expires_at = now + timedelta(seconds=lease_seconds)
+                alert_row = session.get(OperationalAlertRow, row.alert_id)
+                assert alert_row is not None
+                lease = DeliveryLease(
+                    delivery_id=row.id,
+                    claim_id=claim_id,
+                    alert=self._alert_from_row(alert_row),
+                    client_id=row.client_id,
+                    token=registration.token,
+                    attempt=row.attempts,
+                )
+                session.commit()
+                return lease
+
+    @staticmethod
+    def _current_registration(
+        session: Session, client_id: int,
+    ) -> PushRegistration | None:
+        """The registration a claim may use, rechecked for revocation."""
+        row = session.get(PushRegistrationRow, client_id)
+        if row is None:
+            return None
+        client = session.get(ClientRow, client_id)
+        if client is None or client.revoked_at is not None or client.kind != "device":
+            return None
+        return PushRegistration(client_id=row.client_id, token=row.token, updated_at=row.updated_at)
+
+    def finish_alert_delivery(
+        self, lease: DeliveryLease, *, outcome: DeliveryOutcome, now: datetime,
+    ) -> bool:
+        with self._session() as session:
+            row = session.get(OperationalDeliveryRow, lease.delivery_id, with_for_update=True)
+            if (
+                row is None
+                or row.status != DELIVERY_PENDING
+                or row.claim_id != lease.claim_id
+                or row.lease_expires_at is None
+                or row.lease_expires_at <= now
+            ):
+                return False
+            row.claim_id = None
+            row.lease_expires_at = None
+            if outcome == "accepted":
+                row.status = DELIVERY_COMPLETE
+            else:
+                row.status = DELIVERY_PENDING
+                row.due_at = now + timedelta(seconds=retry_delay_seconds(row.attempts))
+                if outcome == "invalid":
+                    # Delete exactly the token that was used: a registration that
+                    # has since rotated must survive and stay deliverable.
+                    session.execute(
+                        delete(PushRegistrationRow).where(
+                            PushRegistrationRow.token == lease.token,
+                            PushRegistrationRow.client_id == lease.client_id,
+                        )
+                    )
+            session.commit()
+            return True
+
+    @staticmethod
+    def _alert_from_row(row: OperationalAlertRow) -> OperationalAlert:
+        return OperationalAlert(
+            alert_id=row.alert_id,
+            event_key=row.event_key,
+            kind=row.kind,
+            title=row.title,
+            body=row.body,
+            data=row.data,
+            created_at=row.created_at,
+        )
 
     # Meta connection store
     def get_meta_status(self) -> MetaConnectionStatus | None:

@@ -12,8 +12,6 @@ from sqlalchemy import create_engine, inspect, text
 from dojo.schema_checks import preflight_emission_conflicts, validate_legacy_schema
 
 SCHEMA_INITIALIZATION_LOCK_KEY = 0x444F4A4F5343484D
-LEGACY_BASELINE = "0013_instagram_login"
-EMISSION_REVISION = "0014_emission_idempotency"
 
 
 def migration_config() -> Config:
@@ -49,8 +47,9 @@ def initialize_database(url: str | None = None) -> None:
             )
             if not versioned and tables - {"alembic_version"}:
                 preflight_emission_conflicts(connection)
-                at_head = validate_legacy_schema(connection)
-                command.stamp(config, EMISSION_REVISION if at_head else LEGACY_BASELINE)
+                # The unversioned shape may already carry 0015's objects, so the
+                # validator reports the revision the schema actually matches.
+                command.stamp(config, validate_legacy_schema(connection))
             command.upgrade(config, "head")
     finally:
         engine.dispose()

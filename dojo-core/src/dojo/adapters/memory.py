@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import replace
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from threading import RLock
 from typing import overload
+from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 
@@ -25,6 +26,39 @@ from dojo.model import (
     YayinIncelemesi,
     YayinZamani,
 )
+from dojo.monitoring_models import (
+    DELIVERY_COMPLETE,
+    DELIVERY_PENDING,
+    DELIVERY_SKIPPED,
+    DISK_OPENED,
+    DISK_RECOVERED,
+    DeliveryLease,
+    DeliveryOutcome,
+    DiskSample,
+    OperationalAlert,
+    disk_event_key,
+    disk_low_alert,
+    disk_recovered_alert,
+    job_failure_alert,
+    job_failure_event_key,
+    retry_delay_seconds,
+    token_fingerprint,
+)
+
+
+@dataclass
+class _DeliveryState:
+    """One recipient's attempts for one alert; mirrors ``operational_deliveries``."""
+
+    delivery_id: int
+    alert_id: str
+    client_id: int
+    status: str
+    attempts: int
+    due_at: datetime
+    token_fingerprint: str | None = None
+    claim_id: str | None = None
+    lease_expires_at: datetime | None = None
 
 
 class InMemoryStore:
@@ -58,6 +92,14 @@ class InMemoryStore:
         self._meta_expires_at: datetime | None = None
         self._meta_attempts: dict[str, dict] = {}
         self._meta_lock = RLock()
+        self._alerts: list[OperationalAlert] = []
+        self._alert_recipients_at: dict[str, datetime] = {}
+        self._deliveries: list[_DeliveryState] = []
+        self._next_delivery_id = 1
+        self._incidents: dict[str, str | None] = {}
+        self._last_sampled_at: dict[str, datetime | None] = {}
+        self._failure_generations: dict[int, int] = {}
+        self._monitoring_lock = RLock()
         self._creation_lock = RLock()
         self._emission_active: ContextVar[bool] = ContextVar("emission_active", default=False)
 
@@ -208,6 +250,10 @@ class InMemoryStore:
         if isinstance(obj, Job):
             for i, existing_job in enumerate(self._jobs):
                 if existing_job.id == obj.id:
+                    # Only the first nonfailed -> failed transition emits; the
+                    # generation lives here so the domain Job stays unchanged.
+                    if existing_job.status != "failed" and obj.status == "failed":
+                        self._record_job_failure(obj)
                     self._jobs[i] = obj
                     return obj
             raise ValueError(f"job {obj.id} not found")
@@ -493,6 +539,160 @@ class InMemoryStore:
                 continue
             active.append(reg)
         return active
+
+    # Operational monitoring
+    @property
+    def recorded_alerts(self) -> list[OperationalAlert]:
+        """Recorded alerts in creation order, for contract tests."""
+        with self._monitoring_lock:
+            return list(self._alerts)
+
+    def _record_job_failure(self, job: Job) -> None:
+        with self._monitoring_lock:
+            generation = self._failure_generations.get(job.id, 0) + 1
+            self._failure_generations[job.id] = generation
+            self._alerts.append(job_failure_alert(
+                alert_id=str(uuid4()),
+                event_key=job_failure_event_key(job.job_id, generation),
+                job_id=job.job_id,
+                kind=job.kind,
+                created_at=job.finished_at or job.created_at,
+            ))
+
+    def record_disk_sample(
+        self, sample: DiskSample, *, low_percent: float, recovery_percent: float,
+    ) -> None:
+        free_percent = sample.free_percent
+        with self._monitoring_lock:
+            last = self._last_sampled_at.get(sample.target)
+            if last is not None and sample.sampled_at <= last:
+                return  # Stale or repeated reading: cannot open or close anything.
+            self._last_sampled_at[sample.target] = sample.sampled_at
+            incident_id = self._incidents.get(sample.target)
+            if incident_id is None:
+                if free_percent < low_percent:
+                    incident_id = str(uuid4())
+                    self._incidents[sample.target] = incident_id
+                    self._alerts.append(disk_low_alert(
+                        alert_id=str(uuid4()),
+                        event_key=disk_event_key(sample.target, incident_id, DISK_OPENED),
+                        target=sample.target,
+                        created_at=sample.sampled_at,
+                    ))
+            elif free_percent >= recovery_percent:
+                self._incidents[sample.target] = None
+                self._alerts.append(disk_recovered_alert(
+                    alert_id=str(uuid4()),
+                    event_key=disk_event_key(sample.target, incident_id, DISK_RECOVERED),
+                    target=sample.target,
+                    created_at=sample.sampled_at,
+                ))
+
+    def prepare_alert_deliveries(self, now: datetime, *, limit: int = 100) -> int:
+        with self._monitoring_lock:
+            recipients = self.list_active_device_tokens()
+            if not recipients:
+                return 0  # No recipient is not a delivery: alerts stay pending.
+            unsnapshotted = [
+                alert for alert in self._alerts if alert.alert_id not in self._alert_recipients_at
+            ][:limit]
+            for alert in unsnapshotted:
+                # One snapshot for the whole batch: devices paired after this
+                # point are not historical recipients of these alerts.
+                for registration in recipients:
+                    self._deliveries.append(_DeliveryState(
+                        delivery_id=self._next_delivery_id,
+                        alert_id=alert.alert_id,
+                        client_id=registration.client_id,
+                        status=DELIVERY_PENDING,
+                        attempts=0,
+                        due_at=now,
+                    ))
+                    self._next_delivery_id += 1
+                self._alert_recipients_at[alert.alert_id] = now
+            return len(unsnapshotted)
+
+    def claim_alert_delivery(
+        self, now: datetime, *, lease_seconds: int = 60,
+    ) -> DeliveryLease | None:
+        with self._monitoring_lock:
+            candidates = sorted(
+                (
+                    delivery for delivery in self._deliveries
+                    if delivery.status == DELIVERY_PENDING
+                    and delivery.due_at <= now
+                    and (delivery.claim_id is None
+                         or (delivery.lease_expires_at is not None
+                             and delivery.lease_expires_at <= now))
+                ),
+                key=lambda delivery: (delivery.due_at, delivery.delivery_id),
+            )
+            for delivery in candidates:
+                registration = self._current_registration(delivery.client_id)
+                if registration is None:
+                    # Revoked, de-paired or non-device recipients are terminal:
+                    # resending to them can only fail forever.
+                    delivery.status = DELIVERY_SKIPPED
+                    delivery.claim_id = None
+                    delivery.lease_expires_at = None
+                    continue
+                claim_id = str(uuid4())
+                delivery.claim_id = claim_id
+                delivery.attempts += 1
+                delivery.token_fingerprint = token_fingerprint(registration.token)
+                delivery.lease_expires_at = now + timedelta(seconds=lease_seconds)
+                alert = next(a for a in self._alerts if a.alert_id == delivery.alert_id)
+                return DeliveryLease(
+                    delivery_id=delivery.delivery_id,
+                    claim_id=claim_id,
+                    alert=alert,
+                    client_id=delivery.client_id,
+                    token=registration.token,
+                    attempt=delivery.attempts,
+                )
+            return None
+
+    def _current_registration(self, client_id: int) -> PushRegistration | None:
+        """The registration a claim may use, rechecked for revocation."""
+        registration = self._push_regs.get(client_id)
+        if registration is None:
+            return None
+        client = self.find_client_by_id(client_id)
+        if client is None or client.revoked_at is not None or client.kind != "device":
+            return None
+        return registration
+
+    def finish_alert_delivery(
+        self, lease: DeliveryLease, *, outcome: DeliveryOutcome, now: datetime,
+    ) -> bool:
+        with self._monitoring_lock:
+            delivery = next(
+                (d for d in self._deliveries if d.delivery_id == lease.delivery_id), None,
+            )
+            if (
+                delivery is None
+                or delivery.status != DELIVERY_PENDING
+                or delivery.claim_id != lease.claim_id
+                or delivery.lease_expires_at is None
+                or delivery.lease_expires_at <= now
+            ):
+                return False
+            delivery.claim_id = None
+            delivery.lease_expires_at = None
+            if outcome == "accepted":
+                delivery.status = DELIVERY_COMPLETE
+            else:
+                delivery.status = DELIVERY_PENDING
+                delivery.due_at = now + timedelta(
+                    seconds=retry_delay_seconds(delivery.attempts)
+                )
+                if outcome == "invalid":
+                    # Delete exactly the token that was used: a registration that
+                    # has since rotated must survive and stay deliverable.
+                    current = self._push_regs.get(lease.client_id)
+                    if current is not None and current.token == lease.token:
+                        self.remove_by_token(lease.token)
+            return True
 
     # Meta connection store
     def get_meta_status(self) -> MetaConnectionStatus | None:
