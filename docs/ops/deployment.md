@@ -77,7 +77,8 @@ and fix the reported conflict before restarting.
 ## Health verification
 
 ```bash
-docker compose -p dojo-prod -f ops/docker-compose.prod.yml ps
+docker compose --env-file ops/.env -p dojo-prod \
+  -f ops/docker-compose.prod.yml -f ops/docker-compose.<mode>.yml ps
 curl -s https://<DOMAIN>/health            # {"status":"ok"} via gateway
 curl -s https://<DOMAIN>/api/packages/active -o /dev/null -w '%{http_code}\n'  # 401 = routed, not SPA
 ```

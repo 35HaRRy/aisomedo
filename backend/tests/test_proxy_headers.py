@@ -144,6 +144,30 @@ def test_public_origin_rejects_http_when_secure(monkeypatch, tmp_path: Path) -> 
     assert deps.resolve_public_base_url(False) == "http://dojo.example.com"
 
 
+def test_build_publishing_bad_origin_raises_despite_secret(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Misconfigured origin must raise, not silently drop the signed-URL store.
+
+    Regression pin: resolve_public_base_url() used to sit inside the
+    try/except-pass, so direct build_publishing() misuse fell back to the
+    stub. Stub fallback applies only when no secret is configured.
+    """
+    import pytest
+
+    from backend import deps
+
+    monkeypatch.setenv("SKIP_CREATE_ALL", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://127.0.0.1:1/unreachable")
+    monkeypatch.setenv("MEDIA_ROOT", str(tmp_path / "media"))
+    monkeypatch.setenv("SIGNED_URL_SECRET", "test-secret")
+    monkeypatch.setenv("PUBLIC_HTTPS_ORIGIN", "http://dojo.example.com")
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    monkeypatch.delenv("META_TOKEN_ENCRYPTION_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="non-https public origin"):
+        deps.build_publishing()
+
+
 def test_trusted_proxies_typo_fails_at_startup(tmp_path: Path) -> None:
     import pytest
     from dojo import DojoPairing, InMemoryStore

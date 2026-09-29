@@ -74,13 +74,17 @@ def build_publishing() -> DojoPublishing:
             )
     except Exception:  # noqa: BLE001 - publishing works with stub in dev
         pass
+    secret = os.environ.get("SIGNED_URL_SECRET", "")
+    base_url = resolve_public_base_url() if secret else ""
     try:
         from dojo.adapters.signed_urls import HmacSignedUrlStore
 
-        secret = os.environ.get("SIGNED_URL_SECRET", "")
         if secret:
+            # base_url resolved OUTSIDE the try: a misconfigured public
+            # origin must raise, not silently fall back to the stub.
+            # Stub fallback applies only when no secret is configured.
             kwargs["signed_urls"] = HmacSignedUrlStore(
-                base_url=resolve_public_base_url(),
+                base_url=base_url,
                 secret=secret,
             )
     except Exception:  # noqa: BLE001

@@ -9,7 +9,12 @@ import pytest
 import worker.main as worker_main
 from dojo import DojoPublishing, InMemoryStore, Job
 from dojo.adapters.stubs import StubMediaProcessor
-from worker.main import _maybe_create_all, run_tick
+from worker.main import (
+    _emission_store,
+    _maybe_create_all,
+    _run_emission_turn,
+    run_tick,
+)
 
 
 class TickSpy(DojoPublishing):
@@ -175,3 +180,66 @@ def test_build_publishing_skips_ddl_without_database(
     monkeypatch.delenv("SIGNED_URL_SECRET", raising=False)
     publishing = worker_main.build_publishing()
     assert isinstance(publishing, DojoPublishing)
+
+
+class _Coordinator:
+    """Minimal coordinator-capable store for _emission_store tests."""
+
+    def emission_transaction(self) -> object:
+        return self
+
+    def try_advisory_xact_lock(self, key: int) -> bool:
+        return True
+
+
+def test_emission_store_shared_instance_returned() -> None:
+    from types import SimpleNamespace
+
+    shared = _Coordinator()
+    publishing = SimpleNamespace(_packages=shared, _schedule=shared)
+    assert _emission_store(publishing) is shared  # type: ignore[arg-type]
+
+
+def test_emission_store_split_stores_warn_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Split coordinator instances: loud warning naming ports, first wins.
+
+    Distinct per-port stores are a supported dev/test pattern, so this warns
+    instead of raising — but never silently picks first. Uses a Mock logger
+    (not caplog) so the test is immune to root-logging config from other
+    suites in a full run.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    mock_logger = MagicMock()
+    monkeypatch.setattr(worker_main, "logger", mock_logger)
+    first = _Coordinator()
+    publishing = SimpleNamespace(
+        _packages=first, _schedule=_Coordinator()
+    )
+    assert _emission_store(publishing) is first  # type: ignore[arg-type]
+    mock_logger.warning.assert_called_once()
+    msg = mock_logger.warning.call_args.args[0]
+    assert "do not share one emission store" in msg
+
+
+def test_no_coordinator_emits_directly_without_leadership() -> None:
+    """Fallback contract: no coordinator-capable port → emit ungated.
+
+    Dev/test-only path (production always wires PostgresStore); pinned so a
+    future change to skip-instead-of-emit breaks loudly here first.
+    """
+    from types import SimpleNamespace
+
+    calls = 0
+
+    def _evaluate() -> None:
+        nonlocal calls
+        calls += 1
+
+    publishing = SimpleNamespace(evaluate_due_work=_evaluate)
+    assert _emission_store(publishing) is None  # type: ignore[arg-type]
+    assert _run_emission_turn(publishing) is False  # type: ignore[arg-type]
+    assert calls == 1

@@ -33,17 +33,44 @@ def _emission_store(publishing: DojoPublishing) -> object | None:
     Production wires one PostgresStore through every DojoPublishing port, so
     ``_packages`` is that instance. The scan fallback keeps directly built
     publishing objects working without coupling run_tick to a new public API.
+
+    Single-store expectation: production wires one PostgresStore through every
+    port. When coordinator-capable ports are DISTINCT instances, leadership is
+    elected on the returned store while emission may write through another —
+    so log loudly (names + count) instead of silently picking first. Distinct
+    per-port stores remain supported (dev/test pattern); the warning makes a
+    production miswire visible rather than silent.
+
+    Fallback contract: ``None`` (no coordinator-capable port) means emit
+    directly without leadership gating. That path exists for directly built
+    dev/test publishing objects only; production always wires a coordinating
+    PostgresStore, so leadership always gates there.
     """
-    for attr in (
+    attrs = (
         "_packages", "_schedule", "_jobs", "_reviews",
         "_audit", "_uploads", "_settings",
-    ):
+    )
+    pairs: list[tuple[str, object]] = []
+    for attr in attrs:
         store = getattr(publishing, attr, None)
         if hasattr(store, "emission_transaction") and hasattr(
             store, "try_advisory_xact_lock"
         ):
-            return store
-    return None
+            pairs.append((attr, store))
+    if not pairs:
+        return None
+    first_attr, first = pairs[0]
+    others = sorted(attr for attr, store in pairs[1:] if store is not first)
+    if others:
+        logger.warning(
+            "publishing ports do not share one emission store: "
+            "%d distinct coordinator instances (first=%s, others=%s); "
+            "leadership gates on the first",
+            len({id(store) for _, store in pairs}),
+            first_attr,
+            ",".join(others),
+        )
+    return first
 
 
 def resolve_public_base_url(cookie_secure: bool | None = None) -> str:
@@ -180,6 +207,9 @@ def _run_emission_turn(publishing: DojoPublishing) -> bool:
     """
     store = _emission_store(publishing)
     if store is None:
+        # Fallback contract (see _emission_store): no coordinator means emit
+        # directly; production never takes this path (PostgresStore always
+        # coordinates), so this stays ungated by design, not by accident.
         try:
             publishing.evaluate_due_work()
         except Exception:  # noqa: BLE001
