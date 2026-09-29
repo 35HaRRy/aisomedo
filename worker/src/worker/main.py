@@ -10,6 +10,9 @@ from dojo import DojoPublishing
 from dojo.adapters.db import PostgresStore
 from dojo.scheduler import try_emission_leadership
 
+from worker.health import DEFAULT_PATH as WORKER_HEALTH_DEFAULT_PATH
+from worker.health import WorkerHealth
+
 logger = logging.getLogger(__name__)
 
 #: Exact production-DDL contract: only the literal string "1" skips schema
@@ -286,11 +289,31 @@ def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
     _run_job_turn(publishing)
 
 
+def build_worker_health(interval_seconds: float) -> WorkerHealth:
+    """Container-local health record wired to the tick loop.
+
+    The idle deadline must exceed the tick interval, otherwise a healthy
+    loop would look stale between turns.
+    """
+    path = Path(os.environ.get("WORKER_HEALTH_PATH", str(WORKER_HEALTH_DEFAULT_PATH)))
+    idle_seconds = float(os.environ.get("WORKER_HEALTH_IDLE_SECONDS", "120"))
+    busy_seconds = float(os.environ.get("WORKER_HEALTH_BUSY_SECONDS", "3600"))
+    health = WorkerHealth(path, idle_seconds=idle_seconds, busy_seconds=busy_seconds)
+    if idle_seconds <= interval_seconds:
+        raise RuntimeError(
+            f"WORKER_HEALTH_IDLE_SECONDS ({idle_seconds}) must exceed "
+            f"WORKER_INTERVAL_SECONDS ({interval_seconds})"
+        )
+    return health
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     publishing = build_publishing()
     meta = build_meta()
     interval = float(os.environ.get("WORKER_INTERVAL_SECONDS", "10"))
+    health = build_worker_health(interval)
+    health.idle()
 
     stop = threading.Event()
 
@@ -305,12 +328,17 @@ def main() -> None:
     # in-flight render runs at most until the container orchestrator's
     # stop_grace_period ends it (Task 4 owns that Compose value; this worker
     # assumes 120s — see the task-2 handoff report).
-    while not stop.is_set():
-        try:
-            run_tick(publishing, meta)
-        except Exception:  # noqa: BLE001 - belt and braces; run_tick is isolated
-            logger.exception("worker tick failed; continuing")
-        stop.wait(interval)
+    try:
+        while not stop.is_set():
+            health.busy()
+            try:
+                run_tick(publishing, meta)
+            except Exception:  # noqa: BLE001 - belt and braces; run_tick is isolated
+                logger.exception("worker tick failed; continuing")
+            health.idle()
+            stop.wait(interval)
+    finally:
+        health.stopped()
 
     logger.info("worker stopped")
 

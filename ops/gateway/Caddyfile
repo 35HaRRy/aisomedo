@@ -3,11 +3,11 @@
 
 	root * /srv
 
-	# API and signed publication artifacts proxy to the backend verbatim
+	# API readiness/liveness proxy to the backend verbatim
 	# (no rewrite). This matcher must stay ahead of the SPA fallback so
 	# these routes never fall through to index.html.
 	@backend {
-		path /api/* /pub/* /health
+		path /api/* /pub/* /health /ready
 	}
 	handle @backend {
 		reverse_proxy backend:8000 {
@@ -15,10 +15,35 @@
 		}
 	}
 
+	# Built web-health asset only: exact match ahead of the SPA fallback
+	# so a missing asset returns 404 instead of index.html.
+	handle /web-health.txt {
+		file_server
+	}
+
 	# Frontend deep links: serve static assets, fall back to the SPA.
 	handle {
 		try_files {path} /index.html
 		file_server
+	}
+
+	log
+}
+
+# Loopback-only probe listener: serves the same built asset without domain
+# redirects so container healthchecks stay independent of public routing.
+# Not published outside the Compose network (no ports entry in Compose).
+http://127.0.0.1:8081 {
+	encode gzip
+
+	root * /srv
+
+	handle /web-health.txt {
+		file_server
+	}
+
+	handle {
+		respond 404
 	}
 
 	log

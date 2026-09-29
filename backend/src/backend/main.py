@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 
 from dojo import DojoActivity, DojoMetaConnection, DojoPairing, DojoPublishing, DojoSetup
@@ -37,6 +37,14 @@ def _wire_setup_meta(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    readiness_probe = None
+    if getattr(app.state, "readiness", None) is None:
+        from backend.deps import DEFAULT_URL
+        from backend.readiness import DatabaseReadiness
+
+        url = os.environ.get("DATABASE_URL", DEFAULT_URL)
+        readiness_probe = DatabaseReadiness(url)
+        app.state.readiness = readiness_probe.check
     if not hasattr(app.state, "publishing"):
         app.state.publishing = build_publishing()
     try:
@@ -62,7 +70,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     else:
         _wire_setup_meta(app)
     _wire_setup_meta(app)
-    yield
+    try:
+        yield
+    finally:
+        if readiness_probe is not None:
+            readiness_probe.close()
 
 
 def create_app(
@@ -73,6 +85,7 @@ def create_app(
     meta: DojoMetaConnection | None = None,
     cookie_secure: bool | None = None,
     trusted_proxies: str | None = None,
+    readiness: Callable[[], bool] | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Dojo publishing API",
@@ -92,6 +105,8 @@ def create_app(
         app.state.setup = setup
     if meta is not None:
         app.state.meta = meta
+    if readiness is not None:
+        app.state.readiness = readiness
     _wire_setup_meta(app)
     if trusted_proxies is None:
         trusted_proxies = os.environ.get("TRUSTED_PROXIES", "private_ranges")
