@@ -272,6 +272,62 @@ def test_media_root_is_the_default_media_target() -> None:
     assert config.targets[0] == ("media", Path("/srv/dojo-media"))
 
 
+@pytest.mark.parametrize("media_root", [Path("media"), Path("."), Path("data/media")])
+def test_a_relative_media_root_is_rejected_even_as_the_default(
+    media_root: Path,
+) -> None:
+    """The default is validated like any configured target.
+
+    A relative default would resolve against the worker's working directory
+    and then fail on every turn: a silent 60-second failure loop with no media
+    coverage, which is exactly what the default exists to prevent.
+    """
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        MonitoringConfig.from_env(
+            {"MONITORING_ENABLED": "true"}, media_root=media_root
+        )
+
+
+def test_an_empty_media_root_is_rejected() -> None:
+    # ``Path("")`` stringifies to ".", which is relative, so the absoluteness
+    # check is what catches an empty MEDIA_ROOT.
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        MonitoringConfig.from_env(
+            {"MONITORING_ENABLED": "true"}, media_root=Path("")
+        )
+
+
+def test_the_worker_default_media_root_cannot_silently_enable_monitoring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``build_monitoring`` must not start a collector on a relative MEDIA_ROOT.
+
+    ``build_publishing`` falls back to the relative ``"media"``, so monitoring
+    inherits that value in a deployment that forgot to set it; rejecting it
+    here is the difference between a failed startup and a collector that
+    reports nothing for the media volume forever.
+    """
+    import worker.main as worker_main
+
+    monkeypatch.delenv("MONITORING_DISK_PATHS", raising=False)
+    monkeypatch.delenv("MEDIA_ROOT", raising=False)
+    monkeypatch.setenv("MONITORING_ENABLED", "true")
+    monkeypatch.setenv("FCM_ENABLED", "true")
+    monkeypatch.setattr(worker_main, "FcmNotifier", lambda **kwargs: object())
+
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        worker_main.build_monitoring()
+
+    monkeypatch.setenv("MEDIA_ROOT", "/media")
+    built = worker_main.build_monitoring()
+    assert built is not None
+    assert built[0]._config.targets == (  # noqa: SLF001
+        ("media", Path("/media")),
+        ("root", Path("/")),
+    )
+    built[1].dispose()
+
+
 # --- sampling ----------------------------------------------------------------
 
 
@@ -550,6 +606,32 @@ def _with_tick_cost(
         sampler=runner._sampler,  # noqa: SLF001
         monotonic=monotonic,
     )
+
+
+def test_an_overrun_reports_how_many_turns_it_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The skipped count is the diagnosis, so it must survive into the log.
+
+    It rides in ``status`` because ``JsonFormatter`` never serializes message
+    arguments: an argument-only count would be invisible in production.
+    """
+    monotonic = FakeMonotonic()
+    runner, _store, _notifier, _usage = make_runner(
+        interval=60.0, monotonic=monotonic
+    )
+    stop = ScriptedStop(turns=1)
+    stuck = _with_tick_cost(runner, monotonic, 3.5 * 60.0)
+
+    with caplog.at_level(logging.WARNING, logger="worker.monitoring"):
+        stuck.run(stop)  # type: ignore[arg-type]
+
+    (overrun,) = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "monitoring.overrun"
+    ]
+    assert overrun.status == "skipped=3"
 
 
 def test_an_overrun_skips_missed_turns_instead_of_catching_up() -> None:

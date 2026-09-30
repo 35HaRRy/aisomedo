@@ -84,8 +84,9 @@ class MonitoringConfig:
         would never apply.
         """
         enabled = (
-            env.get("MONITORING_ENABLED") or "false"
-        ).strip().lower() in ENABLED_VALUES
+            (env.get("MONITORING_ENABLED") or "false").strip().lower()
+            in ENABLED_VALUES
+        )
         if not enabled:
             return cls(
                 enabled=False,
@@ -137,7 +138,14 @@ class MonitoringConfig:
         """
         raw = env.get("MONITORING_DISK_PATHS")
         if raw is None or not raw.strip():
-            return (("media", Path(media_root)), ("root", Path(DEFAULT_ROOT_PATH)))
+            # The defaults go through the same validation as configured ones.
+            # Returning them unchecked would let an unset or relative
+            # ``MEDIA_ROOT`` produce a relative target, which resolves against
+            # the worker's working directory and then fails on every turn: a
+            # silent failure loop with no media coverage at all.
+            return MonitoringConfig._validated(
+                {"media": str(media_root), "root": DEFAULT_ROOT_PATH}
+            )
         try:
             decoded = json.loads(raw)
         except ValueError as exc:
@@ -146,19 +154,26 @@ class MonitoringConfig:
             ) from exc
         if not isinstance(decoded, dict) or not decoded:
             raise ValueError("MONITORING_DISK_PATHS must be a non-empty JSON object")
+        return MonitoringConfig._validated(
+            {str(name): str(value) for name, value in decoded.items()}
+        )
+
+    @staticmethod
+    def _validated(raw: Mapping[str, str]) -> tuple[tuple[str, Path], ...]:
+        """Named, nonempty, absolute targets, in configured order."""
         targets: list[tuple[str, Path]] = []
-        for name, value in decoded.items():
+        for name, value in raw.items():
             label = str(name).strip()
             if not label:
                 raise ValueError("monitoring target names must not be empty")
-            path = Path(str(value).strip())
-            if not str(path).strip():
+            text = str(value).strip()
+            if not text:
                 raise ValueError(f"monitoring target {label!r} has no path")
-            if not os.path.isabs(str(path)):
+            if not os.path.isabs(text):
                 raise ValueError(
                     f"monitoring target {label!r} must be an absolute path"
                 )
-            targets.append((label, path))
+            targets.append((label, Path(text)))
         return tuple(targets)
 
 
@@ -236,9 +251,15 @@ class MonitoringRunner:
             if now >= deadline:
                 missed = int((now - deadline) // interval) + 1
                 deadline += missed * interval
+                # The count is the diagnosis: one skipped turn is ordinary
+                # jitter, a run of them means a turn is far too slow for the
+                # configured interval. It rides in ``status`` as well as the
+                # message because JsonFormatter never serializes message args,
+                # so an argument-only count would be invisible in production.
                 logger.warning(
-                    "monitoring turn overran its interval; skipped turns",
-                    extra={"event": "monitoring.overrun", "status": "skipped"},
+                    "monitoring turn overran its interval; skipped %d turn(s)",
+                    missed,
+                    extra={"event": "monitoring.overrun", "status": f"skipped={missed}"},
                 )
             if stop.wait(max(0.0, deadline - self._monotonic())):
                 return

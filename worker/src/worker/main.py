@@ -131,7 +131,7 @@ def build_notifier() -> FcmNotifier | None:
     startup rather than silence them. Credentials and project identity are
     resolved by the adapter at construction.
     """
-    if os.environ.get("FCM_ENABLED", "false").lower() not in FCM_ENABLED_VALUES:
+    if os.environ.get("FCM_ENABLED", "false").strip().lower() not in FCM_ENABLED_VALUES:
         return None
     project_id = (
         os.environ.get("FCM_PROJECT_ID", "").strip()
@@ -141,7 +141,18 @@ def build_notifier() -> FcmNotifier | None:
     try:
         return FcmNotifier(project_id=project_id)
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("FCM enabled but firebase_admin not configured") from exc
+        # The credential failure text can name paths and provider responses, so
+        # it is never chained into the traceback. ``exc_info`` yields the class
+        # name and stack frames only, which is the whole diagnosis here: the
+        # operator's fix is to mount usable credentials.
+        logger.error(
+            "FCM enabled but the notifier could not be configured",
+            exc_info=exc,
+            extra={"event": "fcm.notifier_unavailable", "status": "error"},
+        )
+        raise RuntimeError(
+            "FCM enabled but firebase_admin not configured"
+        ) from None
 
 
 def build_publishing() -> DojoPublishing:
@@ -395,6 +406,13 @@ def build_monitoring() -> tuple[MonitoringRunner, PostgresStore] | None:
         return None
     notifier = build_notifier()
     if notifier is None:
+        # Logged before raising so the failure is a structured record and not
+        # only a bare traceback on stderr. The cause is a configuration state,
+        # not an exception value, so no credential text is involved.
+        logger.error(
+            "monitoring requires FCM delivery, which is not configured",
+            extra={"event": "monitoring.notifier_missing", "status": "error"},
+        )
         raise RuntimeError(
             "MONITORING_ENABLED requires FCM_ENABLED with usable credentials"
         )
@@ -434,10 +452,21 @@ def _stop_monitoring(
 
     Both steps are best-effort: shutdown must complete (and an in-flight
     exception must still propagate) even when the collector is stuck in a
-    database call or the pool refuses to dispose.
+    database call or the pool refuses to dispose. A collector that outlives the
+    bounded join is logged rather than hidden: the process is about to dispose
+    its pool under a live thread, and that truncation must be visible in the
+    structured log instead of looking like a clean stop. Losing the work is
+    safe — an unsampled reading is re-taken next turn, and an unacknowledged
+    delivery stays pending behind its lease.
     """
     if collector is not None:
         collector.join(MONITORING_JOIN_SECONDS)
+        if collector.is_alive():
+            logger.warning(
+                "monitoring collector still running after the bounded join; "
+                "its store is being disposed underneath it",
+                extra={"event": "monitoring.shutdown_incomplete", "status": "alive"},
+            )
     if store is not None:
         try:
             store.dispose()
