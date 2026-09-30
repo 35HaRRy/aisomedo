@@ -1,6 +1,7 @@
 # Production deployment. STANDALONE base file: do NOT combine with
 # ops/docker-compose.yml (Compose merge cannot clear inherited dev ports or
-# bind-backed driver_opts volumes). Pair with exactly one mode override:
+# bind-backed driver_opts volumes). Pair with exactly one mode override, and
+# optionally with the monitoring override:
 #
 #   Dedicated-domain (Caddy owns :80/:443, auto TLS):
 #     docker compose --env-file ops/.env -p dojo-prod \
@@ -10,12 +11,28 @@
 #     docker compose --env-file ops/.env -p dojo-prod \
 #       -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml up -d --build
 #
+#   With operational alerts (adds real FCM and disk monitoring to the worker;
+#   requires FCM_CREDENTIALS_FILE in .env):
+#     docker compose --env-file ops/.env -p dojo-prod \
+#       -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml \
+#       -f ops/docker-compose.monitoring.yml up -d --build
+#
 # The top-level `name` freezes project/volume naming: volumes are
 # dojo-prod_db-data, dojo-prod_media-data, dojo-prod_caddy-data. Never start
 # production under a different project name against existing data without the
 # adoption procedure in the Task 4 report (a new prefix = empty volumes next
 # to a live installation).
 name: dojo-prod
+
+# Bounded log retention for every production service: three 10 MiB rotations
+# per container, so a log-emitting incident cannot fill the host disk from
+# inside a container nobody is watching. Anchored here because a bound that
+# is easy to forget on one service is a bound that is missing on one service.
+x-bounded-logs: &bounded-logs
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
 
 services:
   db:
@@ -31,6 +48,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *bounded-logs
     restart: unless-stopped
     stop_grace_period: 30s
 
@@ -50,6 +68,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    logging: *bounded-logs
     restart: "no"
 
   backend:
@@ -80,12 +99,18 @@ services:
         condition: service_healthy
       init:
         condition: service_completed_successfully
+    # Readiness, not liveness. /health stays the cheap liveness route; the
+    # container is only reported healthy when the API can actually reach its
+    # database, so a gateway that is up over a dead API goes unhealthy. The
+    # HTTP call carries its own timeout so the check ends inside the probe
+    # timeout instead of hanging until Docker kills it.
     healthcheck:
-      test: ["CMD-SHELL", ".venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
-      interval: 10s
+      test: ["CMD-SHELL", ".venv/bin/python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)\""]
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 3
       start_period: 30s
+    logging: *bounded-logs
     restart: unless-stopped
     stop_grace_period: 30s
 
@@ -99,6 +124,14 @@ services:
       MEDIA_ROOT: /media
       SKIP_CREATE_ALL: "1"
       WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-10}
+      # Health record: the probe reads the same path the tick loop writes, so
+      # there is exactly one record and one contract. Idle must exceed
+      # WORKER_INTERVAL_SECONDS or a healthy loop looks stale between turns;
+      # the busy deadline is fixed when work starts and is what eventually
+      # fails a stuck render.
+      WORKER_HEALTH_PATH: /tmp/dojo-worker-health.json
+      WORKER_HEALTH_IDLE_SECONDS: "120"
+      WORKER_HEALTH_BUSY_SECONDS: "3600"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
       PUBLIC_HTTPS_ORIGIN: ${PUBLIC_HTTPS_ORIGIN:-${PUBLIC_BASE_URL}}
       SIGNED_URL_SECRET: ${SIGNED_URL_SECRET:?set SIGNED_URL_SECRET in .env}
@@ -113,6 +146,17 @@ services:
         condition: service_healthy
       init:
         condition: service_completed_successfully
+    # Real progress, not a heartbeat: the record carries the phase and its
+    # deadline, and the CLI fails for a missing, corrupt, foreign-boot or stale
+    # record. A render that is still making progress stays healthy until the
+    # busy deadline, and one that is stuck eventually is not.
+    healthcheck:
+      test: ["CMD-SHELL", ".venv/bin/python -m worker.health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *bounded-logs
     restart: unless-stopped
     # Task 2 contract: a synchronous worker cannot preempt in-flight ffmpeg
     # work, so the in-flight render bound IS the orchestrator kill timeout.
@@ -131,12 +175,18 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    # The loopback listener, never the public site. In dedicated mode the
+    # public name redirects HTTP to HTTPS and needs a resolvable domain to
+    # answer at all; in existing-proxy mode the upstream owns the public name.
+    # Both modes serve the same built asset on 127.0.0.1:8081, so the probe
+    # measures the web build without depending on DNS, TLS or the API.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/health > /dev/null"]
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8081/web-health.txt"]
       interval: 15s
       timeout: 5s
-      retries: 5
-      start_period: 20s
+      retries: 3
+      start_period: 30s
+    logging: *bounded-logs
     restart: unless-stopped
 
 volumes:

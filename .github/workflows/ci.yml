@@ -50,6 +50,31 @@ jobs:
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.yml config
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml config
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml config
+      # The monitoring override requires FCM_CREDENTIALS_FILE, so CI renders it
+      # against a throwaway placeholder with no project, key or token. Render
+      # only: nothing is started, so no notification can ever be sent, and no
+      # real credential is read or needed.
+      - name: Render the monitoring override
+        run: |
+          set -euo pipefail
+          dummy="$(mktemp)"
+          trap 'rm -f "$dummy" .ci-monitoring.env' EXIT
+          printf '{"type":"service_account","project_id":"ci-not-a-project"}\n' >"$dummy"
+          { cat ops/.env.example; echo "FCM_CREDENTIALS_FILE=$dummy"; } >.ci-monitoring.env
+          docker compose --env-file .ci-monitoring.env \
+            -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml \
+            -f ops/docker-compose.monitoring.yml config
+          docker compose --env-file .ci-monitoring.env \
+            -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml \
+            -f ops/docker-compose.monitoring.yml config
       - run: docker build -f backend/Dockerfile .
       - run: docker build -f worker/Dockerfile .
       - run: docker build -f ops/gateway/Dockerfile .
+      # The gateway image build only copies the Caddyfile, so a syntax error in
+      # it would otherwise reach a deploy. Validating here fails on the PR.
+      - name: Validate the Caddyfile
+        run: |
+          docker run --rm \
+            -v "$PWD/ops/gateway/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            --entrypoint caddy caddy:2-alpine \
+            validate --config /etc/caddy/Caddyfile --adapter caddyfile

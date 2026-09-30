@@ -45,3 +45,8 @@ local.properties
 /ops/db-data
 /ops/media-data
 /ops/dummies
+
+# Scratch directories from ops/verify-*.sh. They hold synthetic environment
+# values and a placeholder credential, and a killed run cannot clean them up.
+/.verify-prod-synth.env
+/.verify-monitoring-*/

@@ -1,3 +1,25 @@
+# Access logs are JSON with the two parts of a request that can carry a secret
+# removed: the full URI (query strings hold signed artifact signatures, OAuth
+# codes and tokens) and every request header (bearer tokens, cookies, pairing
+# codes). Deleting whole fields is the contract — masking a list of known
+# query parameter names only covers the names someone already thought of, so
+# an unknown or misspelled parameter would still be logged verbatim.
+#
+# What remains is what an operator actually diagnoses with: method, host,
+# status, size and duration.
+(access-log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+				request>headers delete
+			}
+		}
+	}
+}
+
 {$SITE_ADDRESS::80} {
 	encode gzip
 
@@ -27,7 +49,7 @@
 		file_server
 	}
 
-	log
+	import access-log
 }
 
 # Loopback-only probe listener: serves the same built asset without domain
@@ -46,5 +68,5 @@ http://127.0.0.1:8081 {
 		respond 404
 	}
 
-	log
+	import access-log
 }

@@ -398,6 +398,40 @@ def test_monitoring_enabled_without_fcm_fails_startup(
     assert record.status == "error"
 
 
+def test_invalid_monitoring_config_is_a_structured_startup_failure(
+    monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    """An enabled collector with a bad setting fails, and says so in the log.
+
+    The operator sees a bare traceback on stderr otherwise, and the traceback
+    text never reaches the JSON log — the formatter drops message args and
+    exception values. A categorized ``monitoring.config_invalid`` record is
+    what makes this greppable, and it carries the exception class only, so an
+    invalid path or threshold value cannot leak through the record.
+    """
+    monkeypatch.setenv("MONITORING_ENABLED", "true")
+    # A relative target resolves against the worker's working directory, which
+    # is not a filesystem anyone chose, and would fail on every turn instead.
+    monkeypatch.setenv(
+        "MONITORING_DISK_PATHS", '{"media": "media", "root": "/"}'
+    )
+    monkeypatch.setenv("FCM_ENABLED", "false")
+
+    with caplog.at_level("ERROR", logger="worker.main"):
+        with pytest.raises(ValueError, match="must be an absolute path"):
+            worker_main.build_monitoring()
+
+    (record,) = [
+        captured
+        for captured in caplog.records
+        if getattr(captured, "event", None) == "monitoring.config_invalid"
+    ]
+    assert record.status == "error"
+    # The classified record identifies the failure without restating the value.
+    assert record.exc_info is not None
+    assert record.exc_info[0] is ValueError
+
+
 def test_monitoring_uses_its_own_store_not_publishings_ports(monkeypatch):
     built: list[str] = []
     real_store = worker_main.PostgresStore

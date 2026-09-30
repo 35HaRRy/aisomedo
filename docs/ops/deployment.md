@@ -39,6 +39,12 @@ so a missing flag fails fast instead of booting with empty defaults.
 | `EXTERNAL_NETWORK_NAME` | container upstream | External Docker network of a container-based proxy (empty otherwise) |
 | `META_*` | OAuth | `META_APP_ID/SECRET`, `META_REDIRECT_URI` (public `https://…/api/meta/oauth/callback`), `META_ALLOWED_RETURN_URIS` (public origins), `META_TOKEN_ENCRYPTION_KEY`, `META_OAUTH_SCOPE`, `META_GRAPH_VERSION` |
 | `WORKER_INTERVAL_SECONDS` | no (`10`) | Scheduler tick interval |
+| `FCM_CREDENTIALS_FILE` | monitoring only | Host path to the Firebase service-account JSON; mounted read-only as a Compose secret. **Required** (Compose fails the render) when `ops/docker-compose.monitoring.yml` is used, and read by no other file |
+| `FCM_PROJECT_ID`, `MONITORING_*` | no | Operational-alert settings; see the monitoring runbook |
+
+`ops/docker-compose.monitoring.yml` is an optional third `-f` that adds disk
+monitoring and FCM alerts. It is not part of the base contract below, and CI
+renders the base files without it.
 
 Trust is configured in two separate places on purpose: upstream-proxy→gateway
 in `ops/gateway/Caddyfile` (`trusted_proxies`), gateway→backend in
@@ -79,13 +85,23 @@ and fix the reported conflict before restarting.
 ```bash
 docker compose --env-file ops/.env -p dojo-prod \
   -f ops/docker-compose.prod.yml -f ops/docker-compose.<mode>.yml ps
-curl -s https://<DOMAIN>/health            # {"status":"ok"} via gateway
+curl -s https://<DOMAIN>/ready             # {"status":"ok"} via gateway
+curl -s https://<DOMAIN>/web-health.txt    # built web asset, independent of the API
 curl -s https://<DOMAIN>/api/packages/active -o /dev/null -w '%{http_code}\n'  # 401 = routed, not SPA
 ```
 
 `GET /` and deep links (e.g. `/some/deep/link`) return the SPA `index.html`;
-`/api/*`, `/pub/*`, `/health` never fall through to it. Backend/database ports
+`/api/*`, `/pub/*`, `/health`, `/ready` never fall through to it. Backend/database ports
 are unreachable from the host by design.
+
+Container health (`ps` column `STATUS`) reflects three probes: backend `/ready`,
+the worker health CLI, and the gateway's loopback web-health asset. All run on
+a 15s interval, 5s timeout, 3 retries, 30s start period. Docker's `unhealthy`
+is diagnostic only — `restart: unless-stopped` does not restart an unhealthy
+container that is still running, so recovery is an operator action. Diagnosis
+and recovery steps are in
+[`docs/rehberler/production-monitoring.md`](../rehberler/production-monitoring.md)
+§3.
 
 ## Worker scaling
 
@@ -128,8 +144,11 @@ Verify row/file counts before starting prod (same pattern for `media-data`).
 - [ ] Both mode configs render:
   `docker compose --env-file ops/.env -f ops/docker-compose.prod.yml -f ops/docker-compose.<mode>.yml config`
 - [ ] `bash ops/verify-prod.sh` green (local/VPS runbook; not in CI)
+- [ ] `bash ops/verify-monitoring.sh` green (monitoring contract; not in CI)
 - [ ] `GET /` → 200 SPA HTML; deep link → 200 same `index.html`
-- [ ] `GET /health` → `{"status":"ok"}` (backend, not SPA)
+- [ ] `GET /ready` → `{"status":"ok"}` (backend, not SPA)
+- [ ] `GET /web-health.txt` → 200; then `stop backend` → `/ready` fails while
+      `/web-health.txt` still returns 200 (readiness and web health are independent)
 - [ ] `GET /api/packages/active` → 401; `GET /pub/badtoken` → 404 (proxied)
 - [ ] Browser pairing sets `Secure`, `HttpOnly`, `SameSite=Lax` cookie; renewal on auth re-issues it
 - [ ] Pairing throttle keys on the real client IP through the proxy chain

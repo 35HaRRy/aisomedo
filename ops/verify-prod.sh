@@ -57,6 +57,28 @@ if [ -f "$CADDYFILE" ]; then
   else
     pass "Caddyfile mounts no media volume"
   fi
+  grep -q "web-health.txt" "$CADDYFILE" \
+    && pass "Caddyfile serves the built web-health asset" \
+    || fail "Caddyfile missing the web-health asset route"
+  grep -q "127.0.0.1:8081" "$CADDYFILE" \
+    && pass "Caddyfile has a loopback-only probe listener" \
+    || fail "Caddyfile missing the loopback probe listener"
+  # Access logs are JSON, and they lose the two request parts that carry
+  # secrets outright rather than masking a list of known parameter names.
+  grep -q "wrap json" "$CADDYFILE" \
+    && pass "Caddyfile emits JSON access logs" \
+    || fail "Caddyfile access logs are not JSON"
+  grep -q "request>uri delete" "$CADDYFILE" \
+    && pass "Caddyfile drops the full request URI from access logs" \
+    || fail "Caddyfile does not drop the request URI from access logs"
+  grep -q "request>headers delete" "$CADDYFILE" \
+    && pass "Caddyfile drops request headers from access logs" \
+    || fail "Caddyfile does not drop request headers from access logs"
+  if grep -qE '^[[:space:]]*query[[:space:]]' "$CADDYFILE"; then
+    fail "Caddyfile must not rely on masking individual query parameters"
+  else
+    pass "Caddyfile does not mask individual query parameters"
+  fi
 fi
 
 # ---- Phase C: synthetic env + both modes render --------------------------
@@ -132,6 +154,29 @@ check_mode() {
     "cfg['services']['worker'].get('depends_on',{}).get('condition',cfg['services']['worker'].get('depends_on',{})) and cfg['services']['worker']['depends_on'].get('init',{}).get('condition')=='service_completed_successfully'"
   assert "worker stop grace is 120s" \
     "cfg['services']['worker'].get('stop_grace_period') in ('120s','2m0s','2m')"
+  # Health checks and log bounds are asserted on the RENDERED config, so a
+  # value that only looks right in the YAML source (an inherited default, a
+  # value only the shell environment supplies) cannot pass here.
+  assert "every service bounds logs to 3x10m json-file" \
+    "all(s.get('logging',{}).get('driver')=='json-file' and s['logging']['options'].get('max-size')=='10m' and s['logging']['options'].get('max-file')=='3' for s in cfg['services'].values())"
+  assert "backend probes /ready, not /health" \
+    "any('/ready' in str(t) for t in cfg['services']['backend']['healthcheck']['test']) and not any(\"'/health'\" in str(t) for t in cfg['services']['backend']['healthcheck']['test'])"
+  assert "backend readiness HTTP call is bounded inside the probe timeout" \
+    "any('timeout=' in str(t) for t in cfg['services']['backend']['healthcheck']['test'])"
+  assert "worker probes the health CLI" \
+    "any('worker.health' in str(t) for t in cfg['services']['worker']['healthcheck']['test'])"
+  assert "gateway probes the loopback web health asset" \
+    "any('8081' in str(t) and 'web-health.txt' in str(t) for t in cfg['services']['gateway']['healthcheck']['test'])"
+  assert "probe cadence is 15s/5s/3/30s on backend, worker and gateway" \
+    "all(cfg['services'][s]['healthcheck'].get(k)==v for s in ('backend','worker','gateway') for k,v in (('interval','15s'),('timeout','5s'),('retries',3),('start_period','30s')))"
+  assert "worker health record path is container-local" \
+    "str(cfg['services']['worker']['environment'].get('WORKER_HEALTH_PATH'))=='/tmp/dojo-worker-health.json'"
+  assert "worker idle deadline is 120s and busy deadline 3600s" \
+    "str(cfg['services']['worker']['environment'].get('WORKER_HEALTH_IDLE_SECONDS'))=='120' and str(cfg['services']['worker']['environment'].get('WORKER_HEALTH_BUSY_SECONDS'))=='3600'"
+  assert "base production sends no operational alerts" \
+    "str(cfg['services']['worker']['environment'].get('MONITORING_ENABLED','false')).lower()!='true'"
+  assert "base production exposes no FCM credentials" \
+    "'GOOGLE_APPLICATION_CREDENTIALS' not in cfg['services']['worker'].get('environment',{})"
   assert "gateway mounts no media volume" \
     "not any('media-data' in str(v) for v in cfg['services']['gateway'].get('volumes',[]))"
   if [ "$label" = "dedicated" ]; then

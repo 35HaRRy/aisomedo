@@ -401,7 +401,22 @@ def build_monitoring() -> tuple[MonitoringRunner, PostgresStore] | None:
     migrations own production.
     """
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
-    config = MonitoringConfig.from_env(os.environ, media_root=media_root)
+    try:
+        config = MonitoringConfig.from_env(os.environ, media_root=media_root)
+    except ValueError as exc:
+        # An enabled collector with an invalid threshold, interval or target
+        # refuses to start rather than running a collector that reports
+        # nothing. The ValueError text names the offending setting and value,
+        # which the JSON formatter never serializes, so the record carries the
+        # exception class only and is found by grepping the log. ``exc_info``
+        # is deliberate: the operator's fix is in the environment, not on the
+        # stack.
+        logger.error(
+            "monitoring configuration is invalid; refusing to start",
+            exc_info=exc,
+            extra={"event": "monitoring.config_invalid", "status": "error"},
+        )
+        raise
     if not config.enabled:
         return None
     notifier = build_notifier()

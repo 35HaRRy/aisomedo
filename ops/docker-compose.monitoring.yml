@@ -1,0 +1,52 @@
+# Mode-independent override: operational alerts. Pairs with the base file and
+# exactly one proxy mode:
+#
+#   docker compose --env-file ops/.env -p dojo-prod \
+#     -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml \
+#     -f ops/docker-compose.monitoring.yml up -d --build
+#   docker compose --env-file ops/.env -p dojo-prod \
+#     -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml \
+#     -f ops/docker-compose.monitoring.yml up -d --build
+#
+# Nothing here is enabled by default: without this file the worker records
+# JSON logs and answers its health probe, and no alert is ever sent. That is
+# why the base file needs no credentials and CI can render it.
+#
+# FCM_CREDENTIALS_FILE is required (Compose `:?`), not defaulted. A monitoring
+# deployment without real credentials must fail to render rather than boot
+# with a path that does not exist and silently drop every alert. The file is
+# mounted as a Compose secret, so it is read-only inside the container and
+# never appears in `docker inspect` output or the environment.
+name: dojo-prod
+
+services:
+  worker:
+    environment:
+      # Both switches are explicit and always on together. Monitoring without a
+      # real notifier is refused at startup rather than recorded and never
+      # sent, and real delivery without credentials is refused the same way.
+      MONITORING_ENABLED: "true"
+      FCM_ENABLED: "true"
+      # Application Default Credentials resolve from a mounted file, so the
+      # path must point at the secret and not at a host path.
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-credentials.json
+      # Optional overrides. Unset values are exactly the documented defaults:
+      # 60s sampling, an incident below 15% free, recovery at 20% free, and
+      # the built-in {"media": "/media", "root": "/"} targets.
+      MONITORING_INTERVAL_SECONDS: ${MONITORING_INTERVAL_SECONDS:-60}
+      MONITORING_DISK_LOW_PERCENT: ${MONITORING_DISK_LOW_PERCENT:-15}
+      MONITORING_DISK_RECOVERY_PERCENT: ${MONITORING_DISK_RECOVERY_PERCENT:-20}
+      # JSON object of target name to absolute in-container path. Setting it
+      # REPLACES the defaults, so it must repeat every target the deployment
+      # still wants. See docs/rehberler/production-monitoring.md for the host
+      # filesystems that are not covered by the default pair.
+      MONITORING_DISK_PATHS: ${MONITORING_DISK_PATHS:-}
+      # Optional: the Firebase project is otherwise read from the credential.
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+    secrets:
+      - source: firebase_credentials
+        target: firebase-credentials.json
+
+secrets:
+  firebase_credentials:
+    file: ${FCM_CREDENTIALS_FILE:?set FCM_CREDENTIALS_FILE in .env to the Firebase service account JSON on this host}

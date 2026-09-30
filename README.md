@@ -125,6 +125,32 @@ npm run typecheck
 npm run build
 ```
 
+Deployment verification (needs Docker; uses a disposable project and synthetic
+env, never reads `ops/.env`):
+
+```bash
+bash ops/verify-prod.sh        # health checks, log bounds, both proxy modes
+bash ops/verify-monitoring.sh  # runtime gateway checks, secret mount, safe JSON logs
+```
+
+## Production monitoring
+
+Every production service has a container health probe and bounded JSON logs
+(3 × 10 MiB per service). Operational alerts — low disk, disk recovery, failed
+job — are opt-in via `ops/docker-compose.monitoring.yml`, which enables real
+FCM delivery and mounts its credentials read-only:
+
+```bash
+docker compose --env-file ops/.env -p dojo-prod \
+  -f ops/docker-compose.prod.yml -f ops/docker-compose.<mode>.yml \
+  -f ops/docker-compose.monitoring.yml up -d --build
+```
+
+Operator runbook: [`docs/rehberler/production-monitoring.md`](docs/rehberler/production-monitoring.md)
+(settings, health diagnosis, disk coverage, hosted HTTPS checks, drills).
+Client message contract:
+[`docs/contracts/operational-alerts.md`](docs/contracts/operational-alerts.md).
+
 ## Domain language
 
 Canonical terminology (`Dojo Paylaşım Paketi`, `Dojo Yayın Planı`, `Yayın Zamanı`, `Yayın İncelemesi`, `Tamamlanmış Paket`) is defined in [`CONTEXT.md`](CONTEXT.md). The full product spec lives in [`docs/specs/dojo-reel-publishing-mvp.md`](docs/specs/dojo-reel-publishing-mvp.md).
