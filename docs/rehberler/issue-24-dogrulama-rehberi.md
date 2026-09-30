@@ -2,7 +2,7 @@
 
 Bu rehber, #24 ile gelen değişiklikleri özetler ve her kabul kriterini
 denemen için adım adım tarif eder. Tarayıcıda yapılabilen her şey tarayıcıda;
-geri kalanı `curl.exe` içeren PowerShell komutlarıyla (Python/SQL yok).
+geri kalanı `Invoke-RestMethod` PowerShell komutlarıyla (Python/SQL yok).
 
 ## 1. Ne değişti?
 
@@ -83,23 +83,36 @@ Sürüm 5 (`N`) ile istek at. Kimlik sahte olsa bile kapıdan geçip kimlik
 denetimine takılmalı (`401`, `426` değil):
 
 ```powershell
-curl.exe -s -w "`nHTTP %{http_code}`n" http://localhost:8000/api/packages/active -H "Authorization: Bearer deneme" -H "X-Android-Version-Code: 5"
-curl.exe -s -w "`nHTTP %{http_code}`n" http://localhost:8000/api/packages/active -H "Authorization: Bearer deneme" -H "X-Android-Version-Code: 4"
+try {
+  Invoke-RestMethod http://localhost:8000/api/packages/active -Headers @{Authorization="Bearer deneme"; "X-Android-Version-Code"="5"}
+} catch {
+  $_.Exception.Response.StatusCode.value__
+}
+try {
+  Invoke-RestMethod http://localhost:8000/api/packages/active -Headers @{Authorization="Bearer deneme"; "X-Android-Version-Code"="4"}
+} catch {
+  $_.Exception.Response.StatusCode.value__
+}
 ```
 
-İkisi de `HTTP 401` vermeli (sürüm 4 = N-1, hâlâ destekleniyor).
+İkisi de `401` vermeli (sürüm 4 = N-1, hâlâ destekleniyor).
 
 ## 6. Adım: eski istemci güncelleme yanıtı alır (PowerShell)
 
 ```powershell
-curl.exe -s -w "`nHTTP %{http_code}`n" http://localhost:8000/api/packages/active -H "Authorization: Bearer deneme" -H "X-Android-Version-Code: 2"
+try {
+  Invoke-RestMethod http://localhost:8000/api/packages/active -Headers @{Authorization="Bearer deneme"; "X-Android-Version-Code"="2"}
+} catch {
+  $_.Exception.Response.StatusCode.value__
+  $_.ErrorDetails.Message
+}
 ```
 
-Beklenen gövde + kod:
+Beklenen kod + gövde:
 
-```json
+```text
+426
 {"detail":"update_required","update_url":"https://example.com/dojo-latest.apk"}
-HTTP 426
 ```
 
 Kabul kriteri "uyumsuz istemci engellenir + güncelleme istenir" — işte bu.
@@ -110,10 +123,14 @@ koşulda öğrenir.
 ## 7. Adım: başlıksız eski istemci de engellenir (PowerShell)
 
 ```powershell
-curl.exe -s -w "`nHTTP %{http_code}`n" http://localhost:8000/api/packages/active -H "Authorization: Bearer deneme"
+try {
+  Invoke-RestMethod http://localhost:8000/api/packages/active -Headers @{Authorization="Bearer deneme"}
+} catch {
+  $_.Exception.Response.StatusCode.value__
+}
 ```
 
-`HTTP 426` beklenir. Başlığı hiç göndermeyen (güncellememiş) istemci
+`426` beklenir. Başlığı hiç göndermeyen (güncellememiş) istemci
 sessizce geçemez.
 
 ## 8. Adım: web bandı (tarayıcı)
