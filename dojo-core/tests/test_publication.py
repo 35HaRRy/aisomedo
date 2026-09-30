@@ -325,7 +325,6 @@ def test_status_poll_transient_keeps_publishing_uncertain(tmp_path):
 def test_publish_container_failure_keeps_publishing_without_duplicate(tmp_path):
     # Issue #19: publish_container failure after FINISHED keeps -publishing;
     # reconcile reuses the SAME container id (no second Reel).
-    from dojo.exceptions import MetaPublishFailed as Failed
 
     store, seam, _, meta, _ = make_seam(tmp_path)
     meta.fail_publish = RuntimeError("response lost")

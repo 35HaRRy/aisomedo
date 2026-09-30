@@ -71,7 +71,6 @@ from dojo.model import (
     Notification,
     Package,
     ProcessedMedia,
-    PushRegistration,
     ReelBuild,
     ReelClip,
     ReminderPolicy,

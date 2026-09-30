@@ -6,7 +6,14 @@ from datetime import datetime
 from threading import Lock
 from typing import Literal
 
-from dojo import Client, ClientNotFound, DojoPairing, DojoPublishing, PairingError, PushTokenInvalid, ReminderPolicyInvalid
+from dojo import (
+    Client,
+    ClientNotFound,
+    DojoPairing,
+    DojoPublishing,
+    PairingError,
+    PushTokenInvalid,
+)
 from dojo.pairing import CODE_TTL
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response

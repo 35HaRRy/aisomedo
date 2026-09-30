@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import logging
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -11,7 +11,6 @@ from dojo.adapters.clock import SystemClock
 from dojo.exceptions import MetaProviderUnavailable, MetaTokenEncryptionError, MetaTokenInvalid
 from dojo.model import MetaCandidate
 from dojo.ports import Clock
-
 
 logger = logging.getLogger(__name__)
 

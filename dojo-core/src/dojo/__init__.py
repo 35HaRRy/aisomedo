@@ -10,6 +10,7 @@ from dojo.adapters import (
     StubSignedUrlStore,
     SystemClock,
 )
+from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
 from dojo.exceptions import (
     ActivePackageExists,
     ClientNotFound,
@@ -63,7 +64,6 @@ from dojo.exceptions import (
     UploadNotReceiving,
     UploadTooLarge,
 )
-from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
 from dojo.meta_connection import DojoMetaConnection
 from dojo.model import (
     META_HEALTH_HEALTHY,

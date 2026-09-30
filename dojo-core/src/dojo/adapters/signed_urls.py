@@ -36,7 +36,7 @@ class HmacSignedUrlStore:
         self._records: dict[str, dict] = {}
 
     def _token(self, artifact: str, expires_at: datetime) -> str:
-        msg = f"{artifact}|{expires_at.isoformat()}".encode("utf-8")
+        msg = f"{artifact}|{expires_at.isoformat()}".encode()
         digest = hmac.new(self._secret, msg, hashlib.sha256).hexdigest()
         return f"{digest[:32]}{secrets.token_hex(4)}"
 

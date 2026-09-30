@@ -7,9 +7,15 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+exclude = ["dojo-core/migrations/versions/*"]
 
 [tool.mypy]
 python_version = "3.12"
 disallow_untyped_defs = true
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.2",
+]
