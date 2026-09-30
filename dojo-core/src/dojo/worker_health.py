@@ -49,7 +49,8 @@ def read_worker_status(path: Path | None) -> WorkerStatus:
             or record.get("boot_id") != current_boot_id()):
         return unhealthy
     written, deadline = record.get("monotonic"), record.get("deadline")
-    if (type(written) not in (int, float) or type(deadline) not in (int, float)
+    if (not isinstance(written, (int, float)) or isinstance(written, bool)
+            or not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
             or not math.isfinite(written) or not math.isfinite(deadline)):
         return unhealthy
     return WorkerStatus("healthy", phase) if written <= monotonic() < deadline else unhealthy

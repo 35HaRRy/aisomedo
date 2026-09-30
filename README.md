@@ -156,6 +156,19 @@ Client message contract:
 Canonical terminology (`Dojo Paylaşım Paketi`, `Dojo Yayın Planı`, `Yayın Zamanı`, `Yayın İncelemesi`, `Tamamlanmış Paket`) is defined in [`CONTEXT.md`](CONTEXT.md). The full product spec lives in [`docs/specs/dojo-reel-publishing-mvp.md`](docs/specs/dojo-reel-publishing-mvp.md).
 # Web dashboard worker health
 
+## Browser dashboard
+
+Run `npm ci` and `npm run dev` under `web/` alongside the backend on port 8000.
+The browser uses same-origin HttpOnly session cookies. Get a one-time pairing
+code from an already paired client or the operator pairing CLI documented below,
+then enter the code and a recognizable browser name. No password or local-storage
+token is used.
+
+Dashboard data refreshes every five seconds while visible and online, and on
+focus/reconnect. Transient errors retain visibly stale data; revocation clears it.
+Current Package, Activity, and Settings are summary destinations in issue #25;
+editing, uploads, and approval workflows remain separate follow-up tickets.
+
 The worker writes progress to the `worker-health` runtime volume. The backend
 mounts it read-only; dashboard health never substitutes API readiness for worker
 progress. Both Compose bases use `/run/dojo-worker/health.json`.
