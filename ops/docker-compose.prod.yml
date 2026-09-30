@@ -128,10 +128,13 @@ services:
       # there is exactly one record and one contract. Idle must exceed
       # WORKER_INTERVAL_SECONDS or a healthy loop looks stale between turns;
       # the busy deadline is fixed when work starts and is what eventually
-      # fails a stuck render.
-      WORKER_HEALTH_PATH: /tmp/dojo-worker-health.json
-      WORKER_HEALTH_IDLE_SECONDS: "120"
-      WORKER_HEALTH_BUSY_SECONDS: "3600"
+      # fails a stuck render. All three are interpolated rather than hardcoded:
+      # the runbook documents them as .env settings, and a hardcoded value would
+      # make an operator's tuning silently ignored. The defaults are the
+      # documented ones, so an .env that says nothing still renders them.
+      WORKER_HEALTH_PATH: ${WORKER_HEALTH_PATH:-/tmp/dojo-worker-health.json}
+      WORKER_HEALTH_IDLE_SECONDS: ${WORKER_HEALTH_IDLE_SECONDS:-120}
+      WORKER_HEALTH_BUSY_SECONDS: ${WORKER_HEALTH_BUSY_SECONDS:-3600}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
       PUBLIC_HTTPS_ORIGIN: ${PUBLIC_HTTPS_ORIGIN:-${PUBLIC_BASE_URL}}
       SIGNED_URL_SECRET: ${SIGNED_URL_SECRET:?set SIGNED_URL_SECRET in .env}

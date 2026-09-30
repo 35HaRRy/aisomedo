@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 #: bounded rather than hard-bounded.
 DELIVERY_BUDGET_SECONDS = 20.0
 
+#: Minimum seconds between two ``monitoring.delivery_rejected`` records for the
+#: same alert. A rejected send is retried on a backoff that caps at one hour,
+#: so the durable state is already bounded; this bound is on the log, so a
+#: recipient set of any size cannot turn a permanently broken provider into a
+#: per-turn flood that rotates away the records an operator needs.
+DELIVERY_REJECTION_LOG_INTERVAL_SECONDS = 900.0
+
 
 def _outcome(result: object, token: str) -> DeliveryOutcome:
     """Categorize one recipient from the notifier's batch result.
@@ -42,6 +49,23 @@ def _outcome(result: object, token: str) -> DeliveryOutcome:
     if token in (getattr(result, "invalid_tokens", None) or []):
         return "invalid"
     return "retry"
+
+
+def _rejection_reason(result: object, token: str) -> str:
+    """A categorized, non-secret reason a recipient was not accepted.
+
+    Only which bucket the notifier filed the token under is reported. The
+    provider's own message, the token itself and the credential path are never
+    read, so the record cannot carry a secret. The reason rides in ``status``
+    rather than in the log message, because the JSON formatter never serializes
+    message text or arguments: a reason that only lived in the message would be
+    invisible in production.
+    """
+    if token in (getattr(result, "invalid_tokens", None) or []):
+        return "invalid_registration"
+    if token in (getattr(result, "transient_failures", None) or []):
+        return "provider_error"
+    return "unreported"
 
 
 class DojoMonitoring:
@@ -68,6 +92,11 @@ class DojoMonitoring:
         self._clock = clock
         self._budget_seconds = budget_seconds
         self._monotonic = monotonic
+        #: alert_id -> monotonic time its rejection was last logged. A
+        #: permanently failing alert must stay visible without becoming a
+        #: per-turn flood, and one entry per alert is bounded by the alert
+        #: table rather than by the retry cadence.
+        self._rejection_log: dict[str, float] = {}
 
     def deliver_pending(self, *, limit: int = 100) -> int:
         """Deliver at most ``limit`` due recipients; return how many were accepted.
@@ -123,7 +152,41 @@ class DojoMonitoring:
             outcome: DeliveryOutcome = "retry"
         else:
             outcome = _outcome(result, lease.token)
+            if outcome != "accepted":
+                self._log_rejection(lease, outcome, result)
         return self._acknowledge(lease, outcome)
+
+    def _log_rejection(self, lease: DeliveryLease, outcome: DeliveryOutcome,
+                       result: object) -> None:
+        """One record per alert per interval for a send the provider rejected.
+
+        A provider error arrives as a *result*, not an exception, so nothing
+        else on this path produces a record: there is no ``exc_info`` to log
+        and ``accepted`` stays 0, so the worker logs no delivery event either.
+        Without this line a permanently failing FCM project retries an alert
+        hourly and the log is indistinguishable from a quiet day, which is the
+        one failure mode monitoring exists to make visible.
+        """
+        alert_id = lease.alert.alert_id
+        now = self._monotonic()
+        last = self._rejection_log.get(alert_id)
+        if last is not None and now - last < DELIVERY_REJECTION_LOG_INTERVAL_SECONDS:
+            return
+        self._rejection_log[alert_id] = now
+        reason = _rejection_reason(result, lease.token)
+        # ``error_type`` is reserved for an exception class name, so the
+        # categorized reason rides in ``status`` beside the durable outcome.
+        # Both halves are needed: "retry" alone does not distinguish a provider
+        # outage from a rejected registration.
+        logger.warning(
+            "operational alert was not accepted by the provider; it stays "
+            "pending and will be retried with backoff",
+            extra={
+                "event": "monitoring.delivery_rejected",
+                "alert_id": alert_id,
+                "status": f"{outcome}:{reason}",
+            },
+        )
 
     def _acknowledge(self, lease: DeliveryLease, outcome: DeliveryOutcome) -> int:
         try:

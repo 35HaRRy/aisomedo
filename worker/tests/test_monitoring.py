@@ -24,6 +24,7 @@ from worker.monitoring import (
     DEFAULT_INTERVAL_SECONDS,
     DEFAULT_LOW_PERCENT,
     DEFAULT_RECOVERY_PERCENT,
+    SAMPLE_FAILURE_LOG_INTERVAL_SECONDS,
     DiskSampler,
     MonitoringConfig,
     MonitoringRunner,
@@ -524,9 +525,104 @@ def test_sampling_failures_are_logged_with_safe_fields_only(
         if getattr(record, "event", None) == "monitoring.disk_sample_failed"
     ]
     assert len(failures) == 1
-    assert failures[0].status == "media"
     # The label is safe; the filesystem path and the raw error are not logged.
+    # ``:unreadable`` because /media exists on this host and only the read
+    # failed — the kind is part of the record, not just the message text.
+    assert failures[0].status in {"media:unreadable", "media:missing"}
     assert failures[0].exc_info[0] is OSError
+
+
+def test_a_missing_target_is_named_differently_from_a_transient_read_failure(
+    caplog: pytest.LogCaptureFixture, tmp_path
+) -> None:
+    """A non-existent path means the filesystem is not covered at all.
+
+    The runbook tells operators to add `/host/...` binds for filesystems the
+    defaults miss, so a typo or a forgotten bind silently drops coverage. That
+    is an operator action; a transient read error is not. The distinction has
+    to survive into the JSON record, so it rides in ``status``.
+    """
+    present = tmp_path / "present"
+    present.mkdir()
+    absent = tmp_path / "absent"
+    runner, _store, _notifier, _usage = make_runner(
+        readings={
+            present.as_posix(): OSError("I/O error"),
+            absent.as_posix(): OSError("no such file or directory"),
+        },
+        targets=(("present", present), ("absent", absent)),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="worker.monitoring"):
+        runner.tick()
+
+    statuses = {
+        record.status
+        for record in caplog.records
+        if getattr(record, "event", None) == "monitoring.disk_sample_failed"
+    }
+    assert statuses == {"present:unreadable", "absent:missing"}
+
+
+def test_a_missing_target_warning_is_rate_limited_per_target(
+    caplog: pytest.LogCaptureFixture, tmp_path
+) -> None:
+    """One warning a minute per target forever is how coverage silently rots."""
+    absent = tmp_path / "absent"
+    clock = FakeMonotonic()
+    runner, _store, _notifier, _usage = make_runner(
+        readings={absent.as_posix(): OSError("no such file or directory")},
+        targets=(("absent", absent),),
+        monotonic=clock,
+    )
+
+    def failures() -> list[pytest.LogRecord]:
+        return [
+            record
+            for record in caplog.records
+            if getattr(record, "event", None) == "monitoring.disk_sample_failed"
+        ]
+
+    with caplog.at_level(logging.WARNING, logger="worker.monitoring"):
+        for _ in range(15):  # 15 turns, all inside one 900s window
+            runner.tick()
+            clock.advance(60.0)
+
+    assert [record.status for record in failures()] == ["absent:missing"]
+
+    # Rate-limited, not muted: past the interval the same target is named again.
+    clock.advance(SAMPLE_FAILURE_LOG_INTERVAL_SECONDS)
+    with caplog.at_level(logging.WARNING, logger="worker.monitoring"):
+        runner.tick()
+    assert [record.status for record in failures()] == ["absent:missing"] * 2
+
+
+def test_a_target_that_samples_again_forgets_its_earlier_failure(
+    caplog: pytest.LogCaptureFixture, tmp_path
+) -> None:
+    """A recovered target must report its next failure in full."""
+    target = tmp_path / "flaky"
+    target.mkdir()
+    clock = FakeMonotonic()
+    readings = {target.as_posix(): OSError("I/O error")}
+    runner, _store, _notifier, _usage = make_runner(
+        readings=readings, targets=(("flaky", target),), monotonic=clock
+    )
+
+    with caplog.at_level(logging.WARNING, logger="worker.monitoring"):
+        runner.tick()
+        readings[target.as_posix()] = 50.0  # the mount comes back
+        runner.tick()
+        readings[target.as_posix()] = OSError("I/O error")
+        runner.tick()
+
+    assert len(
+        [
+            record
+            for record in caplog.records
+            if getattr(record, "event", None) == "monitoring.disk_sample_failed"
+        ]
+    ) == 2
 
 
 def test_a_restart_while_still_low_opens_no_second_incident() -> None:

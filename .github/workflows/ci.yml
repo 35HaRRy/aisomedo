@@ -77,8 +77,10 @@ jobs:
       # The gateway image build only copies the Caddyfile, so a syntax error in
       # it would otherwise reach a deploy. Validating here fails on the PR.
       - name: Validate the Caddyfile
+        # The same pinned version ops/gateway/Dockerfile builds from, so this
+        # validates against the interpreter the deployment actually runs.
         run: |
           docker run --rm \
             -v "$PWD/ops/gateway/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            --entrypoint caddy caddy:2-alpine \
+            --entrypoint caddy caddy:2.11.4-alpine \
             validate --config /etc/caddy/Caddyfile --adapter caddyfile

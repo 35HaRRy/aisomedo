@@ -7,6 +7,7 @@ it claims, what it acknowledges, and what it never counts as delivered.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import timedelta
 
@@ -15,6 +16,7 @@ from dojo import DojoMonitoring
 from dojo.adapters.memory import InMemoryStore
 from dojo.adapters.stubs import StubNotifier
 from dojo.model import Client, Job
+from dojo.monitoring import DELIVERY_REJECTION_LOG_INTERVAL_SECONDS
 from dojo.monitoring_models import (
     ALERT_KIND_JOB_FAILED,
     DELIVERY_COMPLETE,
@@ -269,6 +271,125 @@ def test_transport_exception_isolates_one_recipient_and_schedules_the_retry(
     assert status_of(store, second.id) == DELIVERY_COMPLETE
     assert status_of(store, first.id) == DELIVERY_PENDING
     assert attempts_of(store, first.id) == 1
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_a_provider_error_retry_is_logged_rather_than_silent(
+    pg_store, notifier, clock, memory, caplog: pytest.LogCaptureFixture,
+):
+    """A non-exception provider failure used to produce no record at all.
+
+    There is no exception to log and ``accepted`` stays 0, so the worker logs no
+    delivery event either: a permanently failing FCM project retried an alert
+    hourly and the log looked exactly like a quiet day.
+    """
+    store = contract(pg_store, memory)
+    fail_job(store)
+    device = register_device(store, "phone", "token-1")
+    notifier.transient_tokens.add("token-1")
+    monitoring = DojoMonitoring(store, notifier, clock)
+
+    with caplog.at_level(logging.WARNING, logger="dojo.monitoring"):
+        assert monitoring.deliver_pending() == 0
+
+    rejected = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "monitoring.delivery_rejected"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0].alert_id
+    assert rejected[0].status == "retry:provider_error"
+    # Categorized only: the token and the provider's own message never reach it.
+    assert "token-1" not in caplog.text
+    assert status_of(store, device.id) == DELIVERY_PENDING
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_a_rejected_registration_is_logged_with_its_own_reason(
+    pg_store, notifier, clock, memory, caplog: pytest.LogCaptureFixture,
+):
+    store = contract(pg_store, memory)
+    fail_job(store)
+    register_device(store, "phone", "token-stale")
+    notifier.invalid_tokens.add("token-stale")
+    monitoring = DojoMonitoring(store, notifier, clock)
+
+    with caplog.at_level(logging.WARNING, logger="dojo.monitoring"):
+        assert monitoring.deliver_pending() == 0
+
+    rejected = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "monitoring.delivery_rejected"
+    ]
+    assert [record.status for record in rejected] == ["invalid:invalid_registration"]
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_a_repeatedly_rejected_alert_is_rate_limited_per_alert(
+    pg_store, notifier, clock, memory, caplog: pytest.LogCaptureFixture,
+):
+    """The record must not become the flood it replaced.
+
+    The backoff already caps attempts at one per hour; this bounds the log so a
+    large recipient set cannot turn a broken provider into a per-turn flood that
+    rotates away the records the operator needs.
+    """
+    store = contract(pg_store, memory)
+    fail_job(store)
+    for index in range(3):
+        register_device(store, f"phone-{index}", f"token-{index}")
+        notifier.transient_tokens.add(f"token-{index}")
+    monotonic_now = [0.0]
+    monitoring = DojoMonitoring(
+        store, notifier, clock, monotonic=lambda: monotonic_now[0]
+    )
+
+    def turn() -> None:
+        """One delivery pass, far enough past each backoff to be claimable again."""
+        assert monitoring.deliver_pending() == 0
+        clock._now += timedelta(seconds=500)  # noqa: SLF001 - the double is the seam
+        monotonic_now[0] += 60.0
+
+    def rejections() -> list[pytest.LogRecord]:
+        return [
+            record
+            for record in caplog.records
+            if getattr(record, "event", None) == "monitoring.delivery_rejected"
+        ]
+
+    with caplog.at_level(logging.WARNING, logger="dojo.monitoring"):
+        # Three recipients in the first turn — three rejections of one alert —
+        # then three more turns that all fall inside the 900s window.
+        for _ in range(4):
+            turn()
+
+    assert len(rejections()) == 1
+
+    # Rate-limited, not muted: past the interval the same alert is named again.
+    monotonic_now[0] += DELIVERY_REJECTION_LOG_INTERVAL_SECONDS
+    with caplog.at_level(logging.WARNING, logger="dojo.monitoring"):
+        turn()
+    assert len(rejections()) == 2
+
+
+@pytest.mark.parametrize("memory", [False, True])
+def test_an_accepted_send_logs_no_rejection(pg_store, notifier, clock, memory,
+                                            caplog: pytest.LogCaptureFixture):
+    store = contract(pg_store, memory)
+    fail_job(store)
+    register_device(store, "phone", "token-1")
+    monitoring = DojoMonitoring(store, notifier, clock)
+
+    with caplog.at_level(logging.WARNING, logger="dojo.monitoring"):
+        assert monitoring.deliver_pending() == 1
+
+    assert [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "monitoring.delivery_rejected"
+    ] == []
 
 
 @pytest.mark.parametrize("memory", [False, True])

@@ -33,6 +33,17 @@ for f in "$PROD" "$DEDICATED" "$EXISTING" "$CADDYFILE" "$GATEWAY_DOCKERFILE" ops
 done
 if [ -x ops/verify-prod.sh ]; then pass "ops/verify-prod.sh is executable"; else fail "ops/verify-prod.sh is not executable"; fi
 
+# The Caddyfile deletes the request uri and headers from the access log, but
+# NOT the response headers, so whether a session cookie stays out of the log
+# depends on Caddy's own credential-header redaction. A floating tag lets that
+# default move between builds; Phase I of verify-monitoring.sh asserts the
+# redaction, and it can only mean something against a known version.
+if grep -Eq '^FROM caddy:[0-9]+\.[0-9]+\.[0-9]+-alpine$' "$GATEWAY_DOCKERFILE"; then
+  pass "gateway image pins an exact Caddy version"
+else
+  fail "gateway image pins an exact Caddy version"
+fi
+
 # ---- Phase B: Caddyfile static routing assertions -----------------------
 if [ -f "$CADDYFILE" ]; then
   grep -q "reverse_proxy backend:8000" "$CADDYFILE" \
@@ -90,7 +101,7 @@ if [ "$EXE_FALLBACK" = true ]; then ENV_ARG="$(wslpath -w "$SYNTH_ENV")"; fi
 PROJ="verifyprod$$"
 cleanup() {
   docker compose -p "$PROJ" --env-file "$ENV_ARG" -f "$PROD" -f "$EXISTING" down -v >/dev/null 2>&1 || true
-  rm -f "$SYNTH_ENV"
+  rm -f "$SYNTH_ENV" "$ROOT/.verify-prod-health.env"
 }
 trap cleanup EXIT
 
@@ -188,6 +199,44 @@ check_mode() {
   fi
 }
 
+# The three worker-health settings are documented as .env settings, so the
+# deployment must interpolate them. The assertions above only prove the
+# DEFAULTS render; without a non-default render, a hardcoded literal in the
+# compose file would pass them and silently ignore an operator's tuning.
+check_health_passthrough() {
+  local json
+  json="$(docker compose --env-file "$HEALTH_ENV_ARG" -f "$PROD" -f "$EXISTING" \
+    config --format json 2>/dev/null)" || { fail "health-override config renders"; return 0; }
+  local ok
+  if printf '%s' "$json" | python3 -c "
+import json, sys
+env = json.load(sys.stdin)['services']['worker']['environment']
+sys.exit(0 if (
+    str(env.get('WORKER_HEALTH_PATH')) == '/tmp/verify-worker-health.json'
+    and str(env.get('WORKER_HEALTH_IDLE_SECONDS')) == '180'
+    and str(env.get('WORKER_HEALTH_BUSY_SECONDS')) == '1800'
+) else 1)
+"; then
+    pass "worker health path and both deadlines pass through from .env"
+  else
+    fail "worker health path and both deadlines pass through from .env"
+  fi
+  # And the probe must still find the record at the tuned path: the healthcheck
+  # runs the CLI with no argument, so a path only the worker reads is a contract
+  # the deployment cannot satisfy.
+  if printf '%s' "$json" | python3 -c "
+import json, sys
+cfg = json.load(sys.stdin)
+tests = cfg['services']['worker']['healthcheck']['test']
+env = cfg['services']['worker']['environment']
+sys.exit(0 if 'WORKER_HEALTH_PATH' not in ' '.join(str(t) for t in tests) else 1)
+"; then
+    pass "worker health probe takes no path argument (it resolves the env one)"
+  else
+    fail "worker health probe takes no path argument (it resolves the env one)"
+  fi
+}
+
 if [ "$render_ok" = true ]; then
   if command -v python3 >/dev/null 2>&1; then
     check_mode "$DEDICATED" "dedicated"
@@ -196,6 +245,29 @@ if [ "$render_ok" = true ]; then
     fail "python3 is required for config assertions"
   fi
 fi
+
+# ---- Phase C2: the documented health settings really are settings ----------
+HEALTH_ENV="$ROOT/.verify-prod-health.env"
+HEALTH_ENV_ARG="$HEALTH_ENV"
+if [ "$EXE_FALLBACK" = true ]; then HEALTH_ENV_ARG="$(wslpath -w "$HEALTH_ENV")"; fi
+{
+  cat "$SYNTH_ENV"
+  # Deliberately different from every default, so a value that is read must
+  # differ from one that is hardcoded.
+  cat <<'EOF'
+WORKER_HEALTH_PATH=/tmp/verify-worker-health.json
+WORKER_HEALTH_IDLE_SECONDS=180
+WORKER_HEALTH_BUSY_SECONDS=1800
+EOF
+} >"$HEALTH_ENV"
+if [ "$render_ok" = true ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    check_health_passthrough
+  else
+    fail "python3 is required for config assertions"
+  fi
+fi
+rm -f "$HEALTH_ENV"
 
 # ---- Phase D: images build -----------------------------------------------
 if [ "$render_ok" = true ]; then

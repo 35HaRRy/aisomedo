@@ -131,20 +131,27 @@ printf 'this is not a service account\n' >"$BAD_SECRET"
 # container answers on the network alias `backend:8000`, so the unmodified
 # production Caddyfile resolves it exactly as it resolves the real service.
 cat >"$STUB" <<'EOF'
-import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Byte-identical to the backend's JSONResponse for {"status": "ok"}, so an
+# assertion on the /ready body here means what it means in production.
+BODY = b'{"status":"ok"}'
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):  # noqa: N802 - stdlib naming
-        body = json.dumps({"status": "ok"}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(BODY)))
+        # A response-side credential. The gateway deletes request headers from
+        # its access log but Caddy itself emits resp_headers on every record,
+        # so the session cookie is only kept out of the log by Caddy redacting
+        # credential headers. Phase I asserts that it does.
+        self.send_header("Set-Cookie", "session=VERIFYMONSESSION; Path=/; HttpOnly")
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(BODY)
 
     def log_message(self, *_args):
         pass
@@ -517,6 +524,18 @@ http_probe() {
   docker exec "$1" curl -s -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:8081${2}" 2>/dev/null || echo "000"
 }
+# The hosted monitor keys on the response BODY, so the body is what has to be
+# asserted: a status-only check passes the SPA fallback, which answers 200 with
+# index.html. Command substitution strips a trailing newline, so this compares
+# the served keyword itself, not its line ending.
+# $1=container, $2=path on the public site
+body_public() {
+  docker exec "$1" curl -s "${PUBLIC_ARGS[@]}" "${PUBLIC_URL}${2}" 2>/dev/null || true
+}
+# $1=container, $2=path on the loopback probe listener
+body_probe() {
+  docker exec "$1" curl -s "http://127.0.0.1:8081${2}" 2>/dev/null || true
+}
 
 wait_for_probe() { # $1=container
   local i
@@ -556,6 +575,25 @@ exercise_mode() { # $1=label, $2=container
     pass "[$label] probe listener answers 404 outside the asset"
   else
     fail "[$label] probe listener answers 404 outside the asset"
+  fi
+
+  # The two strings runbook §6 tells the operator to configure as the expected
+  # body, served through the real gateway. Without these the whole deployment
+  # can pass on status codes while the external check keys on something else.
+  if [ "$(body_public "$container" /web-health.txt)" = "dojo-web-ok" ]; then
+    pass "[$label] public web-health body is dojo-web-ok"
+  else
+    fail "[$label] public web-health body is dojo-web-ok"
+  fi
+  if [ "$(body_probe "$container" /web-health.txt)" = "dojo-web-ok" ]; then
+    pass "[$label] probe web-health body is dojo-web-ok"
+  else
+    fail "[$label] probe web-health body is dojo-web-ok"
+  fi
+  if [ "$(body_public "$container" /ready)" = '{"status":"ok"}' ]; then
+    pass "[$label] readiness body is the documented status object"
+  else
+    fail "[$label] readiness body is the documented status object"
   fi
 
   # API down, asset still in place. The three facts the brief asks for are
@@ -646,7 +684,11 @@ exercise_mode "existing-proxy" "$GW_EXISTING"
 
 # ---- Phase I: gateway access logs are safe JSON --------------------------
 # Synthetic marker values that must never reach a log line: a signed artifact
-# token in the path, a query signature, and a bearer token header.
+# token in the path, a query signature, a bearer token header, a request cookie
+# and — the one that cannot be deleted by the Caddyfile — a session cookie the
+# API sets on its RESPONSE. Caddy emits resp_headers on every access record, so
+# the response side is only safe because Caddy redacts credential header values;
+# this phase is what proves it still does.
 docker exec "$GW_EXISTING" sh -c 'echo ok > /srv/web-health.txt' >/dev/null 2>&1 || true
 # The token, the query signature and both header values are synthetic markers
 # that must not survive into a log line. PUBLIC_ARGS already carries the Host
@@ -659,6 +701,7 @@ curl_in_container "${PUBLIC_URL}/pub/VERIFYMONTOKEN?sig=VERIFYMONSIG" \
   -H "Authorization: Bearer VERIFYMONBEARER" \
   -H "Cookie: session=VERIFYMONCOOKIE"
 curl_in_container "${PUBLIC_URL}/web-health.txt"
+# Routed to the API stand-in, whose every response carries Set-Cookie.
 curl_in_container "${PUBLIC_URL}/ready"
 docker logs "$GW_EXISTING" >"$LOGFILE" 2>&1 || true
 
@@ -676,6 +719,25 @@ for record in access:
     # The two request parts that can carry a secret are gone, not masked.
     assert "uri" not in record["request"], record
     assert "headers" not in record["request"], record
+    # The response side is NOT deleted by the Caddyfile: Caddy always emits
+    # resp_headers, and the only thing keeping the session cookie out of this
+    # log is its own redaction of credential header values. The field has to be
+    # present for that to be a real claim — a gateway that stopped logging it
+    # would satisfy a marker-only check vacuously — and its values must never
+    # contain the marker.
+    with_response_headers = [
+        r for r in access
+        if any("resp_headers" in field for field in r)
+    ]
+    assert with_response_headers, "no access record carries resp_headers at all"
+    assert any(
+        any("set-cookie" in str(name).lower() for name in record["resp_headers"])
+        for record in with_response_headers
+    ), "no logged Set-Cookie response header was observed"
+    for record in with_response_headers:
+        for name, values in record["resp_headers"].items():
+            for value in values if isinstance(values, list) else [values]:
+                assert "VERIFYMONSESSION" not in str(value), (name, record)
 PY
 then
   pass "gateway access logs are JSON with method, status, timing and no URI or headers"
@@ -683,7 +745,31 @@ else
   fail "gateway access logs are JSON with method, status, timing and no URI or headers"
 fi
 
-for marker in VERIFYMONTOKEN VERIFYMONSIG VERIFYMONBEARER VERIFYMONCOOKIE; do
+if python3 - "$(hostpath "$LOGFILE")" <<'PY'
+import json
+import sys
+
+records = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+access = [r for r in records if r.get("msg") == "handled request"]
+observed = 0
+for record in access:
+    for name, values in record.get("resp_headers", {}).items():
+        if any(cred in str(name).lower() for cred in ("cookie", "authorization")):
+            observed += 1
+            for value in values if isinstance(values, list) else [values]:
+                # REDACTED is Caddy's own replacement for a credential header
+                # value. Anything else is the value itself, in the log.
+                assert str(value).strip() == "REDACTED", (name, value)
+# Never vacuous: the check above must have had something to reject.
+assert observed, "no credential response header was observed in the access log"
+PY
+then
+  pass "credential response headers are redacted, not logged verbatim"
+else
+  fail "credential response headers are redacted, not logged verbatim"
+fi
+
+for marker in VERIFYMONTOKEN VERIFYMONSIG VERIFYMONBEARER VERIFYMONCOOKIE VERIFYMONSESSION; do
   if grep -q "$marker" "$LOGFILE"; then
     fail "gateway logs omit synthetic value: $marker"
   else

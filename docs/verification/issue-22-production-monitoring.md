@@ -231,7 +231,7 @@ cannot be relied on to produce a clean observation in one attempt.
   `dojo-core/src/dojo/monitoring_ports.py:45`), setting
   `lease_expires_at = now + 60s` (`db.py:1400`).
 - The send and the acknowledgement are separate: `DojoMonitoring.deliver_pending`
-  claims, sends, then calls `_acknowledge` (`dojo-core/src/dojo/monitoring.py:100-126`).
+  claims, sends, then calls `_acknowledge` (`dojo-core/src/dojo/monitoring.py:101-190`).
 - So if the worker dies **after FCM accepted the message but before the
   acknowledgement commits**, the lease is orphaned. After 60 seconds another
   delivery pass reclaims it and re-sends the *same* alert with the *same*

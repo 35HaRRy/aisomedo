@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -297,6 +298,135 @@ def test_main_survives_health_write_failures(
     assert health.phases == ["idle", "busy", "idle", "stopped"]
     assert "No space left on device" in caplog.text
     assert "worker health" in caplog.text
+
+
+def _always_failing(error: OSError) -> Callable[[], None]:
+    """A health write double that always raises the given error."""
+
+    def write() -> None:
+        raise error
+
+    return write
+
+
+def test_a_repeatedly_failing_health_write_is_rate_limited(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unwritable health record must not evict the evidence for its cause.
+
+    A full or read-only /tmp fails every write, twice per tick: unbounded, that
+    is ~17 000 records/hour rotating away the monitoring.* and job.outcome lines
+    the operator needs for that very incident. First failure per phase is
+    logged in full; the rest are rate-limited.
+    """
+    import worker.main as worker_main
+
+    worker_main._reset_health_failure_log()  # noqa: SLF001
+    clock = [1000.0]
+    failing = _always_failing(OSError(28, "No space left on device"))
+
+    with caplog.at_level("WARNING", logger="worker.main"):
+        for _ in range(50):
+            worker_main._mark_health(failing, "idle", monotonic=lambda: clock[0])  # noqa: SLF001
+            clock[0] += 10.0  # 50 ticks' worth inside one window
+
+    writes = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "worker.health_write_failed"
+    ]
+    assert len(writes) == 1
+    assert writes[0].status == "idle"
+    assert writes[0].exc_info[0] is OSError
+
+    # Rate-limited, not muted: the same phase is reported again past the window.
+    clock[0] += worker_main.HEALTH_FAILURE_LOG_INTERVAL_SECONDS
+    with caplog.at_level("WARNING", logger="worker.main"):
+        worker_main._mark_health(failing, "idle", monotonic=lambda: clock[0])  # noqa: SLF001
+    assert len(
+        [
+            record
+            for record in caplog.records
+            if getattr(record, "event", None) == "worker.health_write_failed"
+        ]
+    ) == 2
+
+
+def test_each_phase_is_rate_limited_independently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """busy and idle alternate every tick; each must still speak for itself."""
+    import worker.main as worker_main
+
+    worker_main._reset_health_failure_log()  # noqa: SLF001
+    clock = [0.0]
+    failing = _always_failing(OSError(13, "Permission denied"))
+
+    with caplog.at_level("WARNING", logger="worker.main"):
+        for _ in range(3):
+            for phase in ("idle", "busy", "stopped"):
+                worker_main._mark_health(failing, phase, monotonic=lambda: clock[0])  # noqa: SLF001
+                clock[0] += 1.0
+
+    statuses = [
+        record.status
+        for record in caplog.records
+        if getattr(record, "event", None) == "worker.health_write_failed"
+    ]
+    # Three distinct phases, three first-failure records, nothing after them.
+    assert statuses == ["idle", "busy", "stopped"]
+
+
+def test_the_unwritable_health_state_is_reported_once_per_process(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One record names the degraded state; it is a state, not an event stream."""
+    import worker.main as worker_main
+
+    worker_main._reset_health_failure_log()  # noqa: SLF001
+    clock = [0.0]
+    failing = _always_failing(OSError(28, "No space left on device"))
+
+    with caplog.at_level("WARNING", logger="worker.main"):
+        for _ in range(20):
+            worker_main._mark_health(failing, "busy", monotonic=lambda: clock[0])  # noqa: SLF001
+            clock[0] += worker_main.HEALTH_FAILURE_LOG_INTERVAL_SECONDS
+
+    unwritable = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "worker.health_state_unwritable"
+    ]
+    # 20 windows elapsed, so 20 rate-limited warnings — but the degraded-state
+    # record is written once, because after it there is nothing new to say.
+    assert len(unwritable) == 1
+    assert unwritable[0].levelname == "ERROR"
+    assert unwritable[0].status == "busy"
+
+
+def test_a_recovered_health_write_reports_its_next_failure_in_full(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The throttle belongs to a failure, not to the phase it happened in."""
+    import worker.main as worker_main
+
+    worker_main._reset_health_failure_log()  # noqa: SLF001
+    clock = [0.0]
+    failing = _always_failing(OSError(28, "No space left on device"))
+
+    with caplog.at_level("WARNING", logger="worker.main"):
+        worker_main._mark_health(failing, "idle", monotonic=lambda: clock[0])  # noqa: SLF001
+        worker_main._mark_health(lambda: None, "idle", monotonic=lambda: clock[0])  # noqa: SLF001
+        clock[0] += 1.0
+        worker_main._mark_health(failing, "idle", monotonic=lambda: clock[0])  # noqa: SLF001
+
+    assert len(
+        [
+            record
+            for record in caplog.records
+            if getattr(record, "event", None) == "worker.health_write_failed"
+        ]
+    ) == 2
 
 
 def test_failed_stopped_write_does_not_mask_inflight_error(

@@ -58,6 +58,12 @@ Tüm ayarlar `ops/.env` içindedir. Boş bırakmak varsayılandır; bu yüzden h
 | `WORKER_HEALTH_BUSY_SECONDS` | `3600` | Worker meşgul en fazla yaş |
 | `WORKER_HEALTH_PATH` | `/tmp/dojo-worker-health.json` | Container yerel sağlık kaydı |
 
+Son üçü de `ops/docker-compose.prod.yml` içinde `${…}` ile geçirilir; dosyada
+sabit yazılı değildir, bu yüzden `.env`'deki değer gerçekten container'a gider.
+Varsayılanlar compose dosyasındadır, yani `.env` bu üçünü hiç içermese de
+dağıtım aynı değerleri alır. `WORKER_HEALTH_PATH` yazılabilir bir container içi
+yol olmalıdır: sağlık denetimi CLI'ı yol argümanı almadan bu kaydı çözer.
+
 İki eşik bilinçli olarak eşit değildir: kurtarma işareti düşük işaretinin
 üstündedir, böylece eşik civarında salınan bir dosya sistemi akış kazanması
 yerine bir açılış ve bir kurtarma uyarısı üretir. Geçersiz bir değer
@@ -182,6 +188,12 @@ Sonra müdahale edin:
 
 - `worker` boş denetim hatası → tick döngüsü durdu. `restart worker`; tekrarlarsa
   neden için `worker.tick_failed` kayıtlarını okuyun.
+- `worker` sağlık denetimi, kayıt **yazılamadığı** için sağlıksızsa (kayıt
+  eksik ya da bayat) `worker.health_state_unwritable` kaydına bakın: bu tek
+  kayıt, sağlık kaydının neden yazılamadığını söyler ve disk/`/tmp` basıncının
+  kendisidir. Sağlık kaydının yazılamaz duruma düşmesi, `monitoring.*` ve
+  `job.outcome` kayıtlarının da okunması gereken bir kesintidir: önce diski
+  açın, `monitoring.disk_sample_failed` kayıtlarını okuyun.
 - `worker` meşgul hatası → bir render `WORKER_HEALTH_BUSY_SECONDS` ötesine
   takıldı. İşi kontrol edin, bitirilemeyecekse `restart worker`. Uçuş halindeki
   render sınırı 120sn'lik `stop_grace_period`'dur, yani yeniden başlatma en
@@ -206,6 +218,16 @@ başlıkları kaldırılmıştır — maskelenmiş değil. Alan düzeyinde silme
 tamamıdır, çünkü bilinen sorgu parametresi adlarını maskelemek yalnızca biri
 düşünülmüş olanları kapsar.
 
+**Yanıt tarafı silinmez, Caddy'nin kendi maskelemesine bırakılmıştır.** Caddy her
+erişim kaydında `resp_headers` yazar, yani eşleştirme sırasında API'nin
+verdiği oturum çerezi loglanabilir bir alandır. Bu alan ancak Caddy'nin
+kimlik başlıklarını `REDACTED` ile değiştirmesi sayesinde güvenlidir. Bu
+gateway imajında sabitlenmiş bir Caddy sürümüyle derlenir
+(`ops/gateway/Dockerfile`) ve `ops/verify-monitoring.sh` Faz I'de, API
+stand-in'inin verdiği `Set-Cookie` değerinin logda **hiç** görünmediğini ve
+`resp_headers` alanının gerçekten yazıldığını (yani denetimin boş yere geçmediğini)
+doğrular.
+
 ```bash
 # Yapılandırılmış: jq ile filtrelenebilir
 docker logs --since 1h dojo-prod-worker-1 | jq -c 'select(.event=="job.outcome")'
@@ -227,15 +249,34 @@ docker logs --since 1h dojo-prod-worker-1 | jq -c 'select(.event=="worker.health
 |---|---|
 | `monitoring.enabled` | Toplayıcı başladı; hedef sayısı ve aralık |
 | `monitoring.disk_sample` | Bir okuma kaydedildi; `status` hedef adıdır |
-| `monitoring.disk_sample_failed` | Bir hedef okunamadı. Olay durumu korunur: örneklenemeyen hedef asla kurtarma kanıtı değildir |
+| `monitoring.disk_sample_failed` | Bir hedef okunamadı; `status` `<hedef>:missing` (yol yok), `<hedef>:unreadable` (okuma hatası) ya da `<hedef>:rejected` (örnek kaydedilmedi). Olay durumu korunur: örneklenemeyen hedef asla kurtarma kanıtı değildir |
 | `monitoring.overrun` | Bir toplama turu aralığı aştı; `status` atlanan tur sayısını taşır |
 | `monitoring.delivery` | Uyarılar sağlayıcı tarafından kabul edildi (görüntülendiğinin kanıtı değil) |
-| `monitoring.delivery_send_failed` | Bir gönderim istisna fırlattı; uyarı bekliyor ve yeniden denenecek |
+| `monitoring.delivery_send_failed` | Bir gönderim **istisna** fırlattı; uyarı bekliyor ve yeniden denenecek |
+| `monitoring.delivery_rejected` | Sağlayıcı gönderimi **sonuç olarak** kabul etmedi (istisna değil, bu yüzden başka hiçbir kayıt üretmezdi). `status` kalıcı sonucu ve nedeni birlikte taşır: `retry:provider_error`, `invalid:invalid_registration`, `retry:unreported`. Uyarı `PENDING` kalır ve geri çekilmeyle yeniden denenir |
 | `monitoring.notifier_missing` | İzleme FCM olmadan açıldı; başlangıç reddedildi |
 | `monitoring.config_invalid` | Etkin bir ayar geçersiz; başlangıç reddedildi |
 | `monitoring.shutdown_incomplete` | Toplayıcı sınırlı birleşmeyi aştı, `status="alive"` |
 | `job.outcome` | Bir çalıştırma bitti; yalnızca `job_id` ve `status` |
 | `worker.health_write_failed` | Sağlık kaydı yazılamadı; denetim sağlıksız bildirecek |
+| `worker.health_state_unwritable` | Sağlık kaydının yazılamadığı süreç boyunca **bir kez**: izleme bozuldu, denetim sağlıksız bildirecek |
+
+### Sınırlandırılmış gürültü: hangi olay ne sıklıkta yazılır
+
+Aşağıdaki üç olay kalıcı bir durumun tekrarıdır, ayrı ayrı olaylar değildir;
+bu yüzden sınırlanmışlardır. Sınırlar **kayıt sayısını** korur, görünürlüğü
+değil: bir olay susturulmaz, sadece tekrar etmez.
+
+| Olay | Sınır | Neden |
+|---|---|---|
+| `worker.health_write_failed` | Faz başına ilk hata tam olarak, sonra en fazla **15 dakikada bir** | `/tmp` dolu ya da salt okunur olduğunda — tam olarak #22'nin aradığı koşul — her yazma iki kez ve tick başına başarısız olur: sınırsızken saatte ~17 000 kayıt, 3 × 10 MiB'lik günlük bütçesinin tamamını bu tek çağrı yerine döndürür ve `monitoring.*` ile `job.outcome` kayıtlarını yok eder |
+| `monitoring.disk_sample_failed` | Hedef başına ilk hata tam olarak, sonra en fazla **15 dakikada bir** | Var olmayan bir hedef her turda başarısız olur; sınırsız iki uyarı dakika başına, hedef başına, sonsuza kadar |
+| `monitoring.delivery_rejected` | Uyarı başına ilk kayıt, sonra en fazla **15 dakikada bir** | Sağlayıcı hatası geri çekilmeyle saatte bir yinelenir; alıcı sayısı büyükse bu, olayın kendisi kadar gürültülü olur |
+
+`worker.health_state_unwritable` süreç başına **bir kez** yazılır, çünkü bir
+durumun kendisidir: sağlık kaydının yazılamadığı ve denetimin sağlıksız
+bildireceği. Disk hedefi ya da teslim yeniden çalışıyorsa ilgili kayıt kendi
+sınırından sonra yeniden yazılır.
 
 ### Günlük saklama
 
@@ -280,6 +321,21 @@ Bunların hepsi tek bir dosya sistemine düşüyorsa varsayılanlar yeterlidir.
 `/var/lib/docker`, ayrı bir `/var/log`, bağlanmış bir uygulama veri diski ya da
 başka herhangi bir dosya sistemi onlara görünmez.
 
+### Tek disk, iki uyarı: bu bir hata değil
+
+Varsayılan iki hedef (`media` ve `root`) normalde **aynı** fiziksel diski
+gösterir. Bu yüzden bu disk %15'in altına düştüğünde telefonunuzda **iki**
+`disk.low` uyarısı gelir: önce "media hedefinde boş alan oranı düşük", hemen
+ardından "root hedefinde boş alan oranı düşük". Kurtarma da iki tane olur:
+iki `disk.recovered`. Bunlar iki ayrı ve kalıcı olaydır (`media` ve `root`
+kendi olayını açar), ayrı ayrı kurtarılırlar; aynı `alert_id` iki kez
+üretilmez çünkü olay başına tek açılış ve tek kurtarma uyarısı vardır.
+
+Bu bir çift sayım ya da yapılandırma hatası **değildir**; her hedef kendi
+etiketiyle ayrı bir sözleşmedir ve bu, "volume dolu" ile "üzerinde durduğu disk
+dolu" ayrımının bilinçli sonucudur. Aynı fiziksel diski iki kez saymak
+istemiyorsanız `MONITORING_DISK_PATHS` içinde yalnızca `root` bırakın.
+
 ### Varsayılanların kaçırdığı bir dosya sistemini kapsama
 
 O dosya sisteminden **salt okunur** bir dizin bağlayın ve adını kendi hedefi
@@ -321,7 +377,12 @@ docker compose --env-file ops/.env -p dojo-prod \
   **kurtarılır**. Olay başına tek açılış ve tek kurtarma uyarısı, örnek
   başına bir tane değil.
 - Başarısız bir örnek `monitoring.disk_sample_failed` kaydı üretir ve hiçbir
-  şeyi değiştirmez. Asla kurtarma olarak okunmaz.
+  şeyi değiştirmez. Asla kurtarma olarak okunmaz. `status` alanı **neden**
+  olduğunu söyler: `<hedef>:missing` yolun var olmadığı anlamına gelir ve bu
+  operatör eylemi ister — §5'te tarif edilen bind mount'lardan biri eksik ya da
+  yazılmış. `<hedef>:unreadable` yalnızca okumanın başarısız olduğudur, disk
+  hâlâ izleniyor demektir. Ayrım logdadır çünkü mesaj metni hiçbir zaman
+  serileştirilmez.
 - Olay durumu kalıcıdır: yeniden başlatma hâlâ açık bir olay için yeniden
   uyarı üretmez ve bayat bir örnek sahte bir kurtarma gösteremez.
 
@@ -341,6 +402,15 @@ yani aynı uyarı birden fazla gelebilir; bildirim etiketi (`alert_id`) yinelene
 ilk olanın yerine geçirir. Kabul edilen yanıt, sağlayıcının mesajı kabul ettiği
 anlamına gelir, bir cihazın gösterdiği anlamına değil.
 
+Kabul edilmeyen her deneme logda görünür: istisna fırlatırsa
+`monitoring.delivery_send_failed`, sağlayıcı hata **sonucu** döndürürse
+`monitoring.delivery_rejected` (`status` alanında `retry:provider_error` ya da
+`invalid:invalid_registration`). İkinci yol daha önce hiçbir kayıt bırakmıyordu:
+uyarı var olur, saatte bir yeniden denenir ve log "hiçbir şey olmadı" gibi
+görünürdü. `monitoring.delivery` yalnızca **kabul** edilen gönderimler için
+yazılır; sıfır teslimle geçen bir turda görülmemesi normaldir, yoksa
+`monitoring.delivery_rejected` kaydına bakın.
+
 ## 6. Barındırılan HTTPS izleme
 
 Uygulama tarafı denetimler, üzerinde çalıştıkları makinenin kesintisini
@@ -350,13 +420,18 @@ daha kısa olsun.
 
 | Denetim | URL | Beklenen | Neden ayrı |
 |---|---|---|---|
-| Web sağlığı | `https://<DOMAIN>/web-health.txt` | HTTP 200, gövde tam olarak `dojo-web-ok` (`web/public/web-health.txt`; sonunda tek satır sonu var) | Gateway'i ve derlenmiş web varlığını kanıtlar |
+| Web sağlığı | `https://<DOMAIN>/web-health.txt` | HTTP 200, gövde tam olarak `dojo-web-ok` (`web/public/web-health.txt`; 12 bayt, satır sonu **yok**) | Gateway'i ve derlenmiş web varlığını kanıtlar |
 | API hazırlığı | `https://<DOMAIN>/ready` | HTTP 200, gövde `{"status":"ok"}` | API'nin PostgreSQL'e ulaşabildiğini kanıtlar |
 
 `/ready` başarısız olduğunda 503 ve `{"status":"unavailable"}` döner, gövde hiçbir
 zaman sır taşımaz. İki denetim de **gövde** beklediği için yalnızca durum kodu
 yeterli değildir: durum kodu tek başına SPA fallback'inin `index.html`'yi 200
 ile döndürmesini geçirirdi.
+
+Bu iki gövde `ops/verify-monitoring.sh` Faz H'de gerçek gateway üzerinden
+karşılaştırılır (her iki vekil modunda, hem herkese açık rotada hem döngü
+dinleyicisinde): yalnızca durum kodu değil, sunulan metnin bu tabloyla birebir
+aynı olduğu doğrulanır.
 
 ### Sağlayıcının karşılaması gereken yetenekler
 
@@ -533,7 +608,7 @@ kaydedilmeden ölmesi durumunda olur ve **böyle bir tetikleyici vardır**:
 - teslim kiralaması 60 saniyedir (`claim_alert_delivery(..., lease_seconds=60)`,
   `dojo-core/src/dojo/adapters/db.py:1367`),
 - gönderim ile onay ayrı adımlardır (`deliver_pending` → gönderir → `_acknowledge`,
-  `dojo-core/src/dojo/monitoring.py:100-126`).
+  `dojo-core/src/dojo/monitoring.py:101-190`).
 
 Yani worker'ı **FCM kabul ettikten hemen sonra, onay yazılmadan** `SIGKILL`
 ile düşürürseniz (ör. `docker kill --signal=SIGKILL dojo-prod-worker-1`), kiralama
@@ -559,22 +634,34 @@ docker compose … up -d worker
 # -> bekleyen uyarı aynı alert_id ile bir sonraki teslim turunda gider
 ```
 
+İki farklı görünüm vardır ve ikisi de kayda değer: SDK'nın kimlik hatası bir
+**istisna** olduğu için `monitoring.delivery_send_failed` yazılır; FCM projesi
+yanlış ya da API kapalı olduğunda ise sağlayıcı bir **sonuç** döndürür, istisna
+fırlatmaz ve uyarı `monitoring.delivery_rejected` olarak kaydedilir
+(`status="retry:provider_error"`). İkisi de aynı sonucu verir: uyarı `PENDING`
+kalır, hiçbir şey "gönderildi" sayılmaz.
+
 `job.failed` uyarısı için var olmayan bir iş kaynağı yaratın (ör. geçersiz
 medya yolu olan bir paket) veya `monitoring.` olayları arasında
 `job.failed` gövdesini arayın; sıfır cihaz varsa uyarı `PENDING` kalır ve bu
 doğru davranıştır, teslim edilmiş sayılmaz.
 
-Beklenen gözlemler (kanıt kaydında alan adlarıyla):
+Beklenen gözlemler (kanıt kaydındaki alan adlarıyla — kayıt dosyasında bu adların
+tam olarak bulunduğu yazılıdır; burada listelenen her ad doğrudan bir kayıt
+alanıdır):
 
 | Alan | Ne yazılır |
 |---|---|
+| `disk_low_alert_observed` | Disk uyarısının **teslim edildiği** görüldüğü (bkz. yukarıdaki eşik değiştirme yöntemi) |
+| `disk_recovery_alert_observed` | Aynı olayın kurtarma uyarısının teslim edildiği görüldüğü |
+| `failed_job_alert_observed` | `job.failed` uyarısının teslim edildiği görüldüğü |
+| `transport_retry_recovery` | Geçici taşıma hatasından sonra uyarının yeniden geldiği |
 | `android_device_build` | Cihaz modeli + APK build kimliği (token **yok**) |
 | `android_foreground_display` | Ön planda Türkçe başlık/gövdenin görüldüğü |
 | `android_background_display` | Arka planda (ayrıca kapatılmışken) bildirim tepsisinde görüldüğü |
 | `android_tag_equals_alert_id` | `adb shell dumpsys notification` çıktısında etiketin `alert_id` ile aynı olduğu |
 | `android_redelivery_replaces` | Aynı uyarı ikinci kez geldiğinde tek bildirim kaldığı |
 | `android_no_review_navigation` | Bildirime dokununca inceleme ekranı değil pano açıldığı |
-| `android_transport_retry_recovery` | Geçici taşıma hatasından sonra uyarının yeniden geldiği |
 
 `adb shell dumpsys notification` çıktısı bir **push token içerebilir**; kanıt
 kaydına yalnızca ilgili bildirim satırları yazılır, ham çıktı yazılmaz.
@@ -599,6 +686,14 @@ Yapı gereği güvenli; öyle kalması değerli:
   dosyanın kullanılabilir bir servis hesabı olmadığı anlamına gelir. Dosyayı
   düzeltin ve worker'ı yeniden başlatın; bekleyen uyarı bir sonraki teslim
   turunda gider, hiçbir şey kaybolmaz.
+- `monitoring.delivery_rejected` (`status` `retry:provider_error`) ise kimlik
+  dosyası değil **sağlayıcı** tarafı reddediyor demektir: FCM v1 API'si bu
+  projede açık değil, kota dolmuş ya da bir kurul politikası projeyi
+  reddediyor. `status` `invalid:invalid_registration` ise tek bir cihazın
+  kaydı geçersiz sayıldı ve o token silindi; bu bir cihaz sorunudur, teslimat
+  sistemi değil. Kalıcı hatada uyarı `PENDING` kalır ve saatte bir yeniden
+  denenir; `docker compose … logs db | grep operational_alerts` ile
+  `disk_low_alert_observed` benzeri bir kanıt alabilirsiniz.
 
 ## 8. Doğrulama
 

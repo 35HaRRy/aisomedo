@@ -514,7 +514,44 @@ def build_worker_health(interval_seconds: float) -> WorkerHealth:
     return health
 
 
-def _mark_health(write: Callable[[], None], phase: str) -> None:
+#: Minimum seconds between two ``worker.health_write_failed`` records for the
+#: same phase. A full or read-only ``/tmp`` — the exact condition #22 exists to
+#: detect — fails every write, twice per tick, which is ~17 000 records/hour
+#: from one call site; the production log budget is 3 × 10 MiB, so that flood
+#: rotates away the ``monitoring.*`` and ``job.outcome`` records the operator
+#: needs for precisely that incident. The first failure of each phase is still
+#: logged in full, with ``exc_info``.
+HEALTH_FAILURE_LOG_INTERVAL_SECONDS = 900.0
+
+#: phase -> monotonic time its failure was last logged. Module state rather than
+#: a field because ``_mark_health`` is a free function called from the tick loop;
+#: the loop is single-threaded, so no lock is needed.
+_health_failure_log: dict[str, float] = {}
+
+#: Whether the process-lifetime "monitoring is degraded" record was already
+#: written. One per process, not one per failure: it is a state, not an event.
+_health_unwritable_reported = False
+
+
+def _reset_health_failure_log() -> None:
+    """Clear the rate-limit state. One worker process calls this once, at boot.
+
+    Module state would otherwise leak between the tests that drive ``main()``
+    in one interpreter, and a test that cannot see the first failure it caused
+    would be asserting the rate limit rather than the behaviour.
+    """
+    global _health_unwritable_reported  # noqa: PLW0603 - mirrors the latch above
+
+    _health_failure_log.clear()
+    _health_unwritable_reported = False
+
+
+def _mark_health(
+    write: Callable[[], None],
+    phase: str,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> None:
     """Record a worker phase without ever failing the caller.
 
     Health is diagnostic: a full disk, a read-only ``/tmp`` or a bad
@@ -522,22 +559,50 @@ def _mark_health(write: Callable[[], None], phase: str) -> None:
     ``stopped()`` write in the shutdown ``finally`` must not mask an
     in-flight exception. Every failure is logged and the probe simply
     reports unhealthy, which is the truthful outcome.
+
+    Logging is rate-limited per phase: the first failure and then at most one
+    per :data:`HEALTH_FAILURE_LOG_INTERVAL_SECONDS`, because an unwritable
+    health record is a persistent state rather than a stream of incidents, and
+    an unbounded record of it evicts the evidence for the disk pressure that
+    caused it. A single ``worker.health_state_unwritable`` record names that
+    degraded state once per process.
     """
+    global _health_unwritable_reported  # noqa: PLW0603 - process-lifetime latch
+
     try:
         write()
     except Exception:  # noqa: BLE001 - health writes are never load-bearing
-        logger.warning(
-            "worker health %s write failed; probe will report unhealthy",
-            phase,
-            exc_info=True,
-            extra={"event": "worker.health_write_failed", "status": phase},
-        )
+        now = monotonic()
+        last = _health_failure_log.get(phase)
+        _health_failure_log[phase] = now
+        if last is None or now - last >= HEALTH_FAILURE_LOG_INTERVAL_SECONDS:
+            logger.warning(
+                "worker health %s write failed; probe will report unhealthy",
+                phase,
+                exc_info=True,
+                extra={"event": "worker.health_write_failed", "status": phase},
+            )
+        if not _health_unwritable_reported:
+            _health_unwritable_reported = True
+            # The state an operator needs, named in the event literal because
+            # the formatter never serializes the message text.
+            logger.error(
+                "worker health record is unwritable; health checks report the "
+                "worker unhealthy and worker monitoring is degraded",
+                exc_info=True,
+                extra={"event": "worker.health_state_unwritable", "status": phase},
+            )
+    else:
+        # The throttle belongs to a failure, not to the phase: once the record
+        # is writable again the next failure is news and is logged in full.
+        _health_failure_log.pop(phase, None)
 
 
 def main() -> None:
     # Configured before any dependency construction so boot failures are
     # already structured JSON rather than the bare basicConfig format.
     configure_logging("worker")
+    _reset_health_failure_log()
     publishing = build_publishing()
     meta = build_meta()
     interval = float(os.environ.get("WORKER_INTERVAL_SECONDS", "10"))

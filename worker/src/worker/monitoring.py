@@ -42,6 +42,14 @@ DEFAULT_LOW_PERCENT = 15.0
 DEFAULT_RECOVERY_PERCENT = 20.0
 DEFAULT_ROOT_PATH = "/"
 
+#: Minimum seconds between two ``monitoring.disk_sample_failed`` records for the
+#: same target. A non-existent target fails every turn, so an unbounded record
+#: is one warning a minute per target forever — easily lost to the 3 × 10 MiB
+#: rotation, which is exactly how "this filesystem is not covered" turns into a
+#: claim instead of a fact. The first failure of each target is logged in full
+#: with ``exc_info``; after that the record repeats at most this often.
+SAMPLE_FAILURE_LOG_INTERVAL_SECONDS = 900.0
+
 
 def _number(raw: str | None, default: float, name: str) -> float:
     """Parse one numeric setting, rejecting NaN/infinity explicitly.
@@ -227,6 +235,10 @@ class MonitoringRunner:
         self._clock = clock if clock is not None else SystemClock()
         self._sampler = sampler if sampler is not None else DiskSampler()
         self._monotonic = monotonic
+        #: target -> monotonic time its last sampling failure was logged. The
+        #: runner owns this state because the collector is one long-lived
+        #: object; the collector thread is the only writer.
+        self._sample_failure_log: dict[str, float] = {}
 
     def tick(self) -> None:
         """One collection turn. Never raises."""
@@ -268,10 +280,18 @@ class MonitoringRunner:
         try:
             sample = self._sampler.sample(target, path, self._clock.now())
         except Exception:  # noqa: BLE001 - one unreadable target is not the turn
-            logger.warning(
-                "disk sample failed; incident state left unchanged",
-                exc_info=True,
-                extra={"event": "monitoring.disk_sample_failed", "status": target},
+            # A path that does not exist is a configuration fault — a typo, or
+            # a missing bind mount the runbook tells operators to add — and it
+            # is the one failure that means this filesystem is not covered at
+            # all. It is therefore named in ``status`` separately from a
+            # transient read error, which is only a missed sample.
+            self._log_sample_failure(
+                target,
+                status=f"{target}:missing"
+                if not path.exists()
+                else f"{target}:unreadable",
+                message="disk target does not exist or cannot be read; this "
+                "filesystem is not being monitored",
             )
             return
         try:
@@ -281,10 +301,10 @@ class MonitoringRunner:
                 recovery_percent=self._config.recovery_percent,
             )
         except Exception:  # noqa: BLE001 - a rejected sample opens nothing
-            logger.warning(
-                "disk sample not recorded; incident state left unchanged",
-                exc_info=True,
-                extra={"event": "monitoring.disk_sample_failed", "status": target},
+            self._log_sample_failure(
+                target,
+                status=f"{target}:rejected",
+                message="disk sample not recorded; incident state left unchanged",
             )
             return
         # The store owns incident state and does not report whether this sample
@@ -298,6 +318,30 @@ class MonitoringRunner:
             target,
             free,
             extra={"event": "monitoring.disk_sample", "status": target},
+        )
+        # A target that samples again is healthy: clear its throttle so a later
+        # failure is reported in full rather than being swallowed by the
+        # interval its previous failure started.
+        self._sample_failure_log.pop(target, None)
+
+    def _log_sample_failure(self, target: str, *, status: str, message: str) -> None:
+        """One record per target per interval, with the failure kind in ``status``.
+
+        Incident state is left untouched either way: an unsampleable target is
+        never evidence of recovery. What the log has to carry is *which kind* of
+        failure it was, because "the path does not exist" is an operator action
+        and "the read failed" is not — and ``status`` is the only field the JSON
+        formatter keeps, since the message text is never serialized.
+        """
+        now = self._monotonic()
+        last = self._sample_failure_log.get(target)
+        self._sample_failure_log[target] = now
+        if last is not None and now - last < SAMPLE_FAILURE_LOG_INTERVAL_SECONDS:
+            return
+        logger.warning(
+            message,
+            exc_info=True,
+            extra={"event": "monitoring.disk_sample_failed", "status": status},
         )
 
     def _deliver(self) -> None:
