@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dojo import DojoPublishing
 from dojo.adapters.db import PostgresStore
+from dojo.adapters.fcm import FcmNotifier
 from dojo.observability import configure_logging
 from dojo.scheduler import try_emission_leadership
 
@@ -109,13 +110,27 @@ def resolve_public_base_url(cookie_secure: bool | None = None) -> str:
     return origin
 
 
-def _build_notifier() -> object | None:
-    if os.environ.get("FCM_ENABLED", "false").lower() not in ("1", "true", "yes"):
-        return None
-    try:
-        from dojo.adapters.fcm import FcmNotifier
+#: Accepted ``FCM_ENABLED`` spellings; anything else leaves real delivery off.
+FCM_ENABLED_VALUES = ("1", "true", "yes")
 
-        return FcmNotifier()
+
+def build_notifier() -> FcmNotifier | None:
+    """The real push notifier, or ``None`` when FCM is disabled.
+
+    There is no stub fallback: a stub would report durable operational alerts
+    as delivered without a provider, and a broken configuration must fail
+    startup rather than silence them. Credentials and project identity are
+    resolved by the adapter at construction.
+    """
+    if os.environ.get("FCM_ENABLED", "false").lower() not in FCM_ENABLED_VALUES:
+        return None
+    project_id = (
+        os.environ.get("FCM_PROJECT_ID", "").strip()
+        or os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+        or None
+    )
+    try:
+        return FcmNotifier(project_id=project_id)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("FCM enabled but firebase_admin not configured") from exc
 
@@ -129,7 +144,7 @@ def build_publishing() -> DojoPublishing:
     store = PostgresStore(url)
     _maybe_create_all(store)
     kwargs: dict = {}
-    notifier = _build_notifier()
+    notifier = build_notifier()
     if notifier is not None:
         kwargs["notifier"] = notifier
     try:

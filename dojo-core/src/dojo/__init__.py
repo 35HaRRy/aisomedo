@@ -109,6 +109,7 @@ from dojo.model import (
     YayinIncelemesi,
     YayinZamani,
 )
+from dojo.monitoring import DojoMonitoring
 from dojo.pairing import DojoPairing
 from dojo.publishing import DojoPublishing
 from dojo.setup import DojoSetup
@@ -128,6 +129,7 @@ __all__ = [
     "DojoActivity",
     "DojoError",
     "DojoMetaConnection",
+    "DojoMonitoring",
     "DojoPairing",
     "DojoPublishing",
     "DojoSetup",

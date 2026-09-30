@@ -11,7 +11,11 @@ config = context.config
 if url := os.environ.get("DATABASE_URL"):
     config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Alembic's ini names only root/sqlalchemy/alembic. The default
+    # disable_existing_loggers=True would therefore silence every application
+    # logger in the process running an in-process migration, which is how a
+    # migration run would silently mute delivery and health logging.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
