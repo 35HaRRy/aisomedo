@@ -121,12 +121,13 @@ Compose guard — the runbook setup steps were corrected for this (Task 7).
 `3.4d-caddyfile_valid` — **VERIFIED**. `caddy validate` in `caddy:2-alpine`
 against `ops/gateway/Caddyfile` → `Valid configuration`.
 
-### 3.5 Lint and typecheck: not clean, and one finding is #22's
+### 3.5 Lint and typecheck: not clean, but nothing outstanding is #22's
 
-`3.5-lint_status` — **NOT CLEAN, and this is an open item.**
+`3.5-lint_status` — **NOT CLEAN. What remains is pre-existing baseline debt,
+not introduced by #22.**
 
-On `7e150b8`, `ruff check` reports **38 findings** (dojo-core 29, backend 8,
-worker 1) and `mypy` reports **1 error**
+At the Task 7 review point (`7e150b8`) `ruff check` reported **38 findings**
+(dojo-core 29, backend 8, worker 1) and `mypy` reported **1 error**
 (`dojo-core/src/dojo/publishing.py:390`, `dict-item`).
 
 An earlier revision of this record claimed every finding was "in a file outside
@@ -136,12 +137,15 @@ finding:
 
 | Bucket | Count | Detail |
 |---|---|---|
-| **Introduced by a #22 commit** | **1** | `dojo-core/tests/test_schema_init.py:108` — `F841` unused `conn`, blamed to `70a7eca` (*fix(monitoring): prove failure-generation lock and redact lease tokens*). `test_schema_init.py` is a #22-modified file and the offending `with engine.connect() as conn:` line was added by #22. **This one is ours to fix.** |
+| Introduced by a #22 commit — **now fixed** | 0 | Was 1: `dojo-core/tests/test_schema_init.py:108` `F841` unused `conn`, blamed to `70a7eca` (*fix(monitoring): prove failure-generation lock and redact lease tokens*). The unbound local was removed (`with engine.connect():`, no `as conn`); the assertion inside the block is unchanged, so the test's meaning is identical. Verified: `ruff check dojo-core/tests/test_schema_init.py` → `All checks passed!`; `pytest dojo-core/tests/test_schema_init.py -q` → **22 passed** |
 | In a #22-modified file, on a line that predates #22 | 11 | `dojo-core/src/dojo/adapters/db.py` ×6 (lines 295, 323, 336, 339, 1254, 1644) blamed to `4281e5f` (#16) and `33d50a7` (#17); `dojo-core/src/dojo/adapters/meta.py` ×3 (lines 1, 52, 125) and `worker/src/worker/main.py:251` blamed to `33d50a7` (#17); `dojo-core/src/dojo/__init__.py:1` blamed to `7d7bc67` (#4) |
 | In a file #22 never touched | 26 | `adapters/signed_urls.py` ×1, `adapters/stubs.py` ×2, `meta_connection.py` ×5, `model.py` ×2, `publishing.py` ×4, `tests/test_publication.py` ×2, `backend/deps.py` ×1, `backend/routes/meta.py` ×4, `backend/routes/pairing.py` ×3 |
 
-So: **#22 introduced exactly 1 of the 38 ruff findings.** Nothing here is
-claimed as a pass, and nothing was suppressed.
+Current state on this branch: `ruff check dojo-core/src dojo-core/tests`
+reports **28** (down from 29), and `ruff check dojo-core/tests` reports only
+the 2 pre-existing `test_publication.py` findings. **#22 now introduces zero
+ruff findings.** The remaining 37 are pre-existing, belong to a separate issue,
+and nothing here is claimed as a pass.
 
 `mypy` is clean for `backend/src/backend` and `worker/src/worker` (18 and 4
 source files). The single mypy error is in `publishing.py`, a file #22 never
@@ -173,8 +177,12 @@ Consequence for this record: §3.5 is the **only** evidence of lint/type state
 for #22, and it is a local run. The local `docker compose … config` runs in
 §3.4a all exited 0, including the exact command CI's `ops` job failed on, which
 means the CI `ops` failure is not reproduced on this host; that discrepancy is
-unexplained and is not glossed over. Closing this item means: fix the `F841`,
-push, and record the resulting CI run.
+unexplained, is **not** investigated here, and is left for a separate issue.
+
+The `F841` that #22 did introduce is now fixed (§3.5), so what remains open on
+this item is only the red run and the fact that it predates #22. Closing it
+means pushing and recording the resulting CI run — including whether the
+pre-existing `Lint` and `ops` failures still stand.
 
 ## 4. Live evidence fields (all currently empty)
 
@@ -334,9 +342,10 @@ All in [`docs/rehberler/production-monitoring.md`](../rehberler/production-monit
 
 ## 7. What closes #22
 
-1. Fix the one #22-introduced lint finding (`dojo-core/tests/test_schema_init.py:108`,
-   `F841`) and push, so CI runs against #22 for the first time; record the run
-   URL in `3.6-ci_status` (§3.5, §3.6).
+1. Push and record the resulting CI run, so CI has executed against #22 for the
+   first time; note whether the pre-existing `Lint` and `ops` failures still
+   stand (§3.5, §3.6). The `F841` that #22 introduced is already fixed, so this
+   step is no longer about #22's own code.
 2. Deploy the stack, fill §4.1 and §4.2.
 3. Provision the two hosted checks and run the drill; fill §4.4.
 4. Land #32 and #36, pair a device, execute the four contract acceptance steps;

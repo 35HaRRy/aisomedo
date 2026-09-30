@@ -105,7 +105,9 @@ def test_0015_shape_is_stamped_and_upgraded_through_0016(database):
 
     url, engine = database
     command.upgrade(config(url), "0015_operational_monitoring")
-    with engine.connect() as conn:
+    # The inspector opens its own connection, so the one opened here is only
+    # there to prove a live connection is possible at 0015; it is not bound.
+    with engine.connect():
         assert not inspect(engine).get_check_constraints("operational_alerts")
     initialize_database(url)
     assert_head(engine)
