@@ -247,23 +247,44 @@ fi
 
 # ---- Phase F: real backend readiness fails and recovers --------------------
 # Phase E only proves volume persistence, so the real backend's readiness
-# contract was unverified by any script. This brings up the actual backend
-# image against the actual database and takes the database away and back, which
-# is the failure the review focus names: the API is down while the SPA still
-# returns HTTP 200. The gateway is not involved — this is the backend's own
-# bounded DB check, which Task 6's production probe depends on.
+# contract was unverified by any script. This starts the actual backend against
+# the actual database and takes the database away and back, which is the
+# failure the review focus names. The gateway is not involved: this is the
+# backend's own bounded DB check, which Task 6's production probe depends on.
 if [ "$render_ok" = true ]; then
   stack() { docker compose -p "$PROJ" --env-file "$ENV_ARG" -f "$PROD" -f "$EXISTING" "$@"; }
-  # $1=backend container id -> "ok" once /ready answers 200
-  ready_ok() {
+  # Built here, not assumed: a stale dojo-backend:latest from an earlier run
+  # would pass or fail on code that is not the code under test. IMAGE_TAG is
+  # already this run's suffix, so the tag cannot collide with anything else.
+  if docker compose --env-file "$ENV_ARG" -f "$PROD" -f "$EXISTING" build backend >/dev/null 2>&1; then
+    pass "verify stack backend image builds"
+  else
+    fail "verify stack backend image builds"
+  fi
+  # $1=container id -> "ok" when /ready answers 200, "503" when the backend
+  # itself reports unavailable, and "down" when the request cannot be made at
+  # all. The three are different facts and only the middle one is a readiness
+  # failure: a dead process also stops answering, and would otherwise satisfy
+  # "fails while the database is down" for the wrong reason.
+  ready_state() {
     docker exec "$1" .venv/bin/python -c \
-      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)" \
-      >/dev/null 2>&1
+      "import urllib.error, urllib.request
+try:
+    urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)
+except urllib.error.HTTPError as exc:
+    print(exc.code)
+except Exception:
+    print('down')
+else:
+    print('ok')" 2>/dev/null || echo "down"
   }
-  wait_ready() { # $1=container id, $2=expected ("ok"|"fail"), $3=attempts
+  backend_running() { # $1=container id
+    [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
+  }
+  wait_ready() { # $1=container id, $2=expected state, $3=attempts
     local i
     for i in $(seq 1 "$3"); do
-      if ready_ok "$1"; then [ "$2" = ok ] && return 0; else [ "$2" = fail ] && return 0; fi
+      if [ "$(ready_state "$1")" = "$2" ]; then return 0; fi
       sleep 2
     done
     return 1
@@ -271,27 +292,35 @@ if [ "$render_ok" = true ]; then
   stack up -d backend >/dev/null 2>&1 \
     && pass "verify stack backend starts" \
     || fail "verify stack backend starts"
-  BACKEND_ID="$(stack ps -q backend 2>/dev/null)"
-  if [ -n "$BACKEND_ID" ] && wait_ready "$BACKEND_ID" ok 45; then
-    pass "real backend /ready is healthy against a live database"
+  # `|| true` mirrors Phase E: an empty id must be a recorded failure below,
+  # not a `set -e` abort that skips every later assertion.
+  BACKEND_ID="$(stack ps -q backend 2>/dev/null || true)"
+  if [ -z "$BACKEND_ID" ]; then
+    fail "verify stack backend has a container id"
+    stack down -v >/dev/null 2>&1 || true
   else
-    fail "real backend /ready is healthy against a live database"
+    pass "verify stack backend has a container id"
+    if wait_ready "$BACKEND_ID" ok 45; then
+      pass "real backend /ready is healthy against a live database"
+    else
+      fail "real backend /ready is healthy against a live database"
+    fi
+    # Take the database away, not the backend: the API stays up and must report
+    # itself unavailable, rather than stop answering for the wrong reason.
+    stack stop db >/dev/null 2>&1 || true
+    if backend_running "$BACKEND_ID" && wait_ready "$BACKEND_ID" 503 15; then
+      pass "real backend /ready reports 503 while the database is down"
+    else
+      fail "real backend /ready reports 503 while the database is down"
+    fi
+    stack up -d db >/dev/null 2>&1 || true
+    if wait_ready "$BACKEND_ID" ok 45; then
+      pass "real backend /ready recovers when the database returns"
+    else
+      fail "real backend /ready recovers when the database returns"
+    fi
+    stack down -v >/dev/null 2>&1 || true
   fi
-  # Take the database away, not the backend: the API is up and must report
-  # itself unavailable rather than fail its own probe for the wrong reason.
-  stack stop db >/dev/null 2>&1 || true
-  if [ -n "$BACKEND_ID" ] && wait_ready "$BACKEND_ID" fail 15; then
-    pass "real backend /ready fails while the database is down"
-  else
-    fail "real backend /ready fails while the database is down"
-  fi
-  stack up -d db >/dev/null 2>&1 || true
-  if [ -n "$BACKEND_ID" ] && wait_ready "$BACKEND_ID" ok 45; then
-    pass "real backend /ready recovers when the database returns"
-  else
-    fail "real backend /ready recovers when the database returns"
-  fi
-  stack down -v >/dev/null 2>&1 || true
 fi
 
 echo "verify-prod: $PASS passed, $FAIL failed"

@@ -49,7 +49,7 @@ Tüm ayarlar `ops/.env` içindedir. Boş bırakmak varsayılandır; bu yüzden h
 | Değişken | Varsayılan | Anlamı |
 |---|---|---|
 | `FCM_CREDENTIALS_FILE` | **izleme override'i ile zorunlu** | Firebase servis-hesabı JSON'unun mutlak host yolu. `/run/secrets/firebase-credentials.json` adresine salt okunur bağlanır |
-| `FCM_PROJECT_ID` | kimlikten okunur | Kimlik bilgisi projeyi belirtmiyorsa Firebase projesi |
+| `FCM_PROJECT_ID` | — (`GOOGLE_CLOUD_PROJECT` de okunur) | Firebase projesi. İzleme override'i ile **zorunlu**: FCM proje adresine göre çalışır ve projesini bilemeyen bir dağıtım başlangıçta başarısız olur (§2) |
 | `MONITORING_INTERVAL_SECONDS` | `60` | Disk örnekleme aralığı |
 | `MONITORING_DISK_LOW_PERCENT` | `15` | Bu boş oranın altında düşük alan olayı açılır |
 | `MONITORING_DISK_RECOVERY_PERCENT` | `20` | Bu boş oranında ve üstünde kurtarılır |
@@ -85,17 +85,30 @@ buradaki hiçbir betik tarafından yazdırılmaz. Container'a yalnızca Compose
 secret olarak ulaşır; bu salt okunurdur ve `docker inspect` çıktısında
 görünmez.
 
-Application Default Credentials Firebase SDK tarafından **tembel** çözülür.
-Bunun somut sonucu şudur: **proje kimliği** başlangıçta çözülür, **kimlik
-dosyası** çözülmez. Kullanılamayan bir kimlik dosyası (eksik, bozuk ya da servis
-hesabı olmayan) worker'ı başlatmaz; ilk gönderimde tipli bir
-`DefaultCredentialsError` ile başarısız olur. Bu davranış
-`ops/verify-monitoring.sh` içinde doğrulanır. Doğru olan budur: uyarı bekleyen
-durumda kalır, hiçbir şey "gönderildi" sayılmaz ve `monitoring.delivery_send_failed`
-kaydı yazılır. Bunun yerine `monitoring.notifier_missing` kaydını gören bir
-worker başka bir arıza: izleme `FCM_ENABLED` kapalıyken açılmıştır ve bu
-bilinçli olarak başlangıçta reddedilir, çünkü hiç gönderilmeyen kalıcı
-uyarılar, hiç olmamış uyarılardan ayırt edilemez.
+İki şeyi ayırmak gerekir, çünkü ikisi de başlangıçta olmuyor.
+
+**Proje kimliği başlangıçta doğrulanır.** FCM proje adresine göre çalışır:
+`FCM_ENABLED=true` iken `FCM_PROJECT_ID` (ya da `GOOGLE_CLOUD_PROJECT`) çözülemez
+se worker ayakta kalmaz, `fcm.notifier_unavailable` kaydı yazar ve süreç hata ile
+çıkar. Aksi halde her gönderim ya sağlayıcı hatasıyla düşer ya da kimlik
+dosyasının adı ne projeye işaret ediyorsa oraya gider; ikisi de "kuralım çalışıyor
+sanıp" asıl kaybedilen şey operasyonel uyarıdır. Boş bir `FCM_PROJECT_ID`
+yapılandırılmamış sayılır — sır temizledikten sonra kalan o boş satır tipik
+hatadır.
+
+**Kimlik dosyası başlangıçta doğrulanmaz.** Firebase SDK'sı Application Default
+Credentials'i tembel çözer, dolayısıyla eksik, bozuk ya da servis hesabı olmayan
+bir dosya worker'ı **başlatmaz**; worker sorunsuz ayağa kalkar ve hata ilk
+gönderimde, tipli bir `DefaultCredentialsError` olarak ortaya çıkar. Bu bilinçli
+bir seçim değil, SDK'nın davranışıdır. Operasyonel olarak doğru olan da budur:
+uyarı bekleyen durumda kalır, hiçbir şey "gönderildi" sayılmaz ve
+`monitoring.delivery_send_failed` kaydı yazılır. Bu davranış
+`ops/verify-monitoring.sh` içinde doğrulanır.
+
+`monitoring.notifier_missing` kaydını gören bir worker ise üçüncü, ayrı bir
+arıza: izleme `FCM_ENABLED` kapalıyken açılmıştır ve bu bilinçli olarak
+başlangıçta reddedilir, çünkü hiç gönderilmeyen kalıcı uyarılar, hiç olmamış
+uyarılardan ayırt edilemez.
 
 ## 3. Sağlık denetimleri
 

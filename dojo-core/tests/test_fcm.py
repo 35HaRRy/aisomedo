@@ -320,6 +320,53 @@ def test_unusable_credentials_fail_startup_instead_of_degrading() -> None:
     )
 
     with pytest.raises(RuntimeError, match="FCM"):
-        FcmNotifier(messaging=FakeSender(), admin=admin)
+        FcmNotifier(messaging=FakeSender(), admin=admin, project_id="dojo-prod")
 
     assert admin.initialized == []
+
+
+@pytest.mark.parametrize("project_id", [None, "", "   "])
+def test_missing_project_id_fails_at_startup_not_on_the_first_send(
+    project_id: str | None,
+) -> None:
+    """FCM is addressed by project, so an unknown one must stop startup.
+
+    Without this the SDK falls back to whichever project the credential names,
+    or raises a provider error on the first send — after an operator has
+    already been told the deployment was fine. The credential is never read
+    here, so ``admin.initialized`` staying empty also proves the check happens
+    before any provider round trip.
+    """
+    admin = FakeAdmin()
+
+    with pytest.raises(RuntimeError, match="no Firebase project id"):
+        FcmNotifier(messaging=FakeSender(), admin=admin, project_id=project_id)
+
+    assert admin.initialized == []
+
+
+def test_a_reused_app_does_not_recheck_the_project_id() -> None:
+    """The project check only costs a deployment that is initializing.
+
+    Every notifier after the first reuses the named app, and a re-check would
+    make a second notifier in the same process fail for a setting the first one
+    already satisfied.
+    """
+    admin = FakeAdmin()
+    first = FcmNotifier(messaging=FakeSender(), admin=admin, project_id="dojo-prod")
+
+    second = FcmNotifier(messaging=FakeSender(), admin=admin)
+
+    assert first._app is second._app
+    assert len(admin.initialized) == 1
+
+
+def test_the_project_id_failure_names_the_setting_not_the_provider() -> None:
+    """The operator's fix is an environment variable, so the message says which.
+
+    A generic "FCM is misconfigured" sends the reader to the credential file,
+    which is not the missing setting, and a provider response would risk
+    echoing request content into an exception an operator pastes into a ticket.
+    """
+    with pytest.raises(RuntimeError, match="FCM_PROJECT_ID"):
+        FcmNotifier(messaging=FakeSender(), admin=FakeAdmin())

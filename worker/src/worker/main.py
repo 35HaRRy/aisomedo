@@ -128,8 +128,11 @@ def build_notifier() -> FcmNotifier | None:
 
     There is no stub fallback: a stub would report durable operational alerts
     as delivered without a provider, and a broken configuration must fail
-    startup rather than silence them. Credentials and project identity are
-    resolved by the adapter at construction.
+    startup rather than silence them. The adapter validates the project
+    identity at construction, so a missing ``FCM_PROJECT_ID`` (and
+    ``GOOGLE_CLOUD_PROJECT``) fails here. The credential FILE is not validated
+    here: the SDK resolves it lazily, so an unusable one surfaces as a typed
+    error on the first send with the alert left pending.
     """
     if os.environ.get("FCM_ENABLED", "false").strip().lower() not in FCM_ENABLED_VALUES:
         return None

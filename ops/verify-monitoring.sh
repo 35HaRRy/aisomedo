@@ -72,6 +72,7 @@ STUB="$RUNDIR/backend-stub.py"
 DEDICATED_CADDYFILE="$RUNDIR/dedicated.Caddyfile"
 LOGFILE="$RUNDIR/gateway.log"
 SEND_LOG="$RUNDIR/send.log"
+PROJECT_LOG="$RUNDIR/project.log"
 CHECK="$RUNDIR/check.py"
 
 ENV_ARG="$(hostpath "$SYNTH_ENV")"
@@ -403,6 +404,38 @@ fi
 # Application Default Credentials are resolved lazily by the SDK, so a mounted
 # but unusable credential file does not fail construction — it fails the first
 # send. What must hold is that the failure is loud and typed rather than a
+# silent success, because a send reported as delivered would drop the alert.
+# --network none proves the failure cannot be a real provider round trip.
+# Project identity, by contrast, IS validated at construction: FCM addresses by
+# project, so a deployment that cannot name one must not boot. Asserted here
+# against the real built image, because this is the claim the runbook makes.
+docker run --rm --network none \
+  -v "$(hostpath "$BAD_SECRET"):/run/secrets/firebase-credentials.json:ro" \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-credentials.json \
+  --entrypoint .venv/bin/python "$WORKER_IMAGE" -c '
+from dojo.adapters.fcm import FcmNotifier
+
+for value in (None, "", "   "):
+    try:
+        FcmNotifier(project_id=value)
+    except RuntimeError as exc:
+        print("OUTCOME raised", type(exc).__name__, "|", exc)
+    else:
+        print("OUTCOME built", value)
+' >"$PROJECT_LOG" 2>&1 || true
+if [ "$(grep -c '^OUTCOME raised RuntimeError | FCM is enabled but no Firebase project id' "$PROJECT_LOG")" = "3" ]; then
+  pass "every missing project id is rejected at construction"
+else
+  fail "every missing project id is rejected at construction"
+fi
+if grep -q "GOOGLE_APPLICATION_CREDENTIALS\|BEGIN PRIVATE KEY\|private_key" "$PROJECT_LOG"; then
+  fail "the project id failure leaks no credential text"
+else
+  pass "the project id failure leaks no credential text"
+fi
+
+# The credential FILE is not validated at construction: the SDK resolves it
+# lazily. What must hold is that the failure is loud and typed rather than a
 # silent success, because a send reported as delivered would drop the alert.
 # --network none proves the failure cannot be a real provider round trip.
 docker run --rm --network none \

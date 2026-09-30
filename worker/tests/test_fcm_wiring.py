@@ -25,6 +25,14 @@ class BrokenNotifier:
         raise RuntimeError("Application Default Credentials unavailable")
 
 
+class NoProjectNotifier:
+    """What the real adapter does when no project id can be resolved."""
+
+    def __init__(self, *, project_id: str | None = None, **kwargs: object) -> None:
+        if not project_id:
+            raise RuntimeError("FCM is enabled but no Firebase project id is configured")
+
+
 def test_disabled_fcm_builds_no_notifier_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FCM_ENABLED", "false")
 
@@ -39,6 +47,52 @@ def test_enabled_fcm_configures_project_identity(monkeypatch: pytest.MonkeyPatch
     notifier = build_notifier()
 
     assert isinstance(notifier, FakeNotifier)
+    assert notifier.project_id == "dojo-prod"
+
+
+def test_fcm_enabled_without_any_project_id_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An enabled deployment with no resolvable project must not boot.
+
+    Monitoring records alerts durably and would then report them as pending
+    forever while the operator believed FCM was live. Failing here is the only
+    outcome that cannot silently lose an alert.
+    """
+    monkeypatch.setenv("FCM_ENABLED", "true")
+    monkeypatch.delenv("FCM_PROJECT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.setattr(worker_main, "FcmNotifier", NoProjectNotifier)
+
+    with pytest.raises(RuntimeError, match="firebase_admin not configured"):
+        build_notifier()
+
+
+def test_an_empty_project_id_does_not_count_as_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A blank FCM_PROJECT_ID is the shape an operator leaves behind after
+    # clearing a secret, and it must read as absent rather than as a project.
+    monkeypatch.setenv("FCM_ENABLED", "true")
+    monkeypatch.setenv("FCM_PROJECT_ID", "   ")
+    monkeypatch.setattr(worker_main, "FcmNotifier", NoProjectNotifier)
+
+    with pytest.raises(RuntimeError):
+        build_notifier()
+
+
+def test_google_cloud_project_stands_in_for_the_fcm_project_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ADC environments export GOOGLE_CLOUD_PROJECT; requiring FCM_PROJECT_ID
+    # as well would refuse a correctly configured deployment.
+    monkeypatch.setenv("FCM_ENABLED", "true")
+    monkeypatch.delenv("FCM_PROJECT_ID", raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "dojo-prod")
+    monkeypatch.setattr(worker_main, "FcmNotifier", FakeNotifier)
+
+    notifier = build_notifier()
+
     assert notifier.project_id == "dojo-prod"
 
 

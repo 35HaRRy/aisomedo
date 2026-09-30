@@ -83,28 +83,37 @@ def _classify(error: object) -> str:
 
 
 def _ensure_app(admin: Any, *, app_name: str, project_id: str | None, timeout_seconds: int) -> Any:
-    """Reuse the named SDK app, or initialize one from default credentials.
+    """Reuse the named SDK app, or initialize one with a checked project id.
 
-    Project identity IS resolved here, at construction: a deployment with no
-    usable project fails at startup rather than at the first alert.
+    Project identity is validated HERE, at construction. FCM is addressed by
+    project: a notifier that cannot name its project would fail every send with
+    a provider error, or worse, send against whichever project the credential
+    happens to name. A deployment that enabled FCM without ``project_id`` must
+    therefore fail at startup, not at the first alert, so the check is explicit
+    and its message names the setting rather than any provider response.
 
-    Credentials are NOT. The SDK resolves Application Default Credentials
-    lazily, so a credential file that is missing, truncated, or not a service
-    account still builds a working app and fails on the first send with a
-    typed ``DefaultCredentialsError`` (or a project-id ``ValueError``). That
-    failure is loud and the alert stays pending, so nothing is silently
-    delivered, but it is a first-send failure and this docstring must not claim
+    Credentials are NOT validated here. The SDK resolves Application Default
+    Credentials lazily, so a credential file that is missing, truncated, or not
+    a service account still builds a working app and fails on the first send
+    with a typed ``DefaultCredentialsError``. That failure is loud and the
+    alert stays pending, so nothing is silently delivered — but it is a
+    first-send failure, and neither this docstring nor the runbook may claim
     otherwise.
     """
     try:
         return admin.get_app(app_name)
     except ValueError:  # not initialized yet; the named app is created below
         pass
-    options: dict[str, Any] = {"httpTimeout": timeout_seconds}
-    if project_id:
-        # Without a project id the SDK can still read one from the
-        # credential or GOOGLE_CLOUD_PROJECT, so this stays optional.
-        options["projectId"] = project_id
+    if not project_id or not project_id.strip():
+        # The reused-app path above returns first, so this only ever costs a
+        # deployment that is actually initializing. Named explicitly because a
+        # bare "FCM is misconfigured" would send the operator looking at the
+        # credential file, which is not the missing setting.
+        raise RuntimeError(
+            "FCM is enabled but no Firebase project id is configured; set FCM_PROJECT_ID "
+            "or GOOGLE_CLOUD_PROJECT so every send is addressed to a known project"
+        )
+    options: dict[str, Any] = {"httpTimeout": timeout_seconds, "projectId": project_id.strip()}
     try:
         return admin.initialize_app(
             admin.credentials.ApplicationDefault(), options, name=app_name
