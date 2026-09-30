@@ -420,7 +420,7 @@ daha kısa olsun.
 
 | Denetim | URL | Beklenen | Neden ayrı |
 |---|---|---|---|
-| Web sağlığı | `https://<DOMAIN>/web-health.txt` | HTTP 200, gövde tam olarak `dojo-web-ok` (`web/public/web-health.txt`; 12 bayt, satır sonu **yok**) | Gateway'i ve derlenmiş web varlığını kanıtlar |
+| Web sağlığı | `https://<DOMAIN>/web-health.txt` | HTTP 200, gövde tam olarak `dojo-web-ok` (`web/public/web-health.txt`; 12 bayt, son bayt satır sonu) | Gateway'i ve derlenmiş web varlığını kanıtlar |
 | API hazırlığı | `https://<DOMAIN>/ready` | HTTP 200, gövde `{"status":"ok"}` | API'nin PostgreSQL'e ulaşabildiğini kanıtlar |
 
 `/ready` başarısız olduğunda 503 ve `{"status":"unavailable"}` döner, gövde hiçbir
