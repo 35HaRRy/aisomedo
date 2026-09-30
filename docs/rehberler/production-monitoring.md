@@ -85,7 +85,8 @@ buradaki hiçbir betik tarafından yazdırılmaz. Container'a yalnızca Compose
 secret olarak ulaşır; bu salt okunurdur ve `docker inspect` çıktısında
 görünmez.
 
-İki şeyi ayırmak gerekir, çünkü ikisi de başlangıçta olmuyor.
+İki şeyi ayırmak gerekir, çünkü ikisi de aynı anda başlangıçta olmuyor:
+**proje kimliği başlangıçta doğrulanır, kimlik dosyası ilk gönderimde çözülür.**
 
 **Proje kimliği başlangıçta doğrulanır.** FCM proje adresine göre çalışır:
 `FCM_ENABLED=true` iken `FCM_PROJECT_ID` (ya da `GOOGLE_CLOUD_PROJECT`) çözülemez

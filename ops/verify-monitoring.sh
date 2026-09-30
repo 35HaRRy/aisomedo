@@ -362,6 +362,8 @@ if compose -f "$(hostpath "$EXISTING")" -f "$(hostpath "$MONITORING")" config >/
 else
   fail "monitoring override renders with a credential file"
 fi
+# Both required settings must fail the render, not boot: an unset credential
+# path would mount nothing, and an unset project id crash-loops the worker.
 EMPTY_ENV="$RUNDIR/no-credential.env"
 grep -v '^FCM_CREDENTIALS_FILE=' "$SYNTH_ENV" >"$EMPTY_ENV"
 if docker compose -p "$PROJ" --env-file "$(hostpath "$EMPTY_ENV")" \
@@ -370,6 +372,15 @@ if docker compose -p "$PROJ" --env-file "$(hostpath "$EMPTY_ENV")" \
   fail "monitoring override refuses to render without a credential file"
 else
   pass "monitoring override refuses to render without a credential file"
+fi
+NO_PROJECT_ENV="$RUNDIR/no-project.env"
+grep -v '^FCM_PROJECT_ID=' "$SYNTH_ENV" >"$NO_PROJECT_ENV"
+if docker compose -p "$PROJ" --env-file "$(hostpath "$NO_PROJECT_ENV")" \
+  -f "$(hostpath "$PROD")" -f "$(hostpath "$EXISTING")" \
+  -f "$(hostpath "$MONITORING")" config >/dev/null 2>&1; then
+  fail "monitoring override refuses to render without a project id"
+else
+  pass "monitoring override refuses to render without a project id"
 fi
 
 # ---- Phase F: the mounted secret is present and read-only ----------------

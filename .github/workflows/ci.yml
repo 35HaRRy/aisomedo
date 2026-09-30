@@ -50,17 +50,21 @@ jobs:
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.yml config
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml config
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml config
-      # The monitoring override requires FCM_CREDENTIALS_FILE, so CI renders it
-      # against a throwaway placeholder with no project, key or token. Render
-      # only: nothing is started, so no notification can ever be sent, and no
-      # real credential is read or needed.
+      # The monitoring override requires BOTH the credential path and the
+      # project id, so CI supplies throwaway values with no real project, key
+      # or token. Render only: nothing is started, so no notification can ever
+      # be sent, and no real credential is read or needed.
       - name: Render the monitoring override
         run: |
           set -euo pipefail
           dummy="$(mktemp)"
           trap 'rm -f "$dummy" .ci-monitoring.env' EXIT
           printf '{"type":"service_account","project_id":"ci-not-a-project"}\n' >"$dummy"
-          { cat ops/.env.example; echo "FCM_CREDENTIALS_FILE=$dummy"; } >.ci-monitoring.env
+          {
+            cat ops/.env.example
+            echo "FCM_CREDENTIALS_FILE=$dummy"
+            echo "FCM_PROJECT_ID=ci-not-a-project"
+          } >.ci-monitoring.env
           docker compose --env-file .ci-monitoring.env \
             -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml \
             -f ops/docker-compose.monitoring.yml config

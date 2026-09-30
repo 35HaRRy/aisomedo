@@ -41,8 +41,13 @@ services:
       # still wants. See docs/rehberler/production-monitoring.md for the host
       # filesystems that are not covered by the default pair.
       MONITORING_DISK_PATHS: ${MONITORING_DISK_PATHS:-}
-      # Optional: the Firebase project is otherwise read from the credential.
-      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+      # Required, like FCM_CREDENTIALS_FILE below. FCM addresses by project, so
+      # a deployment that cannot name one crash-loops the worker instead of
+      # dropping alerts. The `:?` makes that a render failure with a fixable
+      # message rather than a restart loop; GOOGLE_CLOUD_PROJECT is honoured by
+      # the worker too, but Compose can only guard the one variable this file
+      # passes through.
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:?set FCM_PROJECT_ID in .env to the Firebase project id}
     secrets:
       - source: firebase_credentials
         target: firebase-credentials.json

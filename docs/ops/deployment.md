@@ -40,7 +40,8 @@ so a missing flag fails fast instead of booting with empty defaults.
 | `META_*` | OAuth | `META_APP_ID/SECRET`, `META_REDIRECT_URI` (public `https://…/api/meta/oauth/callback`), `META_ALLOWED_RETURN_URIS` (public origins), `META_TOKEN_ENCRYPTION_KEY`, `META_OAUTH_SCOPE`, `META_GRAPH_VERSION` |
 | `WORKER_INTERVAL_SECONDS` | no (`10`) | Scheduler tick interval |
 | `FCM_CREDENTIALS_FILE` | monitoring only | Host path to the Firebase service-account JSON; mounted read-only as a Compose secret. **Required** (Compose fails the render) when `ops/docker-compose.monitoring.yml` is used, and read by no other file |
-| `FCM_PROJECT_ID`, `MONITORING_*` | no | Operational-alert settings; see the monitoring runbook |
+| `FCM_PROJECT_ID` | monitoring only | Firebase project (`GOOGLE_CLOUD_PROJECT` is also read). **Required** when `ops/docker-compose.monitoring.yml` is used: FCM addresses by project, and the worker refuses to start without one |
+| `MONITORING_*` | no | Disk sampling interval, thresholds and targets; see the monitoring runbook |
 
 `ops/docker-compose.monitoring.yml` is an optional third `-f` that adds disk
 monitoring and FCM alerts. It is not part of the base contract below, and CI
