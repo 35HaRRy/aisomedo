@@ -49,7 +49,7 @@ Tüm ayarlar `ops/.env` içindedir. Boş bırakmak varsayılandır; bu yüzden h
 | Değişken | Varsayılan | Anlamı |
 |---|---|---|
 | `FCM_CREDENTIALS_FILE` | **izleme override'i ile zorunlu** | Firebase servis-hesabı JSON'unun mutlak host yolu. `/run/secrets/firebase-credentials.json` adresine salt okunur bağlanır |
-| `FCM_PROJECT_ID` | — (`GOOGLE_CLOUD_PROJECT` de okunur) | Firebase projesi. İzleme override'i ile **zorunlu**: FCM proje adresine göre çalışır ve projesini bilemeyen bir dağıtım başlangıçta başarısız olur (§2) |
+| `FCM_PROJECT_ID` | — (işlevsel olarak `GOOGLE_CLOUD_PROJECT` de okunur, **ama Compose render'ı için yetmez**) | Firebase projesi. İzleme override'i ile **zorunlu**: FCM proje adresine göre çalışır ve projesini bilemeyen bir dağıtım başlangıçta başarısız olur (§2) |
 | `MONITORING_INTERVAL_SECONDS` | `60` | Disk örnekleme aralığı |
 | `MONITORING_DISK_LOW_PERCENT` | `15` | Bu boş oranın altında düşük alan olayı açılır |
 | `MONITORING_DISK_RECOVERY_PERCENT` | `20` | Bu boş oranında ve üstünde kurtarılır |
@@ -74,11 +74,29 @@ worker başlangıcını başarısız kılar.
    ```bash
    sudo install -m 600 -o dojo -g dojo ~/firebase-adminsdk.json /etc/dojo/firebase-credentials.json
    ```
-3. `ops/.env` içine yalnızca **yolu** yazın:
+3. Firebase konsolundan **proje kimliğini** not edin. Proje Ayarları → Genel →
+   Proje kimliği (`…appspot.com` ya da `…firebaseio.com` söyleyen `project_id`
+   alanı). Bu, `FCM_PROJECT_ID` olacak; servis hesabı JSON'unda da aynı
+   `project_id` bulunur, ikisi aynı olmalıdır.
+4. `ops/.env` içine **ikisini de** yazın — ikisi de zorunludur:
    ```
    FCM_CREDENTIALS_FILE=/etc/dojo/firebase-credentials.json
+   FCM_PROJECT_ID=dojo-uretim-projesi
    ```
-4. Worker'ı `up -d` ile ayağa kaldırın.
+   `FCM_PROJECT_ID` boş bırakılırsa `ops/docker-compose.monitoring.yml` bu
+   dosyayı `:?` ile koruduğu için **render** başarısız olur
+   (`set FCM_PROJECT_ID in .env to the Firebase project id`) ve hiçbir container
+   ayağa kalkmaz. Bu, kasıtlıdır: projesiz bir FCM her gönderimi ya
+   sağlayıcı hatasıyla düşürür ya da kimlik dosyasının adı ne projeye
+   işaret ediyorsa oraya gönderir.
+5. Worker'ı `up -d` ile ayağa kaldırın.
+
+`GOOGLE_CLOUD_PROJECT` **kodda** `FCM_PROJECT_ID` yerine geçer
+(`worker/tests/test_fcm_wiring.py`), ama bu override'da tek başına işe
+yaramaz: Compose yalnızca `FCM_PROJECT_ID`'yi kendi ortamına geçirir ve onu
+`:?` ile korur, `GOOGLE_CLOUD_PROJECT`'ü okumaz. İkisini birden ayarlamak
+sorun değil, ama `GOOGLE_CLOUD_PROJECT` yazıp `FCM_PROJECT_ID`'yi
+atlamak render hatası üretir.
 
 JSON dosyası asla depoya kopyalanmaz, asla bir ortam değişkenine konmaz ve
 buradaki hiçbir betik tarafından yazdırılmaz. Container'a yalnızca Compose
@@ -117,6 +135,12 @@ uyarılardan ayırt edilemez.
 |---|---|---|---|
 | `backend` | `GET /ready` (sınırlı DB bağlantısı) | 15sn aralık, 5sn zaman aşımı, 3 deneme, 30sn başlangıç süresi | API PostgreSQL'e ulaşamıyor. `/health` ucuz canlılık rotası olarak kalır ve üretimde o denetlenmez |
 | `worker` | `python -m worker.health` | aynı | Eksik, bozuk, yabancı önyük veya bayat ilerleme kaydı. Meşgul süresi içindeki bir render sağlıklı kalır; takılan render değil |
+
+Üçünün de sağlıklı olduğu kanıtı `docker compose … ps` çıktısında üç `healthy`
+satırıdır; bu, canlı kanıt olarak
+[`docs/verification/issue-22-production-monitoring.md`](../verification/issue-22-production-monitoring.md)
+içindeki `health_backend_status` / `health_worker_status` /
+`health_gateway_status` alanlarına yazılır.
 | `gateway` | `GET http://127.0.0.1:8081/web-health.txt` | aynı | Derlenmiş web varlığı sunulmuyor. Bilinçli olarak herkese açık site değil, döngü dinleyicisi |
 
 ```bash
@@ -326,8 +350,61 @@ daha kısa olsun.
 
 | Denetim | URL | Beklenen | Neden ayrı |
 |---|---|---|---|
-| Web sağlığı | `https://<DOMAIN>/web-health.txt` | HTTP 200, gövde `ok` içerir | Gateway'i ve derlenmiş web varlığını kanıtlar |
-| API hazırlığı | `https://<DOMAIN>/ready` | HTTP 200, gövde `"status":"ok"` içerir | API'nin PostgreSQL'e ulaşabildiğini kanıtlar |
+| Web sağlığı | `https://<DOMAIN>/web-health.txt` | HTTP 200, gövde tam olarak `dojo-web-ok` (`web/public/web-health.txt`; sonunda tek satır sonu var) | Gateway'i ve derlenmiş web varlığını kanıtlar |
+| API hazırlığı | `https://<DOMAIN>/ready` | HTTP 200, gövde `{"status":"ok"}` | API'nin PostgreSQL'e ulaşabildiğini kanıtlar |
+
+`/ready` başarısız olduğunda 503 ve `{"status":"unavailable"}` döner, gövde hiçbir
+zaman sır taşımaz. İki denetim de **gövde** beklediği için yalnızca durum kodu
+yeterli değildir: durum kodu tek başına SPA fallback'inin `index.html`'yi 200
+ile döndürmesini geçirirdi.
+
+### Sağlayıcının karşılaması gereken yetenekler
+
+Sağlayıcı seçimi deployment işidir ve uygulama kodu sağlayıcıdan bağımsızdır.
+Seçim yaparken **bu dört yeteneğin dördü de** gereklidir; biri eksikse o
+sağlayıcı bu denetim için kullanılamaz:
+
+1. **Gövde (keyword) doğrulaması** — istek gövdesinde bir dizi arayabilmeli.
+   Yoksa SPA fallback denetimi geçer ve denetim hiçbir şey kanıtlamaz.
+2. **Sertifika doğrulama** — TLS sertifikasını doğrulamalı ve doğrulamayı
+   kapatma seçeneği kapalı olmalı (ya da kapatılmamalı).
+3. **Beş dakikadan kısa aralık** — saniye cinsinden aralık ayarlanabilmeli.
+4. **Bağımsız bildirim kanalı** — sağlayıcının kendi kanalından kesinti ve
+   kurtarma bildirimi (e-posta, SMS, telefon, anlık bildirim, Slack).
+
+Dördünü karşılamayan bir sağlayıcı "izleme var" sayılmaz.
+
+### Doğrulanmış örnek: Better Stack Uptime
+
+Bu alt bölüm bilgilendirme amaçlıdır; bir zorunluluk değildir ve seçilmiş bir
+sağlayıcı ilan etmez. Kaynaklar **2026-09-30** tarihinde ctx7
+(`/websites/betterstack_uptime`) ve betterstack.com üzerinden çekildi; kendi
+hesabınızda doğrulamadan önce güncel sayfayı tekrar okuyun.
+
+Kaynaklar:
+<https://betterstack.com/docs/uptime/api/update-an-existing-monitor>,
+<https://betterstack.com/docs/uptime/api/monitors-api-response-params>,
+<https://betterstack.com/docs/uptime/api-monitor>,
+<https://betterstack.com/docs/uptime/monitoring-start>,
+<https://betterstack.com/pricing>
+
+| Yetenek | Durum | Dayanak |
+|---|---|---|
+| Gövde doğrulaması | **Var** | `monitor_type` değerleri arasında `keyword`; `required_keyword` alanı, "bu anahtar sayfanızda yoksa yeni bir incident açar" |
+| Sertifika doğrulama | **Var** | Monitör yanıtında `attributes.verify_ssl` — "SSL sertifikası geçerliliğini doğrula" |
+| Aralık | **Karşılar** | `check_frequency` saniye cinsinden, varsayılan 30; "zaman aşımı değerinden büyük veya eşit olmalı". Fiyat sayfası en kısa aralığı 30 saniye olarak listeler; 300 saniye (5 dk) sınırın içinde |
+| Bildirim kanalları | **Var** | `email`, `sms`, `call` (telefon), `push`, `critical_alert`, ayrıca `policy_id` ile tırmanma politikası; Slack/MS Teams/Zapier/webhook entegrasyonları |
+| Yönlendirme izleme | **Kapatılabilir** | `follow_redirects` alanı; SPA fallback'i geçirmemek için `false` olmalı |
+| Ücretsiz katman | **İki denetim için yeterli** | Fiyat sayfası: 10 monitör, Slack ve e-posta uyarıları. Ücretli katman SMS/telefon ekler |
+| Sertifika **bitiş** uyarısı | **Ücretli** | `ssl_expiration` alanı mevcut; "sertifika son kullanma uyarıları aktif ücretli abonelik gerektirir" — bu, denetim sırasındaki doğrulamadan farklıdır |
+
+Beklenmedik davranış: bir `policy_id` atanmışsa basit `call`/SMS/e-posta/push
+ayarları yok sayılır. Bağımsız kanalı "e-posta" ile sağlamak istiyorsanız
+monitöre tırmanma politikası atamayın ya da politikayı e-posta adımıyla
+tanımlayın.
+
+Kaynak kodda **hiçbir** sağlayıcı adı geçmez: denetimler dışarıdan yapılan
+HTTP GET talepleridir ve uygulama onların varlığını bilmez.
 
 Tek değil iki denetim, çünkü hata biçimleri bağımsızdır: ölü bir veritabanı
 `/ready`'yi başarısız kılarken web sağlık varlığı hâlâ 200 döner ve tam olarak
@@ -354,6 +431,36 @@ Sağlayıcı adını, denetim kimliklerini, her iki URL'yi ve aşağıdaki kanı
 kaydedin. Bu canlı doğrulamadır; bir rehberin var olması, bir denetimin var
 olduğunun kanıtı değildir.
 
+Denetimleri kurduktan **sonra, kesintiye başlamadan önce** şu ön-uçuşu
+yapın; SPA fallback bu iki şeyle ayırt edilir:
+
+```bash
+# 1. Her iki URL doğrudan beklenen yanıtı vermeli
+curl -sS -o /dev/null -w '%{http_code}\n' https://<DOMAIN>/web-health.txt   # 200
+curl -sS https://<DOMAIN>/web-health.txt                                  # dojo-web-ok
+curl -sS -o /dev/null -w '%{http_code}\n' https://<DOMAIN>/ready           # 200
+curl -sS https://<DOMAIN>/ready                                           # {"status":"ok"}
+```
+
+2. **SPA fallback'in neden yalnızca durum koduyla yakalanamayacağını görün.**
+   Bilinmeyen her yol `index.html`'e düşer ve **200** döner:
+
+   ```bash
+   curl -sS -o /dev/null -w '%{http_code}\n' https://<DOMAIN>/olmayan-yol   # 200
+   curl -sS https://<DOMAIN>/olmayan-yol | head -c 60                       # <!doctype html>...
+   ```
+
+   Yani 200'e bakan bir monitör burada **geçer**. Doğru sonuç: monitörün
+   `dojo-web-ok` dizisini aradığından emin olun — sağlayıcının gövde
+   doğrulama ayarı açık değilse bu denetim gerçekte hiçbir şey kanıtlamaz.
+
+3. `/web-health.txt` varlığı gerçekten derlenmiş mi (yoksa 404, SPA değil):
+
+   ```bash
+   # varlık yokken de gateway 404 döner, index.html'e düşmez
+   docker exec dojo-prod-gateway-1 ls -l /srv/web-health.txt
+   ```
+
 ```bash
 # Kontrollü kesinti: yalnızca API'yi durdurun. Web sağlık varlığı 200 kalmalı.
 docker compose --env-file ops/.env -p dojo-prod \
@@ -368,6 +475,97 @@ docker compose --env-file ops/.env -p dojo-prod \
 Ardından, host izin veriyorsa tam kesinti (`docker compose … stop` ya da VPS'i
 durdurma): her iki denetim de DOWN bildirmeli ve sağlayıcının kendi bildirimi
 gelmelidir.
+
+### Kaydedilecek alanlar
+
+Sonuçları, alan adlarını şu kayda yazın:
+[`docs/verification/issue-22-production-monitoring.md`](../verification/issue-22-production-monitoring.md).
+O dosya alanları `PENDING` olarak tanımlar; tatbikat sonrası yalnızca **gerçekten
+gördüğünüz** değerlerle doldurulur.
+
+| Alan | Ne yazılır |
+|---|---|
+| `monitor_provider` | Sağlayıcının adı ve hesabın sahibi (kim, hangi ekip/kisi) |
+| `monitor_web_health_id` / `monitor_api_ready_id` | Sağlayıcının verdiği iki denetim kimliği |
+| `monitor_web_health_url` / `monitor_api_ready_url` | `https://` ile başlayan tam URL'ler |
+| `monitor_interval_seconds` | Kurulan aralık (≤ 300) |
+| `monitor_certificate_validation` | Doğrulamanın açık olduğunun nasıl doğrulandığı |
+| `monitor_body_assertion_verified` | Gövde doğrulamasının nasıl doğrulandığı (bkz. ön-uçuş) |
+| `monitor_notification_contact` | Bildirim kanalı ve **teslim** alındığına dair gözlem |
+| `outage_detected_at` / `recovery_detected_at` | DOWN ve UP zaman damgaları (UTC) |
+| `outage_receipt` | Kesinti ve kurtarma bildiriminin alındığı kanal + zaman |
+
+Asla kaydedilmez: sağlayıcı API anahtarı, cihaz/push token'ı, `ops/.env`
+içeriği, Firebase kimlik dosyasının herhangi bir parçası.
+
+### Android uyarı doğrulaması (sentetik, üretim diski doldurmadan)
+
+Bu adım **#32 (eşleştirme) ve #36 (FCM alıcısı)** düşene kadar
+yapılamaz; o iki issue açıkken bu bölüm "yapılamaz" olarak kaydedilir, uydurma
+bir gözlem yazılmaz. İstemcinin uygulayacağı sözleşme
+[`docs/contracts/operational-alerts.md`](../contracts/operational-alerts.md)
+dosyasındadır; kabul adımları (ön plan / arka plan / değiştirme / inceleme varsayımı
+yok) aynı dosyanın "Prerequisites and acceptance" bölümündedir.
+
+Disk uyarısını **diski doldurmadan** üretmek, üretim diski doldurmak yerine
+eşikleri değiştirmektir. Doğrulama kuralı `0 < low < recovery <= 100`
+olduğundan şu iki ayar yeterlidir:
+
+```bash
+# disk.low uyarısı üret: gerçek boş alan oranı %99'un altında olduğu için olay açar
+# ops/.env  ->  MONITORING_DISK_LOW_PERCENT=99
+#              MONITORING_DISK_RECOVERY_PERCENT=100
+docker compose --env-file ops/.env -p dojo-prod -f ops/docker-compose.prod.yml \
+  -f ops/docker-compose.<mode>.yml -f ops/docker-compose.monitoring.yml up -d worker
+# Bir toplama turu bekle (varsayılan 60sn), cihazda "Disk alanı azalıyor" bildirimi gör.
+
+# disk.recovered uyarısı üret: gerçek boş alan %2'nin üstünde olduğu için kurtarır
+# ops/.env  ->  MONITORING_DISK_LOW_PERCENT=1
+#              MONITORING_DISK_RECOVERY_PERCENT=2
+# -> "Disk alanı normale döndü" bildirimi; aynı incident, ikinci uyarı değil.
+```
+
+**Yeniden teslim nasıl zorlanır — dürüst cevap:** `restart` ile olmaz. Olay
+durumu kalıcıdır, yeniden başlatma ikinci bir `disk.low` üretmez. Aynı
+`alert_id`'nin ikinci kez kabul edilmesi yalnızca "sağlayıcı kabul etti ama
+onay kaydedilmedi" durumunda (kayıp onay / süresi dolmuş kiralama) olur ve
+operatör tarafından güvenilir biçimde *deterministik olarak* üretilemez; kod
+yolu `dojo-core/tests/test_monitoring_delivery.py::test_lost_acknowledgement_redelivers_the_same_alert_and_tag`
+ile test edilmiştir. Bu yüzden canlı kayıtta `android_redelivery_replaces`
+**PENDING** kalabilir ve bu dürüst bir sonuçtur — uydurma bir gözlem yazmayın.
+
+Geçici taşıma hatasından sonra kurtarma ise canlı olarak üretilebilir:
+
+```bash
+# 1. Kimlik dosyasını geçici olarak geçersiz bir dosyayla değiştirin
+sudo install -m 600 -o dojo -g dojo /dev/null /etc/dojo/firebase-credentials.json
+docker compose … up -d worker
+# -> monitoring.delivery_send_failed, uyarı PENDING kalır, "gönderildi" denmez
+# 2. Gerçek dosyayı geri koyun ve worker'ı yeniden başlatın
+sudo install -m 600 -o dojo -g dojo ~/firebase-adminsdk.json /etc/dojo/firebase-credentials.json
+docker compose … up -d worker
+# -> bekleyen uyarı aynı alert_id ile bir sonraki teslim turunda gider
+```
+
+`job.failed` uyarısı için var olmayan bir iş kaynağı yaratın (ör. geçersiz
+medya yolu olan bir paket) veya `monitoring.` olayları arasında
+`job.failed` gövdesini arayın; sıfır cihaz varsa uyarı `PENDING` kalır ve bu
+doğru davranıştır, teslim edilmiş sayılmaz.
+
+Beklenen gözlemler (kanıt kaydında alan adlarıyla):
+
+| Alan | Ne yazılır |
+|---|---|
+| `android_device_build` | Cihaz modeli + APK build kimliği (token **yok**) |
+| `android_foreground_display` | Ön planda Türkçe başlık/gövdenin görüldüğü |
+| `android_background_display` | Arka planda (ayrıca kapatılmışken) bildirim tepsisinde görüldüğü |
+| `android_tag_equals_alert_id` | `adb shell dumpsys notification` çıktısında etiketin `alert_id` ile aynı olduğu |
+| `android_redelivery_replaces` | Aynı uyarı ikinci kez geldiğinde tek bildirim kaldığı |
+| `android_no_review_navigation` | Bildirime dokununca inceleme ekranı değil pano açıldığı |
+| `android_transport_retry_recovery` | Geçici taşıma hatasından sonra uyarının yeniden geldiği |
+
+`adb shell dumpsys notification` çıktısı bir **push token içerebilir**; kanıt
+kaydına yalnızca ilgili bildirim satırları yazılır, ham çıktı yazılmaz.
 
 ## 7. Sır sızdırmadan sorun giderme
 
@@ -423,3 +621,12 @@ bilgisi yoktur ve FCM denetimlerini ağ olmadan çalıştırır.
 Bu ikisi **canlı** doğrulamanın yerine geçmez: gerçek bir Android cihazı
 sentetik bir uyarıyı görüntülemeden ve yukarıdaki barındırılan kesinti/kurtarma
 tatbikatı yapılıp kaydedilmeden #22 tamamlanmış sayılmaz.
+
+### Kanıt kaydı nerede
+
+Kabul ölçütü başına alan alan sonuçlar ve PENDING/BLOCKED gerekçeleri
+[`docs/verification/issue-22-production-monitoring.md`](../verification/issue-22-production-monitoring.md)
+dosyasındadır. Android tarafındaki karşılık, uygulanacak istemci sözleşmesi
+[`docs/contracts/operational-alerts.md`](../contracts/operational-alerts.md)
+dosyasındadır; bu ikisi birlikte, kodu okumadan bu işi yürütebilecek bir operatör
+içindir.
