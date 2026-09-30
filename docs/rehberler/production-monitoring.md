@@ -135,13 +135,13 @@ uyarılardan ayırt edilemez.
 |---|---|---|---|
 | `backend` | `GET /ready` (sınırlı DB bağlantısı) | 15sn aralık, 5sn zaman aşımı, 3 deneme, 30sn başlangıç süresi | API PostgreSQL'e ulaşamıyor. `/health` ucuz canlılık rotası olarak kalır ve üretimde o denetlenmez |
 | `worker` | `python -m worker.health` | aynı | Eksik, bozuk, yabancı önyük veya bayat ilerleme kaydı. Meşgul süresi içindeki bir render sağlıklı kalır; takılan render değil |
+| `gateway` | `GET http://127.0.0.1:8081/web-health.txt` | aynı | Derlenmiş web varlığı sunulmuyor. Bilinçli olarak herkese açık site değil, döngü dinleyicisi |
 
 Üçünün de sağlıklı olduğu kanıtı `docker compose … ps` çıktısında üç `healthy`
 satırıdır; bu, canlı kanıt olarak
 [`docs/verification/issue-22-production-monitoring.md`](../verification/issue-22-production-monitoring.md)
 içindeki `health_backend_status` / `health_worker_status` /
 `health_gateway_status` alanlarına yazılır.
-| `gateway` | `GET http://127.0.0.1:8081/web-health.txt` | aynı | Derlenmiş web varlığı sunulmuyor. Bilinçli olarak herkese açık site değil, döngü dinleyicisi |
 
 ```bash
 docker compose --env-file ops/.env -p dojo-prod \
@@ -527,12 +527,24 @@ docker compose --env-file ops/.env -p dojo-prod -f ops/docker-compose.prod.yml \
 
 **Yeniden teslim nasıl zorlanır — dürüst cevap:** `restart` ile olmaz. Olay
 durumu kalıcıdır, yeniden başlatma ikinci bir `disk.low` üretmez. Aynı
-`alert_id`'nin ikinci kez kabul edilmesi yalnızca "sağlayıcı kabul etti ama
-onay kaydedilmedi" durumunda (kayıp onay / süresi dolmuş kiralama) olur ve
-operatör tarafından güvenilir biçimde *deterministik olarak* üretilemez; kod
-yolu `dojo-core/tests/test_monitoring_delivery.py::test_lost_acknowledgement_redelivers_the_same_alert_and_tag`
-ile test edilmiştir. Bu yüzden canlı kayıtta `android_redelivery_replaces`
-**PENDING** kalabilir ve bu dürüst bir sonuçtur — uydurma bir gözlem yazmayın.
+`alert_id`'nin ikinci kez kabul edilmesi, sağlayıcı kabul ettiği hâlde onayın
+kaydedilmeden ölmesi durumunda olur ve **böyle bir tetikleyici vardır**:
+
+- teslim kiralaması 60 saniyedir (`claim_alert_delivery(..., lease_seconds=60)`,
+  `dojo-core/src/dojo/adapters/db.py:1367`),
+- gönderim ile onay ayrı adımlardır (`deliver_pending` → gönderir → `_acknowledge`,
+  `dojo-core/src/dojo/monitoring.py:100-126`).
+
+Yani worker'ı **FCM kabul ettikten hemen sonra, onay yazılmadan** `SIGKILL`
+ile düşürürseniz (ör. `docker kill --signal=SIGKILL dojo-prod-worker-1`), kiralama
+sahipsiz kalır; 60 saniye sonra bir sonraki teslim turu aynı uyarıyı aynı
+`alert_id` ile yeniden gönderir ve cihazda **değiştirme** beklenir.
+
+Bu pencere dar olduğu için sonuç **belirlenimci değildir**; birkaç deneme
+gerekebilir. Kod yolu testlerle doğrulanmıştır:
+`dojo-core/tests/test_monitoring_delivery.py::test_lost_acknowledgement_redelivers_the_same_alert_and_tag`
+ve `::test_expired_lease_is_reclaimed_and_its_stale_acknowledgement_refused`.
+Gözlem yapılamazsa alan `PENDING` kalır; benzetilmiş bir gözlem yazılmaz.
 
 Geçici taşıma hatasından sonra kurtarma ise canlı olarak üretilebilir:
 
