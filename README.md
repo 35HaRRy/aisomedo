@@ -154,3 +154,14 @@ Client message contract:
 ## Domain language
 
 Canonical terminology (`Dojo Paylaşım Paketi`, `Dojo Yayın Planı`, `Yayın Zamanı`, `Yayın İncelemesi`, `Tamamlanmış Paket`) is defined in [`CONTEXT.md`](CONTEXT.md). The full product spec lives in [`docs/specs/dojo-reel-publishing-mvp.md`](docs/specs/dojo-reel-publishing-mvp.md).
+# Web dashboard worker health
+
+The worker writes progress to the `worker-health` runtime volume. The backend
+mounts it read-only; dashboard health never substitutes API readiness for worker
+progress. Both Compose bases use `/run/dojo-worker/health.json`.
+
+When upgrading an existing `.env`, replace the old
+`WORKER_HEALTH_PATH=/tmp/dojo-worker-health.json` value with
+`WORKER_HEALTH_PATH=/run/dojo-worker/health.json`. Custom container paths must stay
+inside `/run/dojo-worker`. Outside Compose, configure the backend and worker to
+use the same local file. Missing records show unknown; stale records show unhealthy.

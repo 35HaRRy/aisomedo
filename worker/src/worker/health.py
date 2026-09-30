@@ -8,28 +8,9 @@ import tempfile
 from pathlib import Path
 from time import monotonic
 
-HEALTH_VERSION = 1
+from dojo.worker_health import HEALTH_VERSION, current_boot_id, read_worker_status
 
 DEFAULT_PATH = Path("/tmp/dojo-worker-health.json")
-
-_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
-
-
-def current_boot_id() -> str:
-    """Linux boot identifier; reboot changes it so stale files cannot pass."""
-    try:
-        boot_id = _BOOT_ID_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        boot_id = ""
-    if boot_id:
-        return boot_id
-    # Non-Linux fallback (dev/CI only): stable across processes on one
-    # machine so the CLI and worker agree; production always uses boot_id.
-    import socket
-    import uuid
-
-    return f"fallback-{socket.gethostname()}-{uuid.getnode():x}"
-
 
 def _validate_timeout(value: float, name: str) -> float:
     seconds = float(value)
@@ -114,33 +95,7 @@ class WorkerHealth:
 
 def check_health(path: Path) -> bool:
     """True only for a fresh same-boot idle/busy record before its deadline."""
-    try:
-        raw = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return False
-    try:
-        record = json.loads(raw)
-    except ValueError:
-        return False
-    if not isinstance(record, dict):
-        return False
-    if record.get("version") != HEALTH_VERSION:
-        return False
-    if record.get("phase") not in ("idle", "busy"):
-        return False
-    if record.get("boot_id") != current_boot_id():
-        return False
-    written = record.get("monotonic")
-    deadline = record.get("deadline")
-    if (
-        not isinstance(written, (int, float))
-        or not isinstance(deadline, (int, float))
-        or not math.isfinite(written)
-        or not math.isfinite(deadline)
-        or deadline <= written
-    ):
-        return False
-    return monotonic() < deadline
+    return read_worker_status(path).status == "healthy"
 
 
 def main(argv: list[str] | None = None) -> int:
