@@ -36,13 +36,27 @@ FCM_APP_NAME = "dojo-fcm"
 ALERT_TAG_DATA_KEY = "alert_id"
 
 #: Only a proven unregistered token may delete a registration. A generic
-#: ``invalid-argument`` is at least as likely to be a rejected payload, and
+#: ``INVALID_ARGUMENT`` is at least as likely to be a rejected payload, and
 #: deleting a live registration would silently stop delivery for that device
-#: until it registered again. ``not-found`` is the HTTP-mapped code the SDK
-#: uses for ``UnregisteredError``; the class name keeps the check correct if
-#: that mapping ever changes.
-INVALID_TOKEN_CODES = frozenset({"not-found"})
+#: until it registered again.
+#:
+#: Detection is by error class, never by error code. The SDK raises
+#: ``UnregisteredError`` (a ``NotFoundError``) only when the FCM error detail
+#: says ``UNREGISTERED``, while the code it inherits is the shared
+#: ``NOT_FOUND`` — which an unknown project id also produces. Matching the code
+#: would therefore delete every registration of a mis-provisioned deployment,
+#: so only the class name counts.
 INVALID_TOKEN_ERROR_NAMES = frozenset({"UnregisteredError"})
+
+#: A sender-id mismatch proves the notification is addressed to the wrong
+#: Firebase project (bad credentials or project identity), not that a token is
+#: dead. It must never delete a registration, and it must not be logged like a
+#: network outage either, so it gets its own status below.
+CONFIGURATION_ERROR_NAMES = frozenset({"SenderIdMismatchError"})
+
+#: ``status`` value that separates a mis-provisioned FCM project from an
+#: ordinary transient failure in the structured logs.
+FCM_STATUS_CONFIG = "config"
 
 
 def _import(module: str) -> Any:
@@ -54,13 +68,18 @@ def _import(module: str) -> Any:
         ) from exc
 
 
-def _is_invalid_token(error: object) -> bool:
-    """True only for an error that proves the token itself is unusable."""
-    if error is None:
-        return False
-    if getattr(error, "code", None) in INVALID_TOKEN_CODES:
-        return True
-    return type(error).__name__ in INVALID_TOKEN_ERROR_NAMES
+def _classify(error: object) -> str:
+    """Bucket a failed send: ``"invalid"``, ``"config"`` or ``"retry"``.
+
+    Only ``"invalid"`` may lead to a registration being deleted, so the bucket
+    is decided by the error class rather than by a shared error code.
+    """
+    name = type(error).__name__ if error is not None else ""
+    if name in INVALID_TOKEN_ERROR_NAMES:
+        return "invalid"
+    if name in CONFIGURATION_ERROR_NAMES:
+        return FCM_STATUS_CONFIG
+    return "retry"
 
 
 def _ensure_app(admin: Any, *, app_name: str, project_id: str | None, timeout_seconds: int) -> Any:
@@ -182,6 +201,7 @@ class FcmNotifier:
         delivered: list[str] = []
         invalid: list[str] = []
         transient: list[str] = []
+        misconfigured = 0
         for index, token in enumerate(tokens):
             if index >= len(responses):
                 # Truncated batch: the provider never answered for this token.
@@ -190,10 +210,24 @@ class FcmNotifier:
             result = responses[index]
             if getattr(result, "success", False):
                 delivered.append(token)
-            elif _is_invalid_token(getattr(result, "exception", None)):
+                continue
+            bucket = _classify(getattr(result, "exception", None))
+            if bucket == "invalid":
                 invalid.append(token)
-            else:
-                transient.append(token)
+                continue
+            transient.append(token)
+            if bucket == FCM_STATUS_CONFIG:
+                misconfigured += 1
+        if misconfigured:
+            # Counted, never identified: a registration token never reaches a
+            # log line, and the cause (wrong project) is a deployment fault
+            # that must not read like a network outage.
+            logger.warning(
+                "%d recipient(s) rejected for a sender-id mismatch: check the FCM "
+                "project identity and credentials",
+                misconfigured,
+                extra={"event": "fcm.sender_id_mismatch", "status": FCM_STATUS_CONFIG},
+            )
         return NotificationResult(
             delivered=delivered, invalid_tokens=invalid, transient_failures=transient
         )
