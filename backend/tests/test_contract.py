@@ -87,6 +87,18 @@ def test_missing_version_header_blocked(tmp_path: Path, monkeypatch) -> None:  #
     assert resp.status_code == 426
 
 
+def test_outdated_fake_token_still_gets_update_prompt(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # The version gate runs before authentication: even an invalid credential
+    # gets 426, so an outdated client always learns the update URL.
+    monkeypatch.setenv("ANDROID_CURRENT_VERSION_CODE", "5")
+    monkeypatch.setenv("ANDROID_UPDATE_URL", UPDATE_URL)
+    monkeypatch.delenv("ANDROID_MIN_VERSION_CODE", raising=False)
+    client = make_contract_app(tmp_path)
+    resp = client.get("/api/packages/active", headers=device_headers("bogus", "2"))
+    assert resp.status_code == 426
+    assert resp.json()["detail"] == "update_required"
+
+
 def test_browser_session_exempt(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("ANDROID_CURRENT_VERSION_CODE", "5")
     monkeypatch.setenv("ANDROID_UPDATE_URL", UPDATE_URL)
