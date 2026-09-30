@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { CONTRACT_VERSION, fetchCompat } from "./openapi";
+import { tr } from "../i18n";
 
 function apiBaseUrl(): string {
   return window.location.origin;
@@ -28,10 +29,10 @@ export function ContractBanner() {
     return null;
   }
   return (
-    <div role="alert">
-      <p>Yeni bir arayüz sürümü mevcut. Güncel sözleşme için sayfayı yenileyin.</p>
+    <div role="alert" className="notice compatibility">
+      <p>{tr.compat}</p>
       <button type="button" onClick={() => window.location.reload()}>
-        Yenile
+        {tr.reload}
       </button>
     </div>
   );
