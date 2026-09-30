@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 
 from dojo import DojoActivity, DojoMetaConnection, DojoPairing, DojoPublishing, DojoSetup
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from backend.deps import (
     build_activity,
@@ -17,6 +19,7 @@ from backend.deps import (
 )
 from backend.proxy import ProxyHeadersMiddleware, parse_trusted_proxies
 from backend.routes import activity as activity_router
+from backend.routes import compat as compat_router
 from backend.routes import health, packages
 from backend.routes import media as media_router
 from backend.routes import meta as meta_router
@@ -26,6 +29,46 @@ from backend.routes import reviews as reviews_router
 from backend.routes import settings as settings_router
 from backend.routes import setup as setup_router
 from backend.routes.pairing import IpThrottle
+from backend.versions import VersionPolicy, resolve_version_policy
+
+
+class ClientVersionMiddleware:
+    """Block outdated Android device clients with an update prompt (#24).
+
+    Only ``Authorization: Bearer`` device requests under ``/api/*`` are
+    gated; browser session-cookie traffic is never blocked. ``/api/compat``,
+    ``/health``, ``/ready`` and Meta OAuth callbacks stay reachable so an
+    outdated client can always discover the update URL.
+    """
+
+    EXEMPT_PREFIXES = ("/health", "/ready", "/api/compat", "/api/meta/oauth/")
+
+    def __init__(self, app: ASGIApp, policy: VersionPolicy) -> None:
+        self.app = app
+        self._policy = policy
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path.startswith("/api/") and not path.startswith(self.EXEMPT_PREFIXES):
+                headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+                authorization = headers.get("authorization", "")
+                if authorization.lower().startswith("bearer "):
+                    try:
+                        version = int(headers.get("x-android-version-code", "").strip())
+                    except ValueError:
+                        version = 0
+                    if version < self._policy.min_version_code:
+                        response = JSONResponse(
+                            status_code=426,
+                            content={
+                                "detail": "update_required",
+                                "update_url": self._policy.update_url,
+                            },
+                        )
+                        await response(scope, receive, send)
+                        return
+        await self.app(scope, receive, send)
 
 
 def _wire_setup_meta(app: FastAPI) -> None:
@@ -129,7 +172,10 @@ def create_app(
 
     _resolve_origin(cookie_secure)
     app.state.throttle = IpThrottle()
+    app.state.version_policy = resolve_version_policy()
+    app.add_middleware(ClientVersionMiddleware, policy=app.state.version_policy)
     app.include_router(health.router)
+    app.include_router(compat_router.router)
     app.include_router(packages.router, dependencies=[Depends(get_current_client)])
     app.include_router(pairing_router.router)
     app.include_router(activity_router.router, dependencies=[Depends(get_current_client)])

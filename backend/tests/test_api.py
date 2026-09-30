@@ -42,7 +42,7 @@ def pair_device(client: TestClient, pairing: DojoPairing, name: str = "Phone") -
 
 
 def bearer(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+    return {"Authorization": f"Bearer {token}", "X-Android-Version-Code": "1"}
 
 
 def test_health(tmp_path: Path) -> None:

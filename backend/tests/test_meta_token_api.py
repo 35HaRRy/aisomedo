@@ -20,7 +20,7 @@ def make_api():
     result = client.post("/api/pairing/validate", json={
         "code": code, "kind": "device", "name": "PowerShell",
     })
-    headers = {"Authorization": f"Bearer {result.json()['token']}"}
+    headers = {"Authorization": f"Bearer {result.json()['token']}", "X-Android-Version-Code": "1"}
     return client, meta, headers
 
 
