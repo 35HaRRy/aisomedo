@@ -84,3 +84,19 @@ jobs:
             -v "$PWD/ops/gateway/Caddyfile:/etc/caddy/Caddyfile:ro" \
             --entrypoint caddy caddy:2.11.4-alpine \
             validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Sync
+        run: uv sync --all-packages
+      - name: Regenerate contract and clients
+        run: |
+          uv run --project backend python backend/scripts/export_openapi.py
+          uv run --project backend python backend/scripts/generate_clients.py
+      - name: Fail on contract or client drift
+        run: git diff --exit-code -- backend/openapi.json web/src/api/openapi.ts "android/app/src/main/java/com/dojo/aisomedo/api/GeneratedApi.kt"
+      - name: Contract tests
+        run: uv run --project backend pytest backend/tests/test_contract.py -v
