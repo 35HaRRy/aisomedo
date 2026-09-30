@@ -20,6 +20,7 @@ from backend.deps import (
 from backend.proxy import ProxyHeadersMiddleware, parse_trusted_proxies
 from backend.routes import activity as activity_router
 from backend.routes import compat as compat_router
+from backend.routes import dashboard as dashboard_router
 from backend.routes import health, packages
 from backend.routes import media as media_router
 from backend.routes import meta as meta_router
@@ -176,6 +177,7 @@ def create_app(
     app.add_middleware(ClientVersionMiddleware, policy=app.state.version_policy)
     app.include_router(health.router)
     app.include_router(compat_router.router)
+    app.include_router(dashboard_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(packages.router, dependencies=[Depends(get_current_client)])
     app.include_router(pairing_router.router)
     app.include_router(activity_router.router, dependencies=[Depends(get_current_client)])
