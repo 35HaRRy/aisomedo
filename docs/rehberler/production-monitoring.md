@@ -85,11 +85,14 @@ buradaki hiçbir betik tarafından yazdırılmaz. Container'a yalnızca Compose
 secret olarak ulaşır; bu salt okunurdur ve `docker inspect` çıktısında
 görünmez.
 
-Application Default Credentials Firebase SDK tarafından **tembel** çözülür,
-bu yüzden kullanılamayan bir kimlik dosyası başlangıçta değil, ilk gönderimde
-başarısız olur — gürültülü ve tipli bir hata olarak
-(`DefaultCredentialsError`). Bu davranış `ops/verify-monitoring.sh` içinde
-doğrulanır. Bunun yerine `monitoring.notifier_missing` kaydını gören bir
+Application Default Credentials Firebase SDK tarafından **tembel** çözülür.
+Bunun somut sonucu şudur: **proje kimliği** başlangıçta çözülür, **kimlik
+dosyası** çözülmez. Kullanılamayan bir kimlik dosyası (eksik, bozuk ya da servis
+hesabı olmayan) worker'ı başlatmaz; ilk gönderimde tipli bir
+`DefaultCredentialsError` ile başarısız olur. Bu davranış
+`ops/verify-monitoring.sh` içinde doğrulanır. Doğru olan budur: uyarı bekleyen
+durumda kalır, hiçbir şey "gönderildi" sayılmaz ve `monitoring.delivery_send_failed`
+kaydı yazılır. Bunun yerine `monitoring.notifier_missing` kaydını gören bir
 worker başka bir arıza: izleme `FCM_ENABLED` kapalıyken açılmıştır ve bu
 bilinçli olarak başlangıçta reddedilir, çünkü hiç gönderilmeyen kalıcı
 uyarılar, hiç olmamış uyarılardan ayırt edilemez.
@@ -376,9 +379,26 @@ Yapı gereği güvenli; öyle kalması değerli:
 ## 8. Doğrulama
 
 ```bash
-bash ops/verify-prod.sh        # dağıtım sözleşmesi: sağlık denetimleri, günlük sınırları, iki vekil modu
+bash ops/verify-prod.sh        # dağıtım sözleşmesi: sağlık denetimleri, günlük sınırları,
+                               # iki vekil modu, volume kalıcılığı ve GERÇEK backend
+                               # /ready hazırlığının düşüp toparlanması
 bash ops/verify-monitoring.sh  # çalışma zamanı: iki modda gateway, secret mount, güvenli JSON günlükler
 ```
+
+Kapsam, düşünülerek bölünmüştür ve ikisi birbirinin yerine geçmez:
+
+- **Gerçek backend'in hazırlık sözleşmesi** (`ops/verify-prod.sh` Faz F) gerçek
+  backend imajını, gerçek veritabanına karşı ayağa kaldırır, veritabanını
+  götürür ve geri getirir: `/ready` sağlıklı → veritabanı yokken başarısız →
+  veritabanı dönünce toparlanır. Yani canlı ayakta olan backend'de
+  düşme/toplarlanma çalışma zamanında doğrulanmıştır.
+- **Gateway'in hazırlık ve web sağlığını bağımsız yönlendirmesi**
+  (`ops/verify-monitoring.sh` Faz H) üretim Caddyfile'ını her iki vekil modunda
+  gerçek bir ağ geçidi konteynerine karşı çalıştırır. API'nin arkasında, ağ
+  adı `backend:8000` olan **sentetik bir API vekili** vardır: bu, bağımsız
+  yönlendirmenin bir Caddy meselesi olması ve üretimdeki çözümlemeyle birebir
+  aynı olması içindir. Vekil gerçek backend'in kendi `/ready` semantiğini
+  test etmez; bu, yukarıdaki Faz F'nin işidir.
 
 Her iki betik de benzersiz adlandırılmış geçici bir proje, sentetik ortam
 değerleri ve kendi imajlarını kullanır ve yalnızca kendilerinin oluşturduğunu
@@ -386,7 +406,6 @@ kaldırır. Hiçbiri `ops/.env`yi okumaz, hiçbiri secret değeri yazdırmaz.
 `verify-monitoring.sh` hiçbir zaman bildirim göndermez: sağlayıcı kimlik
 bilgisi yoktur ve FCM denetimlerini ağ olmadan çalıştırır.
 
-Canlı doğrulama bundan ayrıdır ve gerçek bir Android cihazı sentetik bir
-uyarıyı görüntülemeden ve yukarıdaki barındırılan kesinti/kurtarma tatbikatı
-yapılıp kaydedilmeden tamamlanmış sayılmaz. Her ikisi de gösterilene kadar #22
-açık kalır.
+Bu ikisi **canlı** doğrulamanın yerine geçmez: gerçek bir Android cihazı
+sentetik bir uyarıyı görüntülemeden ve yukarıdaki barındırılan kesinti/kurtarma
+tatbikatı yapılıp kaydedilmeden #22 tamamlanmış sayılmaz.

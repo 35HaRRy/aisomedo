@@ -85,9 +85,16 @@ def _classify(error: object) -> str:
 def _ensure_app(admin: Any, *, app_name: str, project_id: str | None, timeout_seconds: int) -> Any:
     """Reuse the named SDK app, or initialize one from default credentials.
 
-    Credentials and project identity are resolved here, at construction, so a
-    deployment that enabled FCM without usable credentials fails at startup
-    instead of at the first alert.
+    Project identity IS resolved here, at construction: a deployment with no
+    usable project fails at startup rather than at the first alert.
+
+    Credentials are NOT. The SDK resolves Application Default Credentials
+    lazily, so a credential file that is missing, truncated, or not a service
+    account still builds a working app and fails on the first send with a
+    typed ``DefaultCredentialsError`` (or a project-id ``ValueError``). That
+    failure is loud and the alert stays pending, so nothing is silently
+    delivered, but it is a first-send failure and this docstring must not claim
+    otherwise.
     """
     try:
         return admin.get_app(app_name)

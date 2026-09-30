@@ -108,8 +108,13 @@ they do not inherit review reminder cadence or quiet hours. Android must display
 this event type without assuming every message contains a review ID.
 
 Production configuration must explicitly enable real FCM and mount its
-credentials read-only. Keep secrets out of committed files. Verify configuration
-fails clearly when real delivery is enabled without usable credentials.
+credentials read-only. Keep secrets out of committed files. Enabling real
+delivery without a usable *project* identity fails at startup. An unusable
+*credential file* is resolved lazily by the SDK, so it fails on the first send
+with a typed credential error; the alert stays pending and nothing is reported
+as delivered. This failure point is a property of the Firebase SDK, not a
+choice, and every layer (adapter docstring, runbook, verification script)
+states it the same way.
 
 ## Hosted HTTPS monitoring
 

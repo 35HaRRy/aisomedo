@@ -85,7 +85,7 @@ cleanup() {
       -f "$(hostpath "$MONITORING")" down -v --remove-orphans \
       >/dev/null 2>&1 || true
   fi
-  docker rmi -f "$GW_IMAGE" "$WORKER_IMAGE" >/dev/null 2>&1 || true
+  docker rmi -f "$GW_IMAGE" "$WORKER_IMAGE" "dojo-worker:${SUFFIX}" >/dev/null 2>&1 || true
   rm -rf "$RUNDIR"
 }
 trap cleanup EXIT
@@ -153,6 +153,11 @@ ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
 EOF
 
 cat >"$SYNTH_ENV" <<EOF
+# The production files name their images dojo-<service>:${IMAGE_TAG:-latest}.
+# Pinning the tag to this run's suffix is what keeps `compose run` in Phase F
+# on the disposable image instead of whatever dojo-worker:latest happens to be
+# on the host.
+IMAGE_TAG=$SUFFIX
 POSTGRES_PASSWORD=verify-monitoring-synthetic
 DOMAIN=deploy.example.test
 PUBLIC_BASE_URL=https://deploy.example.test
@@ -176,8 +181,11 @@ if docker build -f "$(hostpath ops/gateway/Dockerfile)" -t "$GW_IMAGE" \
 else
   fail "disposable gateway image builds"
 fi
+# Tagged twice: once under the disposable name this script owns, and once under
+# the name the production file asks for, so `compose run` in Phase F starts the
+# image this run just built rather than a pre-existing dojo-worker:latest.
 if docker build -f "$(hostpath worker/Dockerfile)" -t "$WORKER_IMAGE" \
-  "$(hostpath "$ROOT")" >/dev/null 2>&1; then
+  -t "dojo-worker:${SUFFIX}" "$(hostpath "$ROOT")" >/dev/null 2>&1; then
   pass "disposable worker image builds"
 else
   fail "disposable worker image builds"
@@ -243,10 +251,15 @@ run_checks() {
   local label="$1" proxy="$2"; shift 2
   local files=() assertions=() out
   while [ "$#" -gt 0 ]; do
-    if [ "${1#-f}" != "$1" ]; then
-      files+=("$1" "$2"); shift 2
-    else
+    if [ "${1#-f}" = "$1" ]; then
       assertions+=("$1"); shift
+    elif [ "$#" -lt 2 ]; then
+      # A trailing -f with no file would silently drop a combination from the
+      # contract instead of failing it.
+      fail "malformed assertion list for $label (-f without a file)"
+      return 0
+    else
+      files+=("$1" "$2"); shift 2
     fi
   done
   local json
@@ -256,7 +269,14 @@ run_checks() {
   fi
   pass "config renders: $label"
   # hostpath: python3 may be a Windows interpreter that cannot open a POSIX path.
-  out="$(printf '%s' "$json" | python3 "$(hostpath "$CHECK")" "$label" "${assertions[@]}" || true)"
+  if ! out="$(printf '%s' "$json" | python3 "$(hostpath "$CHECK")" "$label" "${assertions[@]}")"; then
+    # Either an assertion failed or the checker never ran. Reporting nothing
+    # here would let a broken checker look like a passing combination.
+    if [ -z "$out" ]; then
+      fail "assertion checker ran for $label"
+      return 0
+    fi
+  fi
   while IFS= read -r line; do
     case "$line" in
       "PASS: "*) pass "${line#PASS: }" ;;
@@ -353,7 +373,10 @@ fi
 
 # ---- Phase F: the mounted secret is present and read-only ----------------
 # The rendered config says the secret is declared; only the container proves it
-# is actually mounted read-only at the path the worker resolves.
+# is actually mounted read-only at the path the worker resolves. `compose run`
+# resolves the worker image from IMAGE_TAG, which the synthetic env pins to this
+# run's suffix, so this starts the image built in Phase C and nothing else.
+#
 # The mount must refuse a write from inside the container. The permission bits
 # themselves are not asserted: a Compose secret is read-only by contract, and on
 # a Windows host daemon the bind source is a file whose mode is synthesized
@@ -490,6 +513,32 @@ exercise_mode() { # $1=label, $2=container
   else
     fail "[$label] probe listener answers 404 outside the asset"
   fi
+
+  # API down, asset still in place. The three facts the brief asks for are
+  # asserted here, in this order, with the asset present: web health must keep
+  # answering 200, readiness must fail, and readiness must recover afterwards.
+  docker stop "$BACKEND" >/dev/null 2>&1 || true
+  if [ "$(http_public "$container" /web-health.txt)" = "200" ] \
+    && [ "$(http_probe "$container" /web-health.txt)" = "200" ]; then
+    pass "[$label] web health still succeeds while the API is down"
+  else
+    fail "[$label] web health still succeeds while the API is down"
+  fi
+  if [ "$(http_public "$container" /ready)" != "200" ]; then
+    pass "[$label] readiness fails while the API is down"
+  else
+    fail "[$label] readiness fails while the API is down"
+  fi
+  docker start "$BACKEND" >/dev/null 2>&1 || true
+  if wait_for_public "$container" /ready; then
+    pass "[$label] readiness recovers after the API returns"
+  else
+    fail "[$label] readiness recovers after the API returns"
+  fi
+
+  # Only now, with readiness proven in both directions, is the missing-asset
+  # case checked. Removing the asset earlier would have made "web health still
+  # succeeds" assert a 404.
   if docker exec "$container" rm -f /srv/web-health.txt >/dev/null 2>&1 \
     && [ "$(http_public "$container" /web-health.txt)" = "404" ] \
     && [ "$(http_probe "$container" /web-health.txt)" = "404" ]; then
@@ -497,18 +546,6 @@ exercise_mode() { # $1=label, $2=container
   else
     fail "[$label] removed health asset is 404, not the SPA"
   fi
-  docker stop "$BACKEND" >/dev/null 2>&1 || true
-  if [ "$(http_public "$container" /ready)" != "200" ]; then
-    pass "[$label] readiness fails while the API is down"
-  else
-    fail "[$label] readiness fails while the API is down"
-  fi
-  if [ "$(http_probe "$container" /web-health.txt)" = "404" ]; then
-    pass "[$label] web health stays independent of the API"
-  else
-    fail "[$label] web health stays independent of the API"
-  fi
-  docker start "$BACKEND" >/dev/null 2>&1 || true
 }
 
 # Dedicated-domain mode: Caddy owns TLS for a public site name. The internal

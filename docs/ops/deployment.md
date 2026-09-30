@@ -148,7 +148,10 @@ Verify row/file counts before starting prod (same pattern for `media-data`).
 - [ ] `GET /` → 200 SPA HTML; deep link → 200 same `index.html`
 - [ ] `GET /ready` → `{"status":"ok"}` (backend, not SPA)
 - [ ] `GET /web-health.txt` → 200; then `stop backend` → `/ready` fails while
-      `/web-health.txt` still returns 200 (readiness and web health are independent)
+      `/web-health.txt` still returns 200 (readiness and web health are independent).
+      Covered for the backend itself by `verify-prod.sh` Phase F and for the
+      gateway by `verify-monitoring.sh` Phase H; re-run the manual form here on
+      the deployed stack, since the hosted monitor depends on it.
 - [ ] `GET /api/packages/active` → 401; `GET /pub/badtoken` → 404 (proxied)
 - [ ] Browser pairing sets `Secure`, `HttpOnly`, `SameSite=Lax` cookie; renewal on auth re-issues it
 - [ ] Pairing throttle keys on the real client IP through the proxy chain
