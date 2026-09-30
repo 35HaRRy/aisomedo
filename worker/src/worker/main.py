@@ -9,13 +9,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 from dojo import DojoPublishing
+from dojo.adapters.clock import SystemClock
 from dojo.adapters.db import PostgresStore
 from dojo.adapters.fcm import FcmNotifier
+from dojo.monitoring import DojoMonitoring
 from dojo.observability import configure_logging
 from dojo.scheduler import try_emission_leadership
 
 from worker.health import DEFAULT_PATH as WORKER_HEALTH_DEFAULT_PATH
 from worker.health import WorkerHealth
+from worker.monitoring import MonitoringConfig, MonitoringRunner
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,12 @@ logger = logging.getLogger(__name__)
 #: (create_all on boot). Production sets SKIP_CREATE_ALL=1 and lets the
 #: initializer (`python -m dojo.schema`) own the schema instead.
 SKIP_CREATE_ALL_VALUE = "1"
+
+#: Upper bound on the collector join at shutdown. The collector's wait is
+#: interruptible by the shutdown event, so this only covers a turn already in
+#: flight (a database call), and stays well inside the 120-second container
+#: stop grace.
+MONITORING_JOIN_SECONDS = 10.0
 
 
 def _maybe_create_all(store: PostgresStore) -> None:
@@ -365,6 +374,81 @@ def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
     _run_job_turn(publishing)
 
 
+def build_monitoring() -> tuple[MonitoringRunner, PostgresStore] | None:
+    """Disk monitoring on its own store, or ``None`` when disabled.
+
+    Monitoring gets its own ``PostgresStore`` rather than publishing's ports.
+    That store carries an emission-transaction context, so a session shared
+    with the main tick would run the collector's sample and send inside the
+    tick's transaction. The notifier is the real one from ``build_notifier``,
+    never publishing's private port.
+
+    Enabling monitoring without a working notifier is a configuration fault,
+    not a degraded mode: alerts would be recorded durably and never sent, so
+    startup fails instead of silently losing them. This store never creates
+    schema; the same ``SKIP_CREATE_ALL`` contract as publishing owns that, and
+    migrations own production.
+    """
+    media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
+    config = MonitoringConfig.from_env(os.environ, media_root=media_root)
+    if not config.enabled:
+        return None
+    notifier = build_notifier()
+    if notifier is None:
+        raise RuntimeError(
+            "MONITORING_ENABLED requires FCM_ENABLED with usable credentials"
+        )
+    url = os.environ.get(
+        "DATABASE_URL", "postgresql+psycopg://dojo:dojo@localhost:5432/dojo"
+    )
+    store = PostgresStore(url)
+    logger.info(
+        "monitoring enabled: %d disk target(s), %s second interval",
+        len(config.targets),
+        config.interval_seconds,
+        extra={"event": "monitoring.enabled"},
+    )
+    monitoring = DojoMonitoring(store, notifier, SystemClock())
+    return MonitoringRunner(config, store, monitoring), store
+
+
+def start_monitoring(
+    runner: MonitoringRunner, stop: threading.Event
+) -> threading.Thread:
+    """Run the collector on its own thread until ``stop`` is set.
+
+    Deliberately not a heartbeat: this thread never touches the worker health
+    record, so collector activity can never conceal a stuck main tick.
+    """
+    thread = threading.Thread(
+        target=runner.run, args=(stop,), name="dojo-monitoring", daemon=True
+    )
+    thread.start()
+    return thread
+
+
+def _stop_monitoring(
+    collector: threading.Thread | None, store: PostgresStore | None
+) -> None:
+    """Join the collector within the container's grace, then release its store.
+
+    Both steps are best-effort: shutdown must complete (and an in-flight
+    exception must still propagate) even when the collector is stuck in a
+    database call or the pool refuses to dispose.
+    """
+    if collector is not None:
+        collector.join(MONITORING_JOIN_SECONDS)
+    if store is not None:
+        try:
+            store.dispose()
+        except Exception:  # noqa: BLE001 - shutdown is never blocked by cleanup
+            logger.warning(
+                "monitoring store disposal failed",
+                exc_info=True,
+                extra={"event": "monitoring.dispose_failed", "status": "error"},
+            )
+
+
 def build_worker_health(interval_seconds: float) -> WorkerHealth:
     """Container-local health record wired to the tick loop.
 
@@ -413,6 +497,10 @@ def main() -> None:
     health = build_worker_health(interval)
     _mark_health(health.idle, "idle")
 
+    # Built before any thread exists, so a configuration fault fails startup
+    # with nothing half-started.
+    monitoring = build_monitoring()
+
     stop = threading.Event()
 
     def _stop(_signum: int, _frame: object) -> None:
@@ -420,6 +508,8 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+
+    collector = None if monitoring is None else start_monitoring(monitoring[0], stop)
 
     # SIGTERM sets the flag AND bounds in-flight work: the sleep is
     # interruptible (no new wait after stop), no new tick starts, and an
@@ -441,6 +531,10 @@ def main() -> None:
             stop.wait(interval)
     finally:
         _mark_health(health.stopped, "stopped")
+        # The same shutdown event stops the collector, so this join is bounded
+        # by the container's stop grace rather than by a sampling interval.
+        # Disposal is last and must not mask an in-flight exception.
+        _stop_monitoring(collector, None if monitoring is None else monitoring[1])
 
     logger.info("worker stopped", extra={"event": "service.shutdown"})
 
