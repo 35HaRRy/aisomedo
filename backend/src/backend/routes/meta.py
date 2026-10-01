@@ -19,7 +19,10 @@ from backend.deps import get_current_client
 
 
 def get_meta(request: Request) -> object:
-    return request.app.state.meta
+    meta = getattr(request.app.state, "meta", None)
+    if meta is None:
+        raise HTTPException(status_code=503, detail="Instagram connection is not configured")
+    return meta
 
 
 class StartIn(BaseModel):
@@ -31,10 +34,17 @@ class StartOut(BaseModel):
     attempt_id: str
 
 
+class MetaCandidateOut(BaseModel):
+    ig_user_id: str
+    ig_username: str
+    page_id: str | None = None
+    page_name: str | None = None
+
+
 class AttemptOut(BaseModel):
     id: str
     status: str
-    candidates: list[dict]
+    candidates: list[MetaCandidateOut]
 
 
 class StatusOut(BaseModel):
@@ -128,7 +138,8 @@ def get_attempt(
         attempt = meta.get_attempt(client.id, attempt_id)  # type: ignore[attr-defined]
     except MetaOAuthStateInvalid as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return AttemptOut(id=attempt.id, status=attempt.status, candidates=[c.to_dict() for c in attempt.candidates])
+    return AttemptOut(id=attempt.id, status=attempt.status,
+                      candidates=[MetaCandidateOut(**c.to_dict()) for c in attempt.candidates])
 
 
 @router.post("/oauth/attempts/{attempt_id}/select", response_model=StatusOut)

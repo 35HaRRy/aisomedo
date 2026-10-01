@@ -1,6 +1,23 @@
 {
   "components": {
     "schemas": {
+      "AcceptanceIn": {
+        "properties": {
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "title": "AcceptanceIn",
+        "type": "object"
+      },
       "AcceptanceOut": {
         "properties": {
           "accepted_at": {
@@ -107,8 +124,7 @@
         "properties": {
           "candidates": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/MetaCandidateOut"
             },
             "title": "Candidates",
             "type": "array"
@@ -128,6 +144,24 @@
           "candidates"
         ],
         "title": "AttemptOut",
+        "type": "object"
+      },
+      "BrandingAssetOut": {
+        "properties": {
+          "asset": {
+            "title": "Asset",
+            "type": "string"
+          },
+          "preview_url": {
+            "title": "Preview Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset",
+          "preview_url"
+        ],
+        "title": "BrandingAssetOut",
         "type": "object"
       },
       "BrandingDefaultsIn": {
@@ -294,6 +328,79 @@
           "branding"
         ],
         "title": "BrandingIn",
+        "type": "object"
+      },
+      "BrandingPatchIn": {
+        "additionalProperties": false,
+        "properties": {
+          "caption_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption Template"
+          },
+          "intro_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intro Asset"
+          },
+          "intro_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intro Duration"
+          },
+          "logo_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Asset"
+          },
+          "outro_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outro Asset"
+          },
+          "outro_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outro Duration"
+          }
+        },
+        "title": "BrandingPatchIn",
         "type": "object"
       },
       "CaptionIn": {
@@ -685,6 +792,46 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "MetaCandidateOut": {
+        "properties": {
+          "ig_user_id": {
+            "title": "Ig User Id",
+            "type": "string"
+          },
+          "ig_username": {
+            "title": "Ig Username",
+            "type": "string"
+          },
+          "page_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Id"
+          },
+          "page_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Name"
+          }
+        },
+        "required": [
+          "ig_user_id",
+          "ig_username"
+        ],
+        "title": "MetaCandidateOut",
+        "type": "object"
+      },
       "OccurrenceOut": {
         "properties": {
           "due_at": {
@@ -1020,6 +1167,11 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3226,6 +3378,45 @@
           "settings"
         ]
       },
+      "patch": {
+        "operationId": "patch_branding_defaults_api_settings_branding_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrandingPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandingDefaultsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Branding Defaults",
+        "tags": [
+          "settings"
+        ]
+      },
       "put": {
         "operationId": "set_branding_defaults_api_settings_branding_put",
         "requestBody": {
@@ -3263,6 +3454,73 @@
         "summary": "Set Branding Defaults",
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/api/settings/branding/assets": {
+      "post": {
+        "operationId": "upload_branding_image_api_settings_branding_assets_post",
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandingAssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Upload Branding Image",
+        "tags": [
+          "branding assets"
+        ]
+      }
+    },
+    "/api/settings/branding/assets/{asset_id}": {
+      "get": {
+        "operationId": "preview_branding_image_api_settings_branding_assets__asset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Branding Image",
+        "tags": [
+          "branding assets"
         ]
       }
     },
@@ -3428,6 +3686,27 @@
         ]
       }
     },
+    "/api/setup/cards/skip": {
+      "post": {
+        "operationId": "skip_cards_api_setup_cards_skip_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Skip Cards",
+        "tags": [
+          "setup"
+        ]
+      }
+    },
     "/api/setup/consent": {
       "get": {
         "operationId": "get_consent_api_setup_consent_get",
@@ -3452,6 +3731,23 @@
     "/api/setup/consent/accept": {
       "post": {
         "operationId": "accept_consent_api_setup_consent_accept_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AcceptanceIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -3462,6 +3758,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Accept Consent",

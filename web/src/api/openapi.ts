@@ -66,16 +66,28 @@ export const API_PATHS: readonly string[] = [
   "/api/reviews/{review_id}/reschedule",
   "/api/reviews/{review_id}/skip",
   "/api/settings/branding",
+  "/api/settings/branding/assets",
+  "/api/settings/branding/assets/{asset_id}",
   "/api/settings/manual-publish",
   "/api/settings/plan",
   "/api/settings/reminders",
   "/api/setup",
+  "/api/setup/cards/skip",
   "/api/setup/consent",
   "/api/setup/consent/accept",
   "/health",
   "/pub/{token}",
   "/ready",
 ];
+
+export type AcceptanceIn = {
+  "version"?: number | null;
+};
+
+export type AcceptanceOut = {
+  "accepted_at": string;
+  "version": number;
+};
 
 export type ActivityEventOut = {
   "action": string;
@@ -88,6 +100,35 @@ export type ActivityEventOut = {
 export type ActivityPageOut = {
   "events": Array<ActivityEventOut>;
   "next_cursor": number | null;
+};
+
+export type AttemptOut = {
+  "candidates": Array<MetaCandidateOut>;
+  "id": string;
+  "status": string;
+};
+
+export type BrandingAssetOut = {
+  "asset": string;
+  "preview_url": string;
+};
+
+export type BrandingDefaultsOut = {
+  "caption_template": string | null;
+  "intro_asset": string | null;
+  "intro_duration": number | null;
+  "logo_asset": string | null;
+  "outro_asset": string | null;
+  "outro_duration": number | null;
+};
+
+export type BrandingPatchIn = {
+  "caption_template"?: string | null;
+  "intro_asset"?: string | null;
+  "intro_duration"?: number | null;
+  "logo_asset"?: string | null;
+  "outro_asset"?: string | null;
+  "outro_duration"?: number | null;
 };
 
 export type ClientOut = {
@@ -104,6 +145,12 @@ export type ClientRefOut = {
   "id": number;
   "kind": string;
   "name": string;
+};
+
+export type ConsentOut = {
+  "accepted_at": string | null;
+  "text": string;
+  "version": number;
 };
 
 export type DashboardActionOut = {
@@ -140,6 +187,13 @@ export type DashboardWorkerOut = {
   "status": "healthy" | "unhealthy" | "unknown";
 };
 
+export type MetaCandidateOut = {
+  "ig_user_id": string;
+  "ig_username": string;
+  "page_id"?: string | null;
+  "page_name"?: string | null;
+};
+
 export type PackageOut = {
   "created_at": string;
   "folder_name": string;
@@ -147,11 +201,55 @@ export type PackageOut = {
   "status": string;
 };
 
+export type PlanIn = {
+  "anchor_date"?: string | null;
+  "anchor_time"?: string | null;
+  "enabled"?: boolean;
+};
+
 export type PlanOut = {
   "anchor_date": string | null;
   "anchor_time": string | null;
   "enabled": boolean;
   "timezone": string;
+};
+
+export type SelectIn = {
+  "ig_user_id": string;
+};
+
+export type SetupItemOut = {
+  "complete": boolean;
+  "key": string;
+  "label": string;
+  "required"?: boolean;
+};
+
+export type SetupOut = {
+  "checklist": Array<SetupItemOut>;
+  "ready": boolean;
+};
+
+export type StartIn = {
+  "return_uri"?: string | null;
+};
+
+export type StartOut = {
+  "attempt_id": string;
+  "auth_url": string;
+};
+
+export type StatusOut = {
+  "connection_type"?: string;
+  "expires_at"?: string | null;
+  "health": string;
+  "ig_user_id"?: string | null;
+  "ig_username"?: string | null;
+  "last_checked_at"?: string | null;
+  "last_error"?: string | null;
+  "last_refreshed_at"?: string | null;
+  "page_id"?: string | null;
+  "page_name"?: string | null;
 };
 
 export type ValidateIn = {
