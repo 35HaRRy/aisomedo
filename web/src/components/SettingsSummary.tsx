@@ -3,7 +3,7 @@ import { tr } from "../i18n";
 import { ConnectionSummary } from "./Dashboard";
 
 export function SettingsSummary({ data, client }: { data: DashboardOut; client: ClientOut }) {
-  return <><header className="page-heading"><h1>{tr.settings}</h1><p>{tr.settingsIntro}</p></header>
+  return <><header className="page-heading"><h1>{tr.settings}</h1><p>{tr.settingsIntro}</p><a href="#/onboarding">Kurulumu aç</a></header>
     <div className="settings-grid"><section className="summary-sheet"><h2>{tr.client}</h2><p>{client.name}</p></section>
       <section className="summary-sheet"><h2>{tr.plan}</h2><p>{tr.cadence}</p>
         <dl><div><dt>{tr.state}</dt><dd>{data.plan.enabled ? tr.enabled : tr.disabled}</dd></div>

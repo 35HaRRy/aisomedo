@@ -35,3 +35,32 @@ it("keeps caller cancellation distinct from network errors", async () => {
   controller.abort();
   await expect(request("/api/dashboard", { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
 });
+
+it("sends onboarding operations with cookies and typed bodies", async () => {
+  const fetcher = vi.fn(async (_url: string, _init: RequestInit) => new Response("{}"));
+  vi.stubGlobal("fetch", fetcher);
+  await api.setup(); await api.consent(); await api.acceptConsent(3); await api.skipCards();
+  await api.branding(); await api.patchBranding({ caption_template: "Dojo" });
+  await api.plan(); await api.savePlan({ anchor_date: "2026-10-05", anchor_time: "10:00", enabled: false });
+  await api.instagram(); await api.connectInstagramToken("private-token");
+  await api.startOAuth(); await api.oauthAttempt(7); await api.selectInstagramAccount(7, "ig-1");
+  expect(fetcher.mock.calls.map(call => call[0])).toEqual([
+    "/api/setup", "/api/setup/consent", "/api/setup/consent/accept", "/api/setup/cards/skip",
+    "/api/settings/branding", "/api/settings/branding", "/api/settings/plan", "/api/settings/plan",
+    "/api/meta/status", "/api/meta/instagram/token", "/api/meta/oauth/start",
+    "/api/meta/oauth/attempts/7", "/api/meta/oauth/attempts/7/select",
+  ]);
+  expect(fetcher.mock.calls[2][1]).toMatchObject({ method: "POST", body: '{"version":3}', credentials: "same-origin" });
+  expect(fetcher.mock.calls[9][1]).toMatchObject({ method: "POST", body: '{"access_token":"private-token"}' });
+  expect(localStorage.length).toBe(0);
+});
+
+it("uploads raw file without JSON content type", async () => {
+  const fetcher = vi.fn(async (_url: string, _init: RequestInit) => new Response("{}"));
+  vi.stubGlobal("fetch", fetcher);
+  const file = new File(["image"], "logo.png", { type: "image/png" });
+  await api.uploadBranding(file);
+  expect(fetcher.mock.calls[0][0]).toBe("/api/settings/branding/assets");
+  expect(fetcher.mock.calls[0][1]).toMatchObject({ method: "POST", body: file });
+  expect(fetcher.mock.calls[0][1].headers).not.toHaveProperty("Content-Type", "application/json");
+});

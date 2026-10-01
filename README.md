@@ -87,6 +87,33 @@ npm run dev
 
 ## Usage (simple flow)
 
+### Guided browser setup
+
+After pairing, incomplete setup opens at `#/onboarding`. Resume later or reopen
+from **Ayarlar → Kurulumu aç**. Configure Instagram, a Monday publication plan,
+media consent, logo, caption template, and optional intro/outro cards directly
+in the wizard. A valid disabled plan counts as configured without enabling
+publishing. Optional cards never block readiness; skipping retains existing cards.
+
+Instagram supports OAuth account selection and a token obtained independently
+from Instagram: enter it in **Instagram erişim tokenı**, then **Token ile bağlan**.
+The backend verifies and encrypts the credential; the masked input clears after
+submission, and the application does not store it in browser storage or URLs.
+
+An administrator first creates the consent policy using `dojo-consent set-policy`.
+Acceptance applies installation-wide to the displayed version. If a newer policy
+is committed before submission, the wizard reloads it and requires a new explicit
+acknowledgement; it never automatically accepts changed text.
+
+New logo/card uploads accept single-frame PNG/JPEG only, up to **10 MiB** and
+**4096 pixels per side**. Uploads are independent of active packages. Partial saves
+preserve other settings and existing package snapshots. Scheduling requires ready
+setup and an enabled valid plan.
+
+Verification evidence: [issue #26](docs/verification/issue-26-web-onboarding.md).
+
+### Publishing flow
+
 1. **Pair** an Android device or browser using a one-time pairing code.
 2. **Upload** photos and videos into the active package.
 3. **Order and trim** the media into the intended montage.

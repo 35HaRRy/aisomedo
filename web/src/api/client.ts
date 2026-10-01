@@ -1,4 +1,4 @@
-import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn } from "./openapi";
+import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut } from "./openapi";
 
 export class ApiError extends Error {
   constructor(public readonly status: number) { super(`api:${status}`); }
@@ -13,7 +13,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   try {
     const response = await fetch(path, {
       ...init, credentials: "same-origin", cache: "no-store", signal: controller.signal,
-      headers: { ...(init.body ? { "Content-Type": "application/json" } : {}), ...init.headers },
+      headers: { ...(typeof init.body === "string" ? { "Content-Type": "application/json" } : {}), ...init.headers },
     });
     if (controller.signal.aborted) throw new DOMException("", "AbortError");
     if (!response.ok) throw new ApiError(response.status);
@@ -34,4 +34,18 @@ export const api = {
   },
   dashboard: (signal?: AbortSignal) => request<DashboardOut>("/api/dashboard", { signal }),
   activity: (signal?: AbortSignal) => request<ActivityPageOut>("/api/activity?limit=20", { signal }),
+  setup: (signal?: AbortSignal) => request<SetupOut>("/api/setup", { signal }),
+  consent: (signal?: AbortSignal) => request<ConsentOut>("/api/setup/consent", { signal }),
+  acceptConsent: (version: number, signal?: AbortSignal) => request<AcceptanceOut>("/api/setup/consent/accept", { method: "POST", body: JSON.stringify({ version }), signal }),
+  skipCards: (signal?: AbortSignal) => request<SetupOut>("/api/setup/cards/skip", { method: "POST", signal }),
+  branding: (signal?: AbortSignal) => request<BrandingDefaultsOut>("/api/settings/branding", { signal }),
+  patchBranding: (body: BrandingPatchIn, signal?: AbortSignal) => request<BrandingDefaultsOut>("/api/settings/branding", { method: "PATCH", body: JSON.stringify(body), signal }),
+  plan: (signal?: AbortSignal) => request<PlanOut>("/api/settings/plan", { signal }),
+  savePlan: (body: PlanIn, signal?: AbortSignal) => request<PlanOut>("/api/settings/plan", { method: "PUT", body: JSON.stringify(body), signal }),
+  instagram: (signal?: AbortSignal) => request<StatusOut>("/api/meta/status", { signal }),
+  connectInstagramToken: (token: string, signal?: AbortSignal) => request<StatusOut>("/api/meta/instagram/token", { method: "POST", body: JSON.stringify({ access_token: token }), signal }),
+  startOAuth: (signal?: AbortSignal) => request<StartOut>("/api/meta/oauth/start", { method: "POST", body: JSON.stringify({}), signal }),
+  oauthAttempt: (id: string | number, signal?: AbortSignal) => request<AttemptOut>(`/api/meta/oauth/attempts/${encodeURIComponent(id)}`, { signal }),
+  selectInstagramAccount: (id: string | number, igUserId: string, signal?: AbortSignal) => request<StatusOut>(`/api/meta/oauth/attempts/${encodeURIComponent(id)}/select`, { method: "POST", body: JSON.stringify({ ig_user_id: igUserId }), signal }),
+  uploadBranding: (file: File, signal?: AbortSignal) => request<BrandingAssetOut>("/api/settings/branding/assets", { method: "POST", body: file, signal }),
 };

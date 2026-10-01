@@ -11,11 +11,17 @@ from dojo.adapters import (
     SystemClock,
 )
 from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
+from dojo.branding_assets import BrandingAsset, BrandingAssets
 from dojo.dashboard import NextSlot, PendingAction, PublishingDashboard
 from dojo.exceptions import (
     ActivePackageExists,
+    BrandingAssetInvalid,
+    BrandingAssetNotFound,
+    BrandingAssetTooLarge,
+    BrandingInvalid,
     ClientNotFound,
     ConsentError,
+    ConsentPolicyChanged,
     ConsentPolicyDowngrade,
     DojoError,
     JobNotFound,
@@ -124,10 +130,17 @@ __all__ = [
     "ActivityPage",
     "AuditEvent",
     "BrandingConfig",
+    "BrandingInvalid",
+    "BrandingAsset",
+    "BrandingAssets",
+    "BrandingAssetInvalid",
+    "BrandingAssetNotFound",
+    "BrandingAssetTooLarge",
     "Client",
     "ClientNotFound",
     "ConsentAcceptance",
     "ConsentError",
+    "ConsentPolicyChanged",
     "ConsentPolicy",
     "ConsentPolicyDowngrade",
     "DojoActivity",

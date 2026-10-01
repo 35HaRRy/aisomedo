@@ -1,4 +1,8 @@
-import type { ClientOut, DashboardOut } from "../api/openapi";
+import type { ClientOut, DashboardOut, SetupOut } from "../api/openapi";
+
+export function setupState(unfinished?: string): SetupOut {
+  return { ready: !unfinished, checklist: ["pairing", "instagram", "schedule", "consent", "logo", "caption_template", "cards"].map(key => ({ key, label: key, complete: key !== unfinished && key !== "cards", required: key !== "cards" })) };
+}
 
 export const client: ClientOut = {
   id: 1, name: "Dojo bilgisayarı", kind: "browser", created_at: "2026-08-03T07:00:00Z",

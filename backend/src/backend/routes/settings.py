@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import date, time
 
 from dojo import (
+    BrandingAssetNotFound,
+    BrandingAssets,
     BrandingConfig,
+    BrandingInvalid,
     Client,
     DojoPublishing,
     ManualPublishConflict,
@@ -13,7 +16,7 @@ from dojo import (
     SchedulePlan,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from backend.deps import get_current_client
 
@@ -38,6 +41,10 @@ class BrandingDefaultsOut(BaseModel):
     outro_asset: str | None
     outro_duration: float | None
     caption_template: str | None
+
+
+class BrandingPatchIn(BrandingDefaultsIn):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
 class PlanIn(BaseModel):
@@ -95,6 +102,30 @@ def set_branding_defaults(
         BrandingConfig(**body.model_dump()), requester=str(client.id)
     )
     return BrandingDefaultsOut(**config.to_dict())
+
+
+@router.patch("/branding", response_model=BrandingDefaultsOut)
+def patch_branding_defaults(
+    body: BrandingPatchIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> BrandingDefaultsOut:
+    changes = body.model_dump(exclude_unset=True)
+    assets = BrandingAssets(publishing.media_root)
+    for key in ("logo_asset", "intro_asset", "outro_asset"):
+        value = changes.get(key)
+        if value is not None:
+            if not isinstance(value, str) or not value.startswith("branding/assets/"):
+                raise HTTPException(status_code=422, detail="upload a branding image first")
+            try:
+                assets.resolve(value.removeprefix("branding/assets/"))
+            except BrandingAssetNotFound as exc:
+                raise HTTPException(status_code=422, detail="branding image not found") from exc
+    try:
+        result = publishing.patch_branding_defaults(changes, requester=str(client.id))
+    except BrandingInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return BrandingDefaultsOut(**result.to_dict())
 
 
 @router.get("/plan", response_model=PlanOut)

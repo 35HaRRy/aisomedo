@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from dojo import DojoPublishing
+from dojo import DojoPublishing, DojoSetup
 from dojo.adapters.clock import SystemClock
 from dojo.adapters.db import PostgresStore
 from dojo.adapters.fcm import FcmNotifier
@@ -206,6 +206,9 @@ def build_publishing() -> DojoPublishing:
         jobs=store,
         settings=store,
         media_root=media_root,
+        setup=DojoSetup(
+            setup=store, audit=store, pairing=store, meta=build_meta(),
+        ),
         **kwargs,
     )
     try:

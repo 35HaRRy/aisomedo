@@ -1,4 +1,10 @@
 export const tr = {
+  tokenInvalid: "Token geçersiz veya gerekli Instagram izinleri eksik. Yeni bir token alıp deneyin.",
+  instagramUnavailable: "Instagram doğrulama servisine ulaşılamadı. Daha sonra tekrar deneyin.",
+  instagramUnconfigured: "Instagram bağlantısı sunucuda yapılandırılmamış. Sistem yöneticinize başvurun.",
+  oauthFailed: "Yetkilendirme tamamlanamadı veya süresi doldu. Yeniden başlatın.",
+  consentMissing: "Rıza metni henüz tanımlanmamış. Sistem yöneticiniz metni tanımladıktan sonra tekrar deneyin.",
+  consentChanged: "Rıza metni değişti. Yeni sürümü okuyup yeniden onaylayın.",
   app: "Dojo Yayıncılık", tagline: "Paylaşmadan önce, birlikte gözden geçirin.",
   dashboard: "Kontrol Paneli", package: "Güncel Paket", activity: "Etkinlik", settings: "Ayarlar",
   navigation: "Ana gezinme", skip: "İçeriğe geç", loading: "Bilgiler yükleniyor…",

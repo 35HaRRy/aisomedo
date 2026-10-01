@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import date, time
+from math import isfinite
 from typing import cast
 
 from dojo.adapters.clock import SystemClock
-from dojo.exceptions import ConsentPolicyDowngrade, NoConsentPolicy
+from dojo.exceptions import ConsentPolicyDowngrade
 from dojo.model import (
     AuditEvent,
     Client,
@@ -18,6 +20,12 @@ CONSENT_ITEM = "consent"
 LOGO_ITEM = "logo"
 CAPTION_TEMPLATE_ITEM = "caption_template"
 INSTAGRAM_ITEM = "instagram"
+SCHEDULE_ITEM = "schedule"
+CARDS_ITEM = "cards"
+
+
+def _nonempty(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 class DojoSetup:
@@ -50,8 +58,7 @@ class DojoSetup:
         """Wire the Instagram/Meta connection after construction.
 
         Backend lifespan builds ``meta`` and ``setup`` separately; without
-        this hook ``checklist()`` never sees the connection and the
-        ``instagram`` item is omitted (never ``complete=True``).
+        this hook the Instagram step remains incomplete.
         """
         self._meta = meta
 
@@ -87,39 +94,24 @@ class DojoSetup:
             return None
         return self._setup.find_acceptance(policy.version)
 
-    def accept_current_policy(self, *, client: Client) -> ConsentAcceptance:
-        """Accept the current policy version, once per version, idempotently."""
-        policy = self._setup.get_current_policy()
-        if policy is None:
-            raise NoConsentPolicy("no consent policy configured")
-        existing = self._setup.find_acceptance(policy.version)
-        if existing is not None:
-            return existing
+    def accept_current_policy(
+        self, *, client: Client, version: int | None = None
+    ) -> ConsentAcceptance:
+        """Accept only the displayed current version, atomically and idempotently."""
         now = self._clock.now()
-        acceptance = ConsentAcceptance(
-            policy_version=policy.version,
-            accepted_at=now,
-            accepting_client_id=client.id,
-            accepting_client_name=client.name,
-            accepting_client_kind=client.kind,
+        acceptance, inserted = self._setup.accept_policy_version(
+            client=client, version=version, accepted_at=now
         )
-        if self._setup.record_acceptance(acceptance):
+        if inserted:
             self._audit.append(
                 AuditEvent(
                     action="consent.accepted",
                     actor=str(client.id),
                     occurred_at=now,
-                    details={"version": policy.version},
+                    details={"version": acceptance.policy_version},
                 )
             )
-            recorded = self._setup.find_acceptance(policy.version)
-            if recorded is None:
-                raise NoConsentPolicy("consent acceptance lost")
-            return recorded
-        raced = self._setup.find_acceptance(policy.version)
-        if raced is None:
-            raise NoConsentPolicy("consent acceptance lost")
-        return raced
+        return acceptance
 
     def checklist(self) -> list[SetupItem]:
         """Derive the onboarding checklist from real state."""
@@ -128,8 +120,8 @@ class DojoSetup:
             policy is not None and self._setup.find_acceptance(policy.version) is not None
         )
         pairing_done = any(c.revoked_at is None for c in self._pairing.list_clients())
-        logo_done = self._settings.get("branding.logo_asset") is not None
-        caption_done = self._settings.get("branding.caption_template") is not None
+        logo_done = _nonempty(self._settings.get("branding.logo_asset"))
+        caption_done = _nonempty(self._settings.get("branding.caption_template"))
         instagram_done = False
         if self._meta is not None:
             try:
@@ -137,8 +129,12 @@ class DojoSetup:
                 instagram_done = status.health in ("healthy", "refresh_due")
             except Exception:
                 instagram_done = False
-        items = [
+        return [
             SetupItem(key=PAIRING_ITEM, label="Pairing", complete=pairing_done),
+            SetupItem(key=INSTAGRAM_ITEM, label="Instagram", complete=instagram_done),
+            SetupItem(
+                key=SCHEDULE_ITEM, label="Publication plan", complete=self._plan_configured()
+            ),
             SetupItem(key=CONSENT_ITEM, label="Media consent", complete=consent_done),
             SetupItem(key=LOGO_ITEM, label="Dojo logo", complete=logo_done),
             SetupItem(
@@ -146,14 +142,60 @@ class DojoSetup:
                 label="Caption template",
                 complete=caption_done,
             ),
+            SetupItem(
+                key=CARDS_ITEM,
+                label="Optional cards",
+                complete=self._cards_reviewed(),
+                required=False,
+            ),
         ]
-        if self._meta is not None:
-            items.append(SetupItem(key=INSTAGRAM_ITEM, label="Instagram", complete=instagram_done))
-        return items
+
+    def _plan_configured(self) -> bool:
+        anchor = self._settings.get("schedule.anchor_date")
+        local_time = self._settings.get("schedule.anchor_time")
+        if not isinstance(anchor, str) or not isinstance(local_time, str):
+            return False
+        try:
+            return date.fromisoformat(anchor).weekday() == 0 and (
+                time.fromisoformat(local_time).tzinfo is None
+            )
+        except ValueError:
+            return False
+
+    def _cards_reviewed(self) -> bool:
+        if self._settings.get("setup.cards_reviewed") is True:
+            return True
+        configured = False
+        for kind in ("intro", "outro"):
+            asset = self._settings.get(f"branding.{kind}_asset")
+            duration = self._settings.get(f"branding.{kind}_duration")
+            if asset is None:
+                if duration is not None:
+                    return False
+                continue
+            if not _nonempty(asset):
+                return False
+            if duration is not None and (
+                isinstance(duration, bool)
+                or not isinstance(duration, (int, float))
+                or not isfinite(duration)
+                or duration <= 0
+            ):
+                return False
+            configured = True
+        return configured
+
+    def skip_cards(self, *, requester: str) -> None:
+        """Review the optional step without removing existing card assets."""
+        now = self._clock.now()
+        self._settings.set("setup.cards_reviewed", True, updated_at=now)
+        self._audit.append(
+            AuditEvent(action="setup.cards_reviewed", actor=requester, occurred_at=now)
+        )
 
     def checklist_item(self, key: str) -> SetupItem:
         return next(item for item in self.checklist() if item.key == key)
 
     def is_ready(self) -> bool:
-        """True when every onboarding checklist item is complete."""
-        return all(item.complete for item in self.checklist())
+        """True when every required onboarding checklist item is complete."""
+        return all(item.complete for item in self.checklist() if item.required)

@@ -126,6 +126,7 @@ class SetupItem:
     key: str
     label: str
     complete: bool
+    required: bool = True
 
 
 @dataclass(frozen=True)

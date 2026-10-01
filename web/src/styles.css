@@ -9,6 +9,21 @@
   --accent: #16665b;
   --accent-soft: #e6f1ee;
 }
+.onboarding { display: grid; gap: 24px; max-width: 1040px; }
+.onboarding-progress { padding: 0; margin: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.onboarding-progress button { width: 100%; height: 100%; text-align: left; color: var(--muted); border-color: var(--line); overflow-wrap: anywhere; }
+.onboarding-progress button[aria-current="step"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.onboarding-progress small { display: block; font-weight: normal; }
+.onboarding-form, .onboarding-form form { display: grid; gap: 16px; }
+.onboarding-form { max-width: 680px; }
+.onboarding-form input:not([type="checkbox"]), .onboarding-form textarea { width: 100%; min-width: 0; padding: 10px; font: inherit; color: inherit; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.onboarding-form textarea { min-height: 150px; resize: vertical; }
+.onboarding-form .checkbox-label { display: flex; align-items: flex-start; gap: 10px; }
+.onboarding-form input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; margin-top: 3px; }
+.onboarding-form fieldset { display: grid; gap: 12px; min-width: 0; padding: 18px; border: 1px solid var(--line); }
+.branding-preview { max-width: 100%; max-height: 220px; object-fit: contain; }
+.consent-text { white-space: pre-wrap; overflow-wrap: anywhere; padding: 20px; border-left: 3px solid var(--accent); background: #f4f6f6; }
+@media (max-width: 600px) { .onboarding-progress { grid-template-columns: 1fr 1fr; } .onboarding .summary-sheet { padding: 16px; } }
 * { box-sizing: border-box; }
 body { margin: 0; font-size: 16px; line-height: 1.55; }
 ::selection { background: #b9ddd4; color: #122f29; }

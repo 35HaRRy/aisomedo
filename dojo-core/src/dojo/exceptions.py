@@ -42,6 +42,10 @@ class NoConsentPolicy(ConsentError):
     pass
 
 
+class ConsentPolicyChanged(ConsentError):
+    pass
+
+
 class UploadNotFound(DojoError):
     pass
 
@@ -115,6 +119,22 @@ class MontageDurationExceeded(DojoError):
 
 
 class LogoNotConfigured(DojoError):
+    pass
+
+
+class BrandingInvalid(DojoError):
+    pass
+
+
+class BrandingAssetInvalid(DojoError):
+    pass
+
+
+class BrandingAssetTooLarge(DojoError):
+    pass
+
+
+class BrandingAssetNotFound(DojoError):
     pass
 
 

@@ -8,14 +8,19 @@ import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
+from math import isfinite
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from dojo.setup import DojoSetup
 
 from dojo.adapters.clock import ISTANBUL, SystemClock
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
 from dojo.dashboard import PendingAction, PublishingDashboard, next_slot
 from dojo.exceptions import (
     ActivePackageExists,
+    BrandingInvalid,
     JobNotFound,
     LogoNotConfigured,
     ManualPublishConflict,
@@ -198,8 +203,10 @@ class DojoPublishing:
         reviews: ReviewStore | None = None,
         pairing: PairingStore | None = None,
         push_regs: PushRegistrationStore | None = None,
+        setup: DojoSetup | None = None,
     ) -> None:
         self._packages = packages
+        self._setup = setup
         self._audit = audit
         self.media_root = Path(media_root)
         self._clock = clock or SystemClock()
@@ -1171,6 +1178,8 @@ class DojoPublishing:
         and HTTP work stays outside: ``process_job`` is called separately,
         after the scope closes.
         """
+        if self._setup is not None and not self._setup.is_ready():
+            return
         self.ensure_schedule_upto()
         self._ensure_reviews_for_due()
 
@@ -1200,6 +1209,13 @@ class DojoPublishing:
         Idempotent: a review already recorded for ``(occurrence_id, revision_digest)``
         is never duplicated, so scheduler re-runs and restarts add nothing.
         """
+        if self._setup is not None and not self._setup.is_ready():
+            return
+        plan = self.get_plan()
+        regular_enabled = (
+            plan.enabled and plan.anchor_date is not None
+            and plan.anchor_date.weekday() == 0 and plan.anchor_time is not None
+        )
         due = self._schedule.list_due(self._clock.now())
         if not due:
             return
@@ -1207,6 +1223,8 @@ class DojoPublishing:
         caption = manifest.get("caption")
         now = self._clock.now()
         for occurrence in due:
+            if occurrence.kind == "regular" and not regular_enabled:
+                continue
             if (
                 self._reviews.get_by_occurrence_revision(occurrence.id, digest)
                 is not None
@@ -1775,6 +1793,8 @@ class DojoPublishing:
         return occurrence
 
     def ensure_schedule_upto(self, now: datetime | None = None) -> None:
+        if self._setup is not None and not self._setup.is_ready():
+            return
         plan = self.get_plan()
         if not plan.enabled or plan.anchor_date is None or plan.anchor_time is None:
             return
@@ -1842,6 +1862,38 @@ class DojoPublishing:
             )
         )
         return self.get_branding_defaults()
+
+    def patch_branding_defaults(
+        self, changes: dict[str, object], requester: str | None = None
+    ) -> BrandingConfig:
+        """Validate a partial update before writing only the changed settings."""
+        current = self.get_branding_defaults().to_dict()
+        if changes.keys() - current.keys():
+            raise BrandingInvalid("unknown branding field")
+        updates = dict(changes)
+        for key, value in changes.items():
+            if value is None:
+                continue
+            if key.endswith("_duration"):
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not isfinite(value) or value <= 0):
+                    raise BrandingInvalid("card duration must be a positive finite number")
+            elif not isinstance(value, str) or not value.strip():
+                raise BrandingInvalid("branding text and asset references must be nonempty")
+        for kind in ("intro", "outro"):
+            asset_key, duration_key = f"{kind}_asset", f"{kind}_duration"
+            if asset_key in updates and updates[asset_key] is None:
+                updates[duration_key] = None
+            combined = {**current, **updates}
+            if combined[asset_key] is None and combined[duration_key] is not None:
+                raise BrandingInvalid("card duration requires a card asset")
+        now = self._clock.now()
+        for key, value in updates.items():
+            self._settings.set(f"branding.{key}", value, updated_at=now)
+        result = self.get_branding_defaults()
+        self._audit.append(AuditEvent(action="branding.defaults_updated",
+            actor=requester or "system", occurred_at=now, details=result.to_dict()))
+        return result
 
     def _seed_draft_defaults(self, package: Package) -> None:
         defaults = self.get_branding_defaults()

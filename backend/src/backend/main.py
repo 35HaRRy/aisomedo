@@ -19,6 +19,7 @@ from backend.deps import (
 )
 from backend.proxy import ProxyHeadersMiddleware, parse_trusted_proxies
 from backend.routes import activity as activity_router
+from backend.routes import branding_assets as branding_assets_router
 from backend.routes import compat as compat_router
 from backend.routes import dashboard as dashboard_router
 from backend.routes import health, packages
@@ -184,6 +185,7 @@ def create_app(
     app.include_router(setup_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(media_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(settings_router.router, dependencies=[Depends(get_current_client)])
+    app.include_router(branding_assets_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(meta_router.router)
     app.include_router(publication_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(publication_router.fetch_router)
