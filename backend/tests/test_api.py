@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
 from dojo.adapters.stubs import (
@@ -278,6 +279,9 @@ def test_device_accepts_consent_and_setup_becomes_ready(tmp_path: Path) -> None:
     setup._settings.set(
         "branding.caption_template", "Bugün dojoda", updated_at=FakeClock().now()
     )
+    setup._settings.set("schedule.anchor_date", "2026-10-05", updated_at=FakeClock().now())
+    setup._settings.set("schedule.anchor_time", "10:00", updated_at=FakeClock().now())
+    setup.attach_meta(SimpleNamespace(get_status=lambda: SimpleNamespace(health="healthy")))
 
     consent = client.get("/api/setup/consent", headers=bearer(token)).json()
     assert consent["version"] == 1

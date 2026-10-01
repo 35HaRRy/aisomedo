@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 from dojo import ConsentPolicyDowngrade, DojoPairing, DojoSetup, NoConsentPolicy
@@ -155,6 +156,10 @@ def test_is_ready_requires_all_items() -> None:
     setup.accept_current_policy(client=client)
     assert setup.is_ready() is False
     configure_branding(store)
+    assert setup.is_ready() is False
+    store.set("schedule.anchor_date", "2026-10-05", updated_at=FakeClock().now())
+    store.set("schedule.anchor_time", "10:00", updated_at=FakeClock().now())
+    setup.attach_meta(SimpleNamespace(get_status=lambda: SimpleNamespace(health="healthy")))
     assert setup.is_ready() is True
 
 
