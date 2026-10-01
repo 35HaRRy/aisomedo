@@ -3,6 +3,8 @@ import { tr } from "../i18n";
 import { firstIncompleteRequired } from "./state";
 import type { OnboardingStep } from "./types";
 import { useOnboarding } from "./useOnboarding";
+import { InstagramStep } from "./InstagramStep";
+import { ConsentStep } from "./ConsentStep";
 
 export const stepTitles: Record<OnboardingStep, string> = {
   pairing: "Tarayıcı eşleştirmesi", instagram: "Instagram bağlantısı", schedule: "Dojo Yayın Planı",
@@ -24,6 +26,8 @@ export function OnboardingWizard() {
         {stepTitles[item.key as OnboardingStep]} <small>{item.complete ? "Tamamlandı" : item.required === false ? "İsteğe bağlı" : "Bekliyor"}</small>
       </button></li>)}</ol>
     <div className="summary-sheet">{step === "pairing" && <p>Bu tarayıcı eşleştirildi.</p>}
+      {step === "instagram" && <InstagramStep onSaved={() => setSelected(null)} />}
+      {step === "consent" && <ConsentStep onSaved={() => setSelected(null)} />}
       {!step && <><p>Gerekli adımlar backend tarafından doğrulandı. Kartları isterseniz daha sonra ekleyebilirsiniz.</p><a href="#/dashboard">Kontrol Paneline git</a></>}
     </div><a href="#/dashboard">Kuruluma sonra devam et</a>
   </section>;
