@@ -10,7 +10,10 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from math import isfinite
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from dojo.setup import DojoSetup
 
 from dojo.adapters.clock import ISTANBUL, SystemClock
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
@@ -200,8 +203,10 @@ class DojoPublishing:
         reviews: ReviewStore | None = None,
         pairing: PairingStore | None = None,
         push_regs: PushRegistrationStore | None = None,
+        setup: DojoSetup | None = None,
     ) -> None:
         self._packages = packages
+        self._setup = setup
         self._audit = audit
         self.media_root = Path(media_root)
         self._clock = clock or SystemClock()
@@ -1173,6 +1178,8 @@ class DojoPublishing:
         and HTTP work stays outside: ``process_job`` is called separately,
         after the scope closes.
         """
+        if self._setup is not None and not self._setup.is_ready():
+            return
         self.ensure_schedule_upto()
         self._ensure_reviews_for_due()
 
@@ -1202,6 +1209,13 @@ class DojoPublishing:
         Idempotent: a review already recorded for ``(occurrence_id, revision_digest)``
         is never duplicated, so scheduler re-runs and restarts add nothing.
         """
+        if self._setup is not None and not self._setup.is_ready():
+            return
+        plan = self.get_plan()
+        regular_enabled = (
+            plan.enabled and plan.anchor_date is not None
+            and plan.anchor_date.weekday() == 0 and plan.anchor_time is not None
+        )
         due = self._schedule.list_due(self._clock.now())
         if not due:
             return
@@ -1209,6 +1223,8 @@ class DojoPublishing:
         caption = manifest.get("caption")
         now = self._clock.now()
         for occurrence in due:
+            if occurrence.kind == "regular" and not regular_enabled:
+                continue
             if (
                 self._reviews.get_by_occurrence_revision(occurrence.id, digest)
                 is not None
@@ -1777,6 +1793,8 @@ class DojoPublishing:
         return occurrence
 
     def ensure_schedule_upto(self, now: datetime | None = None) -> None:
+        if self._setup is not None and not self._setup.is_ready():
+            return
         plan = self.get_plan()
         if not plan.enabled or plan.anchor_date is None or plan.anchor_time is None:
             return

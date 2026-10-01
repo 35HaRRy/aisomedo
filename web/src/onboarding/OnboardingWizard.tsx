@@ -29,6 +29,7 @@ export function OnboardingWizard() {
   useEffect(() => { heading.current?.focus(); }, [step]);
   if (!setup) return error ? <div role="alert">{tr.loadError}<button onClick={() => void refresh().catch(() => {})}>{tr.retry}</button></div> : <p role="status">{tr.loading}</p>;
   return <section className="onboarding">
+    {error && <div role="alert" className="notice"><p>{tr.stale}</p><button onClick={() => void refresh().catch(() => {})}>{tr.retry}</button></div>}
     <header className="page-heading"><p>İlk kurulum · Kaydedilen adımlar korunur</p>
       <h1 ref={heading} tabIndex={-1}>{step ? stepTitles[step] : "Kurulum tamamlandı"}</h1>
       <p>Dojo yayınları için bağlantı, plan ve medya tercihlerini hazırlayın.</p></header>

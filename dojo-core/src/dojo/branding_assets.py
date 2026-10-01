@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+from zlib import crc32
 
 from PIL import Image, UnidentifiedImageError
 
@@ -14,6 +15,26 @@ from dojo.exceptions import BrandingAssetInvalid, BrandingAssetNotFound, Brandin
 MAX_BRANDING_BYTES = 10 * 1024**2
 MAX_BRANDING_SIDE = 4096
 _ASSET_ID = re.compile(r"[0-9a-f]{32}\.(png|jpg)")
+
+
+def _validate_png_container(data: bytes) -> None:
+    """Pillow tolerates missing terminal chunks; uploads must be complete."""
+    offset = 8
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "big")
+        end = offset + 12 + length
+        if end > len(data):
+            break
+        kind = data[offset + 4:offset + 8]
+        expected = int.from_bytes(data[end - 4:end], "big")
+        if crc32(data[offset + 4:end - 4]) != expected:
+            raise BrandingAssetInvalid("invalid PNG checksum")
+        if kind == b"IEND":
+            if length == 0 and end == len(data):
+                return
+            break
+        offset = end
+    raise BrandingAssetInvalid("incomplete PNG container")
 
 
 @dataclass(frozen=True)
@@ -33,6 +54,8 @@ class BrandingAssets:
     def save_image(self, data: bytes) -> BrandingAsset:
         if len(data) > MAX_BRANDING_BYTES:
             raise BrandingAssetTooLarge("branding image exceeds 10 MiB")
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            _validate_png_container(data)
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)

@@ -42,3 +42,14 @@ it("required readiness offers optional cards, focus and explicit finish", async 
   fireEvent.click(screen.getByRole("button", { name: "Kartları değiştirmeden devam et" }));
   await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
 });
+
+it("announces failed setup refresh while preserving stale progress", async () => {
+  let failed = false;
+  vi.stubGlobal("fetch", async (url: string) => new Response(JSON.stringify(url.endsWith("/me") ? client : setupState()), { status: url === "/api/setup" && failed ? 500 : 200 }));
+  render(<SessionProvider><OnboardingProvider><OnboardingWizard /></OnboardingProvider></SessionProvider>);
+  await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
+  failed = true;
+  await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise(done => setTimeout(done, 20)); });
+  expect(screen.getByRole("alert")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Kurulum tamamlandı" })).toBeInTheDocument();
+});

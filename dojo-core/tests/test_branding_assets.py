@@ -77,6 +77,19 @@ def test_animated_png_is_rejected(tmp_path: Path) -> None:
         dojo.BrandingAssets(tmp_path).save_image(output.getvalue())
 
 
+@pytest.mark.parametrize("cut", [1, 12, 20])
+def test_tail_truncated_png_is_rejected(tmp_path: Path, cut: int) -> None:
+    with pytest.raises(dojo.BrandingAssetInvalid):
+        dojo.BrandingAssets(tmp_path).save_image(image_bytes()[:-cut])
+
+
+def test_bad_png_terminal_crc_is_rejected(tmp_path: Path) -> None:
+    data = bytearray(image_bytes())
+    data[-1] ^= 1
+    with pytest.raises(dojo.BrandingAssetInvalid):
+        dojo.BrandingAssets(tmp_path).save_image(bytes(data))
+
+
 @pytest.mark.parametrize("asset_id", ["../../secret.png", "C:/secret.png", "logo.png", "missing"])
 def test_preview_rejects_user_paths(tmp_path: Path, asset_id: str) -> None:
     with pytest.raises(dojo.BrandingAssetNotFound):

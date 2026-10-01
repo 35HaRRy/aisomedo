@@ -8,6 +8,7 @@ import { BrandingStep } from "./BrandingStep";
 
 function mount(kind: "logo" | "caption_template", uploadStatus = 201) {
   let caption = "Old";
+  let logo = "legacy/logo.png";
   const sent = vi.fn(); const saved = vi.fn();
   const content = (show = true) => <SessionProvider><OnboardingProvider>{show && <BrandingStep kind={kind} onSaved={saved} />}</OnboardingProvider></SessionProvider>;
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
@@ -15,10 +16,10 @@ function mount(kind: "logo" | "caption_template", uploadStatus = 201) {
     if (url === "/api/setup") return new Response(JSON.stringify(setupState(kind)));
     if (url.endsWith("/assets")) return new Response(JSON.stringify({ asset: "branding/assets/new.png", preview_url: "/api/settings/branding/assets/new.png" }), { status: uploadStatus });
     if (init.method === "PATCH") sent(JSON.parse(String(init.body)));
-    return new Response(JSON.stringify({ logo_asset: "legacy/logo.png", caption_template: caption, intro_asset: "intro.png", intro_duration: 2, outro_asset: null, outro_duration: null }));
+    return new Response(JSON.stringify({ logo_asset: logo, caption_template: caption, intro_asset: "intro.png", intro_duration: 2, outro_asset: null, outro_duration: null }));
   });
   const view = render(content());
-  return { ...view, sent, saved, update: () => { caption = "Fresh"; }, leave: () => view.rerender(content(false)) };
+  return { ...view, sent, saved, updateLogo: () => { logo = "new/logo.png"; }, update: () => { caption = "Fresh"; }, leave: () => view.rerender(content(false)) };
 }
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 it("uploads and installs only logo with authenticated preview", async () => {
@@ -67,4 +68,15 @@ it("late upload cannot install after leaving step", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Logoyu kaydet" })); leave();
   await act(async () => complete({ asset: "branding/assets/late.png", preview_url: "/api/settings/branding/assets/late.png" }));
   expect(sent).not.toHaveBeenCalled();
+});
+
+it("detects image-only server change without replacing selected logo", async () => {
+  const { updateLogo } = mount("logo");
+  await screen.findByText(/Logo tanımlı/);
+  fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["x"], "draft.png", { type: "image/png" })] } });
+  updateLogo();
+  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.getByRole("button", { name: "Logoyu kaydet" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" }));
+  expect(screen.getByRole("button", { name: "Logoyu kaydet" })).toBeDisabled();
 });

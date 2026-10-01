@@ -6,7 +6,7 @@ import { AssetPreview, imageError, ReloadDraft, useDraft, useFormSave } from "./
 
 export function BrandingStep({ kind, onSaved }: { kind: "logo" | "caption_template"; onSaved: () => void }) {
   const snapshot = useLiveData(api.branding);
-  const state = useDraft(snapshot.data ? { caption: snapshot.data.caption_template ?? "" } : null, { caption: "" });
+  const state = useDraft(snapshot.data ? { caption: snapshot.data.caption_template ?? "", logo: snapshot.data.logo_asset ?? null } : null, { caption: "", logo: null as string | null });
   const form = useFormSave(onSaved);
   const [file, setFile] = useState<File | null>(null);
   const [fileKey, setFileKey] = useState(0);
@@ -36,7 +36,7 @@ export function BrandingStep({ kind, onSaved }: { kind: "logo" | "caption_templa
           const error = chosen ? imageError(chosen) : null; form.setError(error); setFile(error ? null : chosen);
           if (chosen) state.edit(state.draft);
         }} /></> : <><p>Yeni paketlerin açıklaması bu şablondan oluşturulur. Mevcut paketler değişmez.</p>
-        <label htmlFor="caption-template">Açıklama şablonu</label><textarea id="caption-template" required value={state.draft.caption} disabled={form.busy} onChange={event => state.edit({ caption: event.target.value })} /></>}
+        <label htmlFor="caption-template">Açıklama şablonu</label><textarea id="caption-template" required value={state.draft.caption} disabled={form.busy} onChange={event => state.edit({ ...state.draft, caption: event.target.value })} /></>}
       <button className="primary" disabled={form.busy || !snapshot.data || snapshot.error || (kind === "logo" && !file)}>{form.busy ? stage === "upload" && kind === "logo" ? "Görsel yükleniyor…" : "Kaydediliyor…" : kind === "logo" ? "Logoyu kaydet" : "Açıklamayı kaydet"}</button>
     </form>{form.error && <p role="alert">{kind === "logo" ? stage === "upload" ? "Görsel yüklenemedi. " : "Logo yüklenmiş olsa da ayar kaydedilemedi. " : ""}{form.error}</p>}
   </div>;

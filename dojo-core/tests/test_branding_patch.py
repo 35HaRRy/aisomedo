@@ -4,6 +4,7 @@ from pathlib import Path
 
 import dojo
 import pytest
+
 from tests.test_branding import load_manifest, make_seam, set_defaults
 
 

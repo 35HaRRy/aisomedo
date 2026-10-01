@@ -1,9 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import date, time
 from threading import Barrier, Event
 
 import pytest
-from dojo import DojoPublishing
+from dojo import DojoPublishing, SchedulePlan
 from dojo.adapters.db import PostgresStore
 from dojo.adapters.memory import InMemoryStore
 from dojo.adapters.stubs import StubReelRenderer
@@ -105,6 +106,9 @@ def test_later_tick_during_blocked_render(pg_store, other, tmp_path):
 
 def test_review_race_records_one_creation(pg_store, other, tmp_path, monkeypatch):
     first, second = seam(pg_store, tmp_path), seam(other, tmp_path)
+    first.set_plan(SchedulePlan(
+        anchor_date=date(2026, 8, 3), anchor_time=time(10), enabled=True,
+    ))
     package = first.get_or_create_active_package()
     pg_store.create(YayinZamani(id=0, kind="regular", due_at=FIXED_AT,
                                status="pending", created_at=FIXED_AT))
