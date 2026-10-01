@@ -108,6 +108,91 @@ def test_start_upload_no_collision_stays_receiving(tmp_path):
     assert status.conflicts == []
 
 
+def test_conflict_preview_resolves_only_current_colliding_target(tmp_path):
+    from dojo import MediaNotFound
+
+    _, seam = make_seam(tmp_path)
+    target = finalize_media(tmp_path, seam)
+    conflict = seam.start_upload("PHOTO.JPG", "image/jpeg", 100)
+    path, content_type = seam.get_conflict_preview(conflict.upload_id, target)
+    assert path.read_bytes() == b"x" * 100
+    assert content_type == "image/jpeg"
+    with pytest.raises(MediaNotFound):
+        seam.get_conflict_preview(conflict.upload_id, "other-target")
+    seam.resolve_conflict(conflict.upload_id, "keep_target")
+    with pytest.raises(UploadConflict):
+        seam.get_conflict_preview(conflict.upload_id, target)
+
+
+@pytest.mark.parametrize("reference", ["../secret.jpg", "/secret.jpg", "media/other/processed.jpg"])
+def test_conflict_preview_rejects_manifest_path_escape(tmp_path, reference):
+    from dojo import MediaNotFound
+
+    _, seam = make_seam(tmp_path)
+    target = finalize_media(tmp_path, seam)
+    conflict = seam.start_upload("photo.jpg", "image/jpeg", 100)
+    package = seam.get_active_package()
+    manifest_path = tmp_path / package.folder_name / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["media"][0]["processed"]["path"] = reference
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(MediaNotFound):
+        seam.get_conflict_preview(conflict.upload_id, target)
+
+
+def test_conflict_preview_missing_file_and_upload_are_not_found(tmp_path):
+    from dojo import MediaNotFound
+
+    _, seam = make_seam(tmp_path)
+    target = finalize_media(tmp_path, seam)
+    conflict = seam.start_upload("photo.jpg", "image/jpeg", 100)
+    package = seam.get_active_package()
+    (tmp_path / package.folder_name / "media" / target / "processed.jpg").unlink()
+    with pytest.raises(MediaNotFound):
+        seam.get_conflict_preview(conflict.upload_id, target)
+    with pytest.raises(UploadNotFound):
+        seam.get_conflict_preview("missing-upload", target)
+
+
+@pytest.mark.parametrize(
+    "processed", [None, [], {"content_type": []}, {"content_type": "text/html"}],
+)
+def test_conflict_preview_fails_closed_for_malformed_processed_metadata(tmp_path, processed):
+    from dojo import MediaNotFound
+
+    _, seam = make_seam(tmp_path)
+    target = finalize_media(tmp_path, seam)
+    conflict = seam.start_upload("photo.jpg", "image/jpeg", 100)
+    package = seam.get_active_package()
+    manifest_path = tmp_path / package.folder_name / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["media"][0]["processed"] = processed
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(MediaNotFound):
+        seam.get_conflict_preview(conflict.upload_id, target)
+
+
+def test_bulk_overwrite_honors_the_target_that_was_previewed(tmp_path):
+    _, seam = make_seam(tmp_path)
+    finalize_media(tmp_path, seam)
+    package = seam.get_active_package()
+    manifest_path = tmp_path / package.folder_name / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["media"].append({**manifest["media"][0], "media_id": "selected-target"})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    first = seam.start_upload("photo.jpg", "image/jpeg", 100)
+    second = seam.start_upload("PHOTO.JPG", "image/jpeg", 100)
+    seam.resolve_conflict(
+        first.upload_id, "keep_selected", target_media_id="selected-target",
+        confirmed_overwrite=True, apply_to_all=True,
+    )
+    decisions = [event for event in seam.list_audit() if event.action == "conflict.resolved"]
+    assert {event.details["upload_id"] for event in decisions} == {
+        first.upload_id, second.upload_id,
+    }
+    assert {event.details["target_media_id"] for event in decisions} == {"selected-target"}
+
+
 def test_resolve_unknown_upload_raises(tmp_path):
     _, seam = make_seam(tmp_path)
     with pytest.raises(UploadNotFound):

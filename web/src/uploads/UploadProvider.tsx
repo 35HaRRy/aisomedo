@@ -18,7 +18,7 @@ export function UploadProvider({ children, onPackageChanged }: { children: React
     let storage: Storage | null = null;
     try { storage = window.localStorage; } catch { /* Blocked storage must not hide shell. */ }
     const transport = { limits: api.uploadLimits, start: api.startUpload, status: api.uploadStatus,
-      range: api.uploadRange, complete: api.completeUpload };
+      range: api.uploadRange, complete: api.completeUpload, resolve: api.resolveUpload };
     // Create in setup: StrictMode cleanup must not leave a reused disposed store.
     const controller = createUploadController({ clientId: client.id, storage, transport,
       onUnauthorized: invalidate, onPackageChanged: () => changed.current() });

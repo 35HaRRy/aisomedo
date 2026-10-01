@@ -6,8 +6,8 @@ import type { UploadOut } from "../api/openapi";
 
 beforeEach(() => { localStorage.clear(); installCrypto(); });
 
-async function fixture(storage: Storage | null = localStorage) {
-  const server = uploadServer();
+async function fixture(storage: Storage | null = localStorage, conflicts = false) {
+  const server = uploadServer({ conflicts });
   const onUnauthorized = vi.fn();
   const onPackageChanged = vi.fn();
   const options = { clientId: 1, transport: server.transport, storage, onUnauthorized, onPackageChanged };
@@ -148,6 +148,168 @@ it("filename conflict blocks transfer and retries", async () => {
   await f.controller.retry(row.id);
   expect(f.transport.start).toHaveBeenCalledTimes(1);
   expect(f.transport.range).not.toHaveBeenCalled();
+});
+
+it("keep both resumes retained file under original upload ID", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  const row = f.controller.getSnapshot().rows[0];
+  await f.controller.resolve(row.id, { decision: "keep_both" });
+  expect(f.controller.getSnapshot().rows[0].phase).toBe("queued");
+  expect(f.transport.start).toHaveBeenCalledTimes(1);
+  expect(f.transport.range.mock.calls[0][0]).toBe("upload-1");
+});
+
+it("keep existing is skipped, not expired, including after reload", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  await f.controller.resolve(f.controller.getSnapshot().rows[0].id, { decision: "keep_target" });
+  expect(f.controller.getSnapshot().rows[0].phase).toBe("skipped");
+  f.controller.dispose();
+  const next = createUploadController(f.options);
+  await next.initialize(new AbortController().signal);
+  expect(next.getSnapshot().rows[0].phase).toBe("skipped");
+  await next.retry(next.getSnapshot().rows[0].id);
+  expect(f.transport.start).toHaveBeenCalledTimes(1);
+  expect(f.transport.range).not.toHaveBeenCalled();
+});
+
+it("bulk resolution reconciles each upload ID and leaves incompatible conflict untouched", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file(), new File(["second"], "DOJO.JPG"), new File(["other"], "other.jpg")]);
+  await f.controller.resolve(f.controller.getSnapshot().rows[0].id, { decision: "keep_both", apply_to_all: true });
+  expect(f.controller.getSnapshot().rows.map(row => row.phase)).toEqual(["queued", "queued", "conflict"]);
+  expect(f.transport.range.mock.calls.map(call => call[0])).toEqual(["upload-1", "upload-2"]);
+});
+
+it("restored conflict resolves without bytes until original file is reselected", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  f.controller.dispose();
+  const next = createUploadController(f.options);
+  await next.initialize(new AbortController().signal);
+  const row = next.getSnapshot().rows[0];
+  await next.resolve(row.id, { decision: "keep_both" });
+  expect(next.getSnapshot().rows[0].phase).toBe("needs-file");
+  expect(f.transport.range).not.toHaveBeenCalled();
+  await next.resume(row.id, file());
+  expect(next.getSnapshot().rows[0].phase).toBe("queued");
+});
+
+it("overwrite requires explicit confirmation and a valid target before transport", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  const row = f.controller.getSnapshot().rows[0];
+  await f.controller.resolve(row.id, { decision: "keep_selected", target_media_id: "dojo.jpg" });
+  await f.controller.resolve(row.id, { decision: "keep_selected", target_media_id: "unknown", confirmed_overwrite: true });
+  expect(f.transport.resolve).not.toHaveBeenCalled();
+  await f.controller.resolve(row.id, { decision: "keep_selected", target_media_id: "dojo.jpg", confirmed_overwrite: true });
+  expect(f.controller.getSnapshot().rows[0].phase).toBe("queued");
+});
+
+it("lost resolution response reconciles server state without repeating overwrite", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  f.transport.resolve.mockImplementationOnce(async id => {
+    f.records.set(id, { ...f.records.get(id)!, status: "receiving", conflicts: [] });
+    throw new ApiError(0);
+  });
+  await f.controller.resolve(f.controller.getSnapshot().rows[0].id, { decision: "keep_both" });
+  expect(f.controller.getSnapshot().rows[0].phase).toBe("queued");
+  expect(f.transport.resolve).toHaveBeenCalledTimes(1);
+});
+
+it("resolution is single-flight and ignores results after disposal", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  const pending = deferred<UploadOut>();
+  f.transport.resolve.mockImplementationOnce(() => pending.promise);
+  const row = f.controller.getSnapshot().rows[0];
+  const first = f.controller.resolve(row.id, { decision: "keep_both" });
+  await f.controller.resolve(row.id, { decision: "keep_target" });
+  expect(f.transport.resolve).toHaveBeenCalledTimes(1);
+  f.controller.dispose();
+  pending.resolve({ ...row.status!, status: "receiving" });
+  await first;
+  expect(f.controller.getSnapshot().rows).toEqual([]);
+  expect(f.transport.range).not.toHaveBeenCalled();
+});
+
+it("401 during resolution clears uploads and invalidates session", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  f.transport.resolve.mockRejectedValueOnce(new ApiError(401));
+  await f.controller.resolve(f.controller.getSnapshot().rows[0].id, { decision: "keep_target" });
+  expect(f.onUnauthorized).toHaveBeenCalledTimes(1);
+  expect(f.controller.getSnapshot().rows).toEqual([]);
+});
+
+it("bulk resolution never resumes a different filename resolved by another client", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file(), new File(["other"], "other.jpg")]);
+  // Another client resolves unrelated upload between this browser's last read and decision.
+  f.records.set("upload-2", { ...f.records.get("upload-2")!, status: "receiving", conflicts: [] });
+  await f.controller.resolve(f.controller.getSnapshot().rows[0].id, { decision: "keep_target", apply_to_all: true });
+  expect(f.controller.getSnapshot().rows[0].phase).toBe("skipped");
+  expect(f.transport.range).not.toHaveBeenCalled();
+  expect(f.transport.status.mock.calls.map(call => call[0])).toEqual(["upload-1"]);
+});
+
+it("keep existing intent survives a failed reconciliation and reload", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file()]);
+  f.transport.status.mockRejectedValueOnce(new ApiError(0));
+  await f.controller.resolve(f.controller.getSnapshot().rows[0].id, { decision: "keep_target" });
+  f.controller.dispose();
+  const next = createUploadController(f.options);
+  await next.initialize(new AbortController().signal);
+  expect(next.getSnapshot().rows[0].phase).toBe("skipped");
+  expect(f.transport.resolve).toHaveBeenCalledTimes(1);
+  expect(f.transport.range).not.toHaveBeenCalled();
+});
+
+it("bulk resolution invalidates older conflict polls before reconciling every compatible ID", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file(), file("second")]);
+  const stale = deferred<UploadOut>();
+  const oldStatus = structuredClone(f.records.get("upload-1")!);
+  f.transport.status.mockImplementationOnce(() => stale.promise);
+  const polling = f.controller.refresh(new AbortController().signal);
+  const decision = f.controller.resolve(f.controller.getSnapshot().rows[1].id, { decision: "keep_both", apply_to_all: true });
+  // Late response was captured before resolution; it must not overwrite fresh state.
+  stale.resolve(oldStatus);
+  await Promise.all([polling, decision]);
+  expect(f.controller.getSnapshot().rows.map(row => row.phase)).toEqual(["queued", "queued"]);
+  expect(f.transport.range.mock.calls.map(call => call[0])).toEqual(["upload-1", "upload-2"]);
+});
+
+it("bulk recovers missing conflict metadata after partially failed reload", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file(), file("second")]);
+  f.controller.dispose();
+  f.transport.status.mockResolvedValueOnce(f.records.get("upload-1")!).mockRejectedValueOnce(new ApiError(0));
+  const next = createUploadController(f.options);
+  await next.initialize(new AbortController().signal);
+  expect(next.getSnapshot().rows[1].status?.conflicts).toEqual([]);
+  await next.resolve(next.getSnapshot().rows[0].id, { decision: "keep_target", apply_to_all: true });
+  await next.refresh(new AbortController().signal);
+  expect(next.getSnapshot().rows.map(row => row.phase)).toEqual(["skipped", "skipped"]);
+});
+
+it("bulk refuses to send decision while another conflict's metadata remains unavailable", async () => {
+  const f = await fixture(localStorage, true);
+  await f.controller.add([file(), file("second")]);
+  f.controller.dispose();
+  f.transport.status.mockResolvedValueOnce(f.records.get("upload-1")!).mockRejectedValueOnce(new ApiError(0));
+  const next = createUploadController(f.options);
+  await next.initialize(new AbortController().signal);
+  f.transport.status.mockRejectedValueOnce(new ApiError(0));
+  await next.resolve(next.getSnapshot().rows[0].id, { decision: "keep_target", apply_to_all: true });
+  expect(f.transport.resolve).not.toHaveBeenCalled();
+  expect(next.getSnapshot().resolvingId).toBeNull();
+  expect(next.getSnapshot().rows[0].error).toBe("network");
+  await next.resolve(next.getSnapshot().rows[0].id, { decision: "keep_target", apply_to_all: true });
+  expect(next.getSnapshot().rows.map(row => row.phase)).toEqual(["skipped", "skipped"]);
 });
 
 it("storage failures preserve in-memory transfer but report unavailable recovery", async () => {

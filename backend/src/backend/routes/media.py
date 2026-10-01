@@ -5,6 +5,7 @@ from typing import Any
 from dojo import (
     Client,
     DojoPublishing,
+    MediaNotFound,
     PackageLimitExceeded,
     UploadChecksumMismatch,
     UploadConflict,
@@ -16,6 +17,7 @@ from dojo import (
     UploadTooLarge,
 )
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
@@ -170,6 +172,25 @@ class ResolveConflictIn(BaseModel):
     target_media_id: str | None = None
     apply_to_all: bool = False
     confirmed_overwrite: bool = False
+
+
+@router.get("/{upload_id}/conflicts/{target_media_id}/preview", response_class=FileResponse)
+def preview_conflict_target(
+    upload_id: str,
+    target_media_id: str,
+    _client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> FileResponse:
+    try:
+        path, content_type = publishing.get_conflict_preview(upload_id, target_media_id)
+    except (UploadNotFound, MediaNotFound) as exc:
+        raise HTTPException(status_code=404, detail="conflict preview not found") from exc
+    except UploadConflict as exc:
+        raise HTTPException(status_code=409, detail="conflict is no longer current") from exc
+    return FileResponse(
+        path, media_type=content_type,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/{upload_id}/resolve", response_model=UploadOut)

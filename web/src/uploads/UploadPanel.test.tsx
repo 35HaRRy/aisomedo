@@ -11,14 +11,15 @@ function Gate() {
   const session = useSession();
   return session.status === "paired" ? <UploadProvider onPackageChanged={() => {}}><UploadPanel /></UploadProvider> : <p>{session.status}</p>;
 }
-function setup() {
-  const server = uploadServer();
+function setup(conflicts = false) {
+  const server = uploadServer({ conflicts });
   vi.spyOn(api, "me").mockResolvedValue(client);
   vi.spyOn(api, "uploadLimits").mockImplementation(signal => server.transport.limits(signal!));
   vi.spyOn(api, "startUpload").mockImplementation((body, signal) => server.transport.start(body, signal!));
   vi.spyOn(api, "uploadStatus").mockImplementation((id, signal) => server.transport.status(id, signal!));
   vi.spyOn(api, "uploadRange").mockImplementation((id, offset, hash, blob, signal) => server.transport.range(id, offset, hash, blob, signal!));
   vi.spyOn(api, "completeUpload").mockImplementation((id, signal) => server.transport.complete(id, signal!));
+  vi.spyOn(api, "resolveUpload").mockImplementation((id, body, signal) => server.transport.resolve(id, body, signal!));
   return server;
 }
 beforeEach(() => { localStorage.clear(); installCrypto(); });
@@ -104,4 +105,85 @@ it("storage warning does not block upload selection", async () => {
   render(<SessionProvider><Gate /></SessionProvider>);
   await screen.findByText("Tarayıcı yükleme bilgilerini saklayamıyor. Sayfa yenilenirse bu yükleme kaldığı yerden sürdürülemez.");
   await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
+});
+
+it("shows target image and keep both resumes upload only after explicit decision", async () => {
+  const server = setup(true);
+  render(<SessionProvider><Gate /></SessionProvider>);
+  await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
+  select();
+  const preview = await screen.findByRole("img", { name: "Mevcut dosya önizlemesi: dojo.jpg" });
+  expect(preview).toHaveAttribute("src", "/api/media/uploads/upload-1/conflicts/dojo.jpg/preview");
+  expect(server.transport.range).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Kararı uygula" }));
+  await screen.findByText("İşlem sırasına alındı");
+  expect(server.transport.resolve.mock.calls[0][1]).toEqual({ decision: "keep_both", apply_to_all: false });
+});
+
+it("overwrite needs loaded preview and unchecked explicit irreversible confirmation", async () => {
+  const server = setup(true);
+  render(<SessionProvider><Gate /></SessionProvider>);
+  await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
+  select();
+  const preview = await screen.findByRole("img", { name: "Mevcut dosya önizlemesi: dojo.jpg" });
+  fireEvent.click(screen.getByRole("radio", { name: "Yeni dosyayı kullan (mevcut dosyayı değiştir)" }));
+  expect(screen.getByText(/geri döndürülemez/i)).toBeInTheDocument();
+  const confirm = screen.getByRole("checkbox", { name: "Mevcut dosyanın kalıcı olarak silineceğini anlıyorum" });
+  expect(confirm).not.toBeChecked();
+  const submit = screen.getByRole("button", { name: "Mevcut dosyanın üzerine yaz" });
+  expect(submit).toBeDisabled();
+  fireEvent.click(confirm);
+  expect(submit).toBeDisabled();
+  fireEvent.load(preview);
+  expect(submit).toBeEnabled();
+  fireEvent.click(submit);
+  await screen.findByText("İşlem sırasına alındı");
+  expect(server.transport.resolve.mock.calls[0][1]).toEqual({ decision: "keep_selected", target_media_id: "dojo.jpg", apply_to_all: false, confirmed_overwrite: true });
+});
+
+it("preview failure blocks replacement, offers retry, but allows keeping existing", async () => {
+  const server = setup(true);
+  render(<SessionProvider><Gate /></SessionProvider>);
+  await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
+  select();
+  fireEvent.error(await screen.findByRole("img", { name: "Mevcut dosya önizlemesi: dojo.jpg" }));
+  await screen.findByText(/Önizleme yüklenemedi/);
+  fireEvent.click(screen.getByRole("radio", { name: "Yeni dosyayı kullan (mevcut dosyayı değiştir)" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Mevcut dosyanın kalıcı olarak silineceğini anlıyorum" }));
+  expect(screen.getByRole("button", { name: "Mevcut dosyanın üzerine yaz" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Önizlemeyi yeniden yükle" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("radio", { name: "Mevcut dosyayı koru (yüklemeyi atla)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Kararı uygula" }));
+  await screen.findByText("Mevcut dosya korundu; yükleme atlandı");
+  expect(server.transport.range).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Listeden kaldır" }));
+  expect(screen.queryByText("dojo.jpg")).not.toBeInTheDocument();
+});
+
+it("shows processed MP4 player without autoplay for video conflict", async () => {
+  setup(true);
+  render(<SessionProvider><Gate /></SessionProvider>);
+  await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
+  fireEvent.change(screen.getByLabelText("Fotoğraf ve video seç"), { target: { files: [new File(["video"], "dojo.mov", { type: "video/quicktime" })] } });
+  const video = await screen.findByLabelText("Mevcut dosya önizlemesi: dojo.mov");
+  expect(video.tagName).toBe("VIDEO");
+  expect(video).toHaveAttribute("controls");
+  expect(video).not.toHaveAttribute("autoplay");
+  expect(video).toHaveAttribute("preload", "metadata");
+});
+
+it("bulk checkbox sends compatible apply-to-all and disables duplicate submission", async () => {
+  const server = setup(true);
+  const pending = deferred<Awaited<ReturnType<typeof server.transport.resolve>>>();
+  server.transport.resolve.mockImplementationOnce(() => pending.promise);
+  render(<SessionProvider><Gate /></SessionProvider>);
+  await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
+  select();
+  await screen.findByRole("img");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Aynı adlı mevcut çakışmaların tümüne uygula" }));
+  fireEvent.click(screen.getByRole("radio", { name: "Mevcut dosyayı koru (yüklemeyi atla)" }));
+  fireEvent.click(screen.getByRole("button", { name: "Kararı uygula" }));
+  expect(screen.getByRole("button", { name: "Kararı uygula" })).toBeDisabled();
+  expect(server.transport.resolve.mock.calls[0][1]).toEqual({ decision: "keep_target", apply_to_all: true });
+  await act(async () => pending.resolve(server.records.get("upload-1")!));
 });

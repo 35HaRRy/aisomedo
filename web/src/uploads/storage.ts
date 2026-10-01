@@ -12,13 +12,17 @@ function valid(value: unknown): value is SavedUpload {
     && typeof row.lastModified === "number" && Number.isFinite(row.lastModified)
     && !!row.identity && row.identity.chunkBytes === CHUNK_BYTES && digest(row.identity.fingerprint)
     && Array.isArray(row.identity.chunkHashes) && row.identity.chunkHashes.length === Math.ceil(row.size! / CHUNK_BYTES)
-    && row.identity.chunkHashes.every(digest) && (row.status === null || isUploadStatus(row.status, row.size!));
+    && row.identity.chunkHashes.every(digest) && (row.status === null || isUploadStatus(row.status, row.size!))
+    && (row.skipped === undefined || typeof row.skipped === "boolean")
+    && (row.pendingDecision === undefined || ["keep_both", "keep_selected", "keep_target"].includes(row.pendingDecision));
 }
 
 function metadata(row: SavedUpload): SavedUpload {
   const status = row.status;
   return { id: row.id, filename: row.filename, size: row.size, contentType: row.contentType, lastModified: row.lastModified,
     identity: { chunkBytes: row.identity.chunkBytes, chunkHashes: [...row.identity.chunkHashes], fingerprint: row.identity.fingerprint },
+    ...(row.skipped ? { skipped: true } : {}),
+    ...(row.pendingDecision ? { pendingDecision: row.pendingDecision } : {}),
     status: status ? { upload_id: status.upload_id, declared_size_bytes: status.declared_size_bytes,
       received_bytes: status.received_bytes, received_ranges: status.received_ranges.map(range => [...range]),
       status: status.status, error_reason: status.error_reason ?? null, conflicts: [] } : null };

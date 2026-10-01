@@ -28,6 +28,7 @@ export const API_PATHS: readonly string[] = [
   "/api/media/uploads/{upload_id}",
   "/api/media/uploads/{upload_id}/abort",
   "/api/media/uploads/{upload_id}/complete",
+  "/api/media/uploads/{upload_id}/conflicts/{target_media_id}/preview",
   "/api/media/uploads/{upload_id}/ranges",
   "/api/media/uploads/{upload_id}/resolve",
   "/api/meta/instagram/token",
@@ -213,6 +214,13 @@ export type PlanOut = {
   "anchor_time": string | null;
   "enabled": boolean;
   "timezone": string;
+};
+
+export type ResolveConflictIn = {
+  "apply_to_all"?: boolean;
+  "confirmed_overwrite"?: boolean;
+  "decision": string;
+  "target_media_id"?: string | null;
 };
 
 export type SelectIn = {

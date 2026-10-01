@@ -4,13 +4,14 @@ import { checkAbort, fingerprintFile } from "./identity";
 import { assertUploadStatus } from "./status";
 import { readUploads, writeUploads } from "./storage";
 import { transferUpload } from "./transfer";
-import { UploadFlowError, type SavedUpload, type UploadRow, type UploadTransport, type UploadPhase } from "./types";
+import { UploadFlowError, type ConflictResolution, type SavedUpload, type UploadRow, type UploadTransport, type UploadPhase } from "./types";
 
 export interface UploadSnapshot {
   rows: readonly UploadRow[];
   limits: UploadLimitsOut | null;
   limitsError: boolean;
   storageAvailable: boolean;
+  resolvingId?: string | null;
 }
 export interface UploadController {
   getSnapshot(): UploadSnapshot;
@@ -20,6 +21,7 @@ export interface UploadController {
   pause(id: string): void;
   resume(id: string, file?: File): Promise<void>;
   retry(id: string, file?: File): Promise<void>;
+  resolve(id: string, body: ConflictResolution): Promise<void>;
   dismiss(id: string): void;
   refresh(signal: AbortSignal): Promise<void>;
   dispose(): void;
@@ -32,6 +34,11 @@ interface Options {
   onPackageChanged(): void;
 }
 interface Entry { row: UploadRow; file?: File; verified: boolean; flight?: AbortController }
+
+function conflictTargetIds(row: UploadRow): Set<string> {
+  return new Set(row.status?.conflicts?.map(target => target?.media_id)
+    .filter((value): value is string => typeof value === "string" && !!value));
+}
 
 // Release scheduler on cancellation even if a transport or digest settles late.
 function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -71,7 +78,7 @@ export function createUploadController(options: Options): UploadController {
     lifetime.abort();
     entries.forEach(entry => entry.flight?.abort());
     pending.clear(); entries.clear();
-    snapshot = { ...snapshot, limits: null };
+    snapshot = { ...snapshot, limits: null, resolvingId: null };
     emit(false);
     listeners.clear();
   }
@@ -91,8 +98,12 @@ export function createUploadController(options: Options): UploadController {
   }
   function applyStatus(entry: Entry, value: UploadOut, receiving: UploadPhase) {
     assertUploadStatus(value, entry.row.size, entry.row.status?.upload_id);
+    if (entry.row.pendingDecision) {
+      entry.row = { ...entry.row, skipped: value.status === "aborted" && entry.row.pendingDecision === "keep_target",
+        pendingDecision: undefined };
+    }
     const wasFinalized = entry.row.status?.status === "finalized";
-    const phase: UploadPhase = value.status === "receiving" ? receiving : value.status === "aborted" ? "expired" : value.status as UploadPhase;
+    const phase: UploadPhase = value.status === "receiving" ? receiving : value.status === "aborted" ? entry.row.skipped ? "skipped" : "expired" : value.status as UploadPhase;
     entry.row = { ...entry.row, status: structuredClone(value), phase, error: phase === "expired" ? "expired" : phase === "conflict" ? "conflict" : null,
       diagnostic: value.status === "failed" ? value.error_reason ?? null : null };
     emit();
@@ -116,7 +127,9 @@ export function createUploadController(options: Options): UploadController {
     const { flight, finish } = newFlight(entry, signal);
     try {
       const value = await abortable(transport.status(entry.row.status.upload_id, flight.signal), flight.signal);
-      if (valid(entry, flight)) applyStatus(entry, value, entry.file ? "paused" : "needs-file");
+      if (valid(entry, flight)) {
+        applyStatus(entry, value, entry.file ? "paused" : "needs-file");
+      }
     } catch (error) { if (valid(entry, flight)) failure(error, entry); }
     finally { finish(); }
   }
@@ -194,7 +207,7 @@ export function createUploadController(options: Options): UploadController {
           snapshot = { ...snapshot, storageAvailable: saved.available };
           for (const record of saved.records) {
             const phase: UploadPhase = !record.status || record.status.status === "receiving" ? "needs-file"
-              : record.status.status === "aborted" ? "expired" : record.status.status as UploadPhase;
+              : record.status.status === "aborted" ? record.skipped ? "skipped" : "expired" : record.status.status as UploadPhase;
             entries.set(record.id, { verified: false, row: { ...record, phase, preparedBytes: 0, error: null,
               diagnostic: record.status?.status === "failed" ? record.status.error_reason ?? null : null } });
           }
@@ -238,9 +251,77 @@ export function createUploadController(options: Options): UploadController {
       entry.row = { ...entry.row, phase: "paused" }; emit();
     },
     resume,
+    async resolve(id, body) {
+      const entry = entries.get(id);
+      if (!alive() || !entry || snapshot.resolvingId || initializeFlight || entry.row.phase !== "conflict" || !entry.row.status) return;
+      if (!["keep_both", "keep_selected", "keep_target"].includes(body.decision)
+        || (body.decision === "keep_selected" && (!body.confirmed_overwrite || !body.target_media_id
+          || !entry.row.status.conflicts?.some(target => target?.media_id === body.target_media_id)))) {
+        failure(new UploadFlowError("invalid-response"), entry); return;
+      }
+      snapshot = { ...snapshot, resolvingId: id }; emit(false);
+      if (body.apply_to_all) {
+        // Storage deliberately strips target metadata. Recover all unknown
+        // conflicts before deciding which uploads this server-side bulk affects.
+        const conflicts = Array.from(entries.values()).filter(candidate => candidate.row.phase === "conflict");
+        conflicts.forEach(candidate => { candidate.flight?.abort(); candidate.flight = undefined; });
+        for (const candidate of conflicts) {
+          if (!alive()) return;
+          if (conflictTargetIds(candidate.row).size) continue;
+          await query(candidate, lifetime.signal);
+          if (!alive()) return;
+          if (candidate.row.phase === "conflict" && !conflictTargetIds(candidate.row).size) {
+            failure(new UploadFlowError("network"), entry);
+            snapshot = { ...snapshot, resolvingId: null }; emit(false); return;
+          }
+        }
+        if (entry.row.phase !== "conflict") {
+          snapshot = { ...snapshot, resolvingId: null }; emit(false); return;
+        }
+      }
+      // Server collision targets encode Unicode casefold compatibility. Sharing a
+      // target is safer than JavaScript lowercasing (which is not Python casefold).
+      const targetIds = conflictTargetIds(entry.row);
+      const candidates = body.apply_to_all ? Array.from(entries.values()).filter(candidate => candidate === entry
+        || (candidate.row.phase === "conflict" && Array.from(conflictTargetIds(candidate.row)).some(target => targetIds.has(target)))) : [entry];
+      for (const candidate of candidates) {
+        candidate.flight?.abort(); candidate.flight = undefined;
+        candidate.row = { ...candidate.row, pendingDecision: body.decision };
+      }
+      emit();
+      const { flight, finish } = newFlight(entry);
+      let resolutionError: UploadRow["error"] = null;
+      try {
+        // Bulk response can belong to another upload. Always reconcile by ID.
+        await abortable(transport.resolve(entry.row.status.upload_id, body, flight.signal), flight.signal);
+      } catch (error) {
+        if (valid(entry, flight)) {
+          // A definitive rejection must not later turn an unrelated abort into a skip.
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500)
+            candidates.forEach(candidate => { candidate.row = { ...candidate.row, pendingDecision: undefined }; });
+          failure(error, entry); resolutionError = entry.row.error;
+        }
+      } finally { finish(); }
+      try {
+        for (const candidate of candidates) {
+          if (!alive()) return;
+          await query(candidate, lifetime.signal);
+          if (candidate.row.phase === "paused" && candidate.file && !candidate.row.error) {
+            candidate.row = { ...candidate.row, phase: "waiting" }; pending.add(candidate.row.id); emit();
+          }
+        }
+        if (alive() && entry.row.phase === "conflict" && resolutionError) {
+          entry.row = { ...entry.row, error: resolutionError }; emit();
+        }
+        if (alive()) onPackageChanged();
+      } finally {
+        if (alive()) { snapshot = { ...snapshot, resolvingId: null }; emit(false); }
+      }
+      await pump();
+    },
     async retry(id, file) {
       const entry = entries.get(id);
-      if (!alive() || !entry || entry.flight || pending.has(id) || entry.row.phase === "conflict" || entry.row.phase === "finalized") return;
+      if (!alive() || !entry || entry.flight || pending.has(id) || ["conflict", "finalized", "skipped"].includes(entry.row.phase)) return;
       if (["queued", "processing"].includes(entry.row.phase)) { await query(entry, lifetime.signal); return; }
       const fresh = ["failed", "expired"].includes(entry.row.phase) || !entry.row.status
         || entry.row.status.status === "failed" || entry.row.status.status === "aborted";
@@ -260,14 +341,14 @@ export function createUploadController(options: Options): UploadController {
     },
     dismiss(id) {
       const entry = entries.get(id);
-      if (alive() && entry && ["finalized", "failed", "expired", "conflict"].includes(entry.row.phase)) { entries.delete(id); emit(); }
+      if (alive() && entry && !snapshot.resolvingId && ["finalized", "failed", "expired", "conflict", "skipped"].includes(entry.row.phase)) { entries.delete(id); emit(); }
     },
     async refresh(signal) {
-      if (!alive() || refreshFlight || initializeFlight) return refreshFlight ?? undefined;
+      if (!alive() || refreshFlight || initializeFlight || snapshot.resolvingId) return refreshFlight ?? undefined;
       refreshFlight = (async () => {
         for (const entry of entries.values()) {
-          if (!alive() || signal.aborted) break;
-          if (["queued", "processing"].includes(entry.row.phase)) await query(entry, signal);
+          if (!alive() || signal.aborted || snapshot.resolvingId) break;
+          if (["queued", "processing", "conflict"].includes(entry.row.phase)) await query(entry, signal);
         }
       })().finally(() => { refreshFlight = null; });
       return refreshFlight;

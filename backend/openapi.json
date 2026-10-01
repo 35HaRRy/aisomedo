@@ -1876,6 +1876,50 @@
         ]
       }
     },
+    "/api/media/uploads/{upload_id}/conflicts/{target_media_id}/preview": {
+      "get": {
+        "operationId": "preview_conflict_target_api_media_uploads__upload_id__conflicts__target_media_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "upload_id",
+            "required": true,
+            "schema": {
+              "title": "Upload Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "target_media_id",
+            "required": true,
+            "schema": {
+              "title": "Target Media Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Conflict Target",
+        "tags": [
+          "media"
+        ]
+      }
+    },
     "/api/media/uploads/{upload_id}/ranges": {
       "put": {
         "operationId": "append_range_api_media_uploads__upload_id__ranges_put",

@@ -9,7 +9,7 @@ function covered(status: UploadOut, start: number, end: number): boolean {
 }
 
 export async function transferUpload(
-  file: File, identity: FileIdentity, initial: UploadOut, transport: UploadTransport,
+  file: File, identity: FileIdentity, initial: UploadOut, transport: Pick<UploadTransport, "status" | "range" | "complete">,
   signal: AbortSignal, onStatus: (status: UploadOut) => void,
 ): Promise<UploadOut> {
   checkAbort(signal);

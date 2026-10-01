@@ -89,6 +89,15 @@ it("retains only textual JSON error detail", async () => {
   await expect(request("/api/media/uploads")).rejects.toMatchObject({ status: 400, detail: "chunk checksum mismatch" });
 });
 
+it("sends conflict resolution with cookies, encoded ID and explicit overwrite confirmation", async () => {
+  const fetcher = vi.fn(async (_url: string, _init: RequestInit) => new Response("{}"));
+  vi.stubGlobal("fetch", fetcher);
+  await api.resolveUpload("id/1", { decision: "keep_selected", target_media_id: "target", confirmed_overwrite: true, apply_to_all: true });
+  expect(fetcher.mock.calls[0][0]).toBe("/api/media/uploads/id%2F1/resolve");
+  expect(fetcher.mock.calls[0][1]).toMatchObject({ credentials: "same-origin", method: "POST" });
+  expect(JSON.parse(String(fetcher.mock.calls[0][1].body))).toEqual({ decision: "keep_selected", target_media_id: "target", confirmed_overwrite: true, apply_to_all: true });
+});
+
 it.each(["private body", '{"detail":[{"input":"secret"}]}', "{"])("ignores unstructured error body %s", async body => {
   vi.stubGlobal("fetch", async () => new Response(body, { status: 422 }));
   await expect(request("/api/media/uploads")).rejects.toMatchObject({ status: 422, detail: undefined });

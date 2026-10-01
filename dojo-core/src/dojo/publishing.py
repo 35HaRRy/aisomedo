@@ -1432,6 +1432,38 @@ class DojoPublishing:
     def add_media(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
+    def get_conflict_preview(self, upload_id: str, target_media_id: str) -> tuple[Path, str]:
+        """Resolve a current conflict target's normalized media, never an arbitrary file."""
+        upload = self._uploads.get(upload_id)
+        if upload is None:
+            raise UploadNotFound("upload not found")
+        package = self._packages.get_active()
+        if upload.status != "conflict" or package is None or upload.package_id != package.id:
+            raise UploadConflict("upload is no longer an active conflict")
+        target = next(
+            (entry for entry in self._manifest_collisions(package, upload.filename)
+             if entry.get("media_id") == target_media_id),
+            None,
+        )
+        if target is None:
+            raise MediaNotFound("conflict target not found")
+        processed = target.get("processed", {})
+        if not isinstance(processed, dict):
+            raise MediaNotFound("conflict preview unavailable")
+        content_type = processed.get("content_type")
+        if not isinstance(content_type, str):
+            raise MediaNotFound("conflict preview unavailable")
+        extension = {"image/jpeg": ".jpg", "video/mp4": ".mp4"}.get(content_type)
+        reference = f"media/{target_media_id}/processed{extension}"
+        if extension is None or processed.get("path") != reference:
+            raise MediaNotFound("conflict preview unavailable")
+        root = (self.media_root / package.folder_name).resolve()
+        path = (root / reference).resolve()
+        if (not root.is_relative_to(self.media_root.resolve())
+                or not path.is_relative_to(root) or not path.is_file()):
+            raise MediaNotFound("conflict preview unavailable")
+        return path, str(content_type)
+
     def resolve_conflict(
         self,
         upload_id: str,
@@ -1516,11 +1548,9 @@ class DojoPublishing:
         def transition(candidate: Upload) -> Upload:
             cand_target: str | None = None
             if decision == KEEP_SELECTED:
-                if apply_to_all:
-                    targets = self._manifest_collisions(package, candidate.filename)
-                    cand_target = targets[0]["media_id"] if targets else None
-                else:
-                    cand_target = target_media_id
+                # Compatible conflicts share one normalized filename, hence targets.
+                # Preserve the explicitly previewed target even in a bulk decision.
+                cand_target = target_media_id
             self._assert_package_capacity(package, candidate.declared_size_bytes)
             staging = self.media_root / "tmp" / candidate.upload_id
             staging.mkdir(parents=True, exist_ok=True)

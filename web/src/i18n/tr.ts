@@ -1,4 +1,17 @@
 export const tr = {
+  conflict: {
+    title: "Dosya adı çakışmasını çöz", intro: "Bu adla mevcut medya var. Karar verene kadar yeni dosya gönderilmez.",
+    target: "Değiştirilecek mevcut dosya", targetId: "Mevcut medya kimliği", preview: "Mevcut dosya önizlemesi",
+    previewLoading: "Önizleme yükleniyor…", previewFailed: "Önizleme yüklenemedi. Yeniden yükleyin veya mevcut dosyayı koruyun; önizlemesiz üzerine yazılmaz.",
+    previewRetry: "Önizlemeyi yeniden yükle", noTarget: "Mevcut dosya bilgileri alınamadı. Çakışmayı yenileyin; üzerine yazma kullanılamıyor.",
+    choose: "Hangi dosya korunsun?", apply: "Kararı uygula", overwrite: "Mevcut dosyanın üzerine yaz", refresh: "Çakışmayı yenile", resolving: "Karar uygulanıyor…",
+    decisions: { keep_both: "İkisini de koru (yeni dosyaya numara ekle)", keep_selected: "Yeni dosyayı kullan (mevcut dosyayı değiştir)", keep_target: "Mevcut dosyayı koru (yüklemeyi atla)" },
+    applyAll: "Aynı adlı mevcut çakışmaların tümüne uygula",
+    bulkHelp: "Yalnızca aktif pakette şu anda aynı dosya adıyla çakışan yüklemeleri kapsar (büyük/küçük harf farkı sayılmaz). Diğer adlar ve gelecekteki yüklemeler etkilenmez.",
+    warning: "Bu işlem geri döndürülemez. Mevcut medya, yeni dosya doğrulandıktan sonra kalıcı olarak silinir; üzerine yazma etkinlik kaydına eklenir.",
+    bulkWarning: "Onay, aynı adlı tüm mevcut çakışmaların üzerine yazma kararını kapsar.",
+    confirm: "Mevcut dosyanın kalıcı olarak silineceğini anlıyorum",
+  },
   upload: {
     title: "Fotoğraf ve video yükle", intro: "Medyanızı aktif Dojo Paylaşım Paketi'ne ekleyin. Dosyalar sırayla yüklenir; doğrulama sunucuda tamamlanır.",
     choose: "Fotoğraf ve video seç", formats: "JPEG, PNG, WebP, HEIC/HEIF, MP4 ve MOV desteklenir. Dosyanın gerçek içeriği sunucuda kontrol edilir.",
@@ -14,7 +27,7 @@ export const tr = {
     phases: {
       preparing: "Dosya özeti hazırlanıyor", waiting: "Aktarım bekliyor", uploading: "Yükleniyor", paused: "Duraklatıldı",
       "needs-file": "Dosya yeniden seçilmeli", retryable: "Yükleme kesildi", queued: "İşlem sırasına alındı", processing: "Medya doğrulanıyor",
-      finalized: "Pakete eklendi", failed: "Medya kabul edilmedi", conflict: "Dosya adı çakışıyor", expired: "Yükleme artık mevcut değil",
+      finalized: "Pakete eklendi", failed: "Medya kabul edilmedi", conflict: "Dosya adı çakışıyor", expired: "Yükleme artık mevcut değil", skipped: "Mevcut dosya korundu; yükleme atlandı",
     },
     errors: {
       network: "Bağlantı kesildi. Bağlantınızı kontrol edip tekrar deneyin; kaydedilen parçalar yeniden gönderilmez.",
@@ -25,7 +38,7 @@ export const tr = {
       "wrong-file": "Seçilen dosya orijinal dosyayla eşleşmiyor. Aynı içeriğe sahip orijinal dosyayı seçin.",
       "hash-unavailable": "Dosya özeti oluşturulamadı. Dosyanın erişilebilir olduğunu kontrol edin; HTTPS üzerinden güncel bir tarayıcıyla tekrar deneyin.",
       expired: "Yükleme silinmiş veya süresi dolmuş. Dosyayı yeniden seçip açıkça yeni bir yükleme başlatın.",
-      conflict: "Aktif pakette bu dosya adı mevcut. Yükleme durduruldu; bu ekran yeniden adlandırma veya üzerine yazma kararı vermez.",
+      conflict: "Aktif pakette bu dosya adı mevcut. Aşağıdan hangi dosyanın korunacağını seçin.",
       "invalid-response": "Sunucunun yükleme bilgileri tutarsız. Medya gönderimi durduruldu; tekrar deneyin.",
     },
   },
@@ -60,6 +73,7 @@ export const tr = {
   packageIntro: "Geçerli paketin ve yayın hazırlığının özeti.", createdAt: "Oluşturulma", state: "Durum",
   activityIntro: "Son 20 işlem. Yeni kayıtlar bu ekran açıkken güncellenir.", noActivity: "Henüz etkinlik yok",
   eventFallback: "Etkinlik kaydedildi", system: "Sistem", client: "Eşleştirilmiş tarayıcı",
+  auditTarget: "Silinen medya", auditReplacement: "Yeni medya",
   settingsIntro: "Bu tarayıcının ve yayın planının mevcut ayarları.",
   plan: "Dojo Yayın Planı", firstDate: "Başlangıç tarihi", localTime: "Yerel saat", unset: "Ayarlanmadı",
   enabled: "Etkin", disabled: "Devre dışı", cadence: "İki haftada bir, pazartesi",
@@ -78,5 +92,6 @@ export const tr = {
     "review.created": "Yayın İncelemesi oluşturuldu", "review.approved": "Yayın onaylandı",
     "review.skipped": "Yayın atlandı", "review.rescheduled": "Yayın yeniden planlandı",
     "plan.updated": "Yayın planı güncellendi", "media.finalized": "Medya eklendi",
+    "conflict.resolved": "Dosya adı çakışması çözüldü", "media.overwritten": "Mevcut medyanın üzerine yazıldı",
   } as Record<string, string>,
 };

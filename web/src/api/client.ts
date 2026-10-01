@@ -1,4 +1,4 @@
-import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut } from "./openapi";
+import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn } from "./openapi";
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly detail?: string) { super(`api:${status}`); }
@@ -41,6 +41,7 @@ export const api = {
   uploadStatus: (id: string, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}`, { signal }),
   uploadRange: (id: string, offset: number, checksum: string, body: Blob, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}/ranges?offset=${offset}&checksum_sha256=${encodeURIComponent(checksum)}`, { method: "PUT", body, headers: { "Content-Type": "application/octet-stream" }, signal }),
   completeUpload: (id: string, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}/complete`, { method: "POST", signal }),
+  resolveUpload: (id: string, body: ResolveConflictIn, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}/resolve`, { method: "POST", body: JSON.stringify(body), signal }),
   me: (signal?: AbortSignal) => request<ClientOut>("/api/pairing/me", { signal }),
   pair: async (body: ValidateIn, signal?: AbortSignal): Promise<void> => {
     await request("/api/pairing/validate", { method: "POST", body: JSON.stringify(body), signal });
