@@ -1404,6 +1404,24 @@
         "title": "UploadInitIn",
         "type": "object"
       },
+      "UploadLimitsOut": {
+        "properties": {
+          "max_file_bytes": {
+            "title": "Max File Bytes",
+            "type": "integer"
+          },
+          "max_package_bytes": {
+            "title": "Max Package Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_file_bytes",
+          "max_package_bytes"
+        ],
+        "title": "UploadLimitsOut",
+        "type": "object"
+      },
       "UploadOut": {
         "properties": {
           "conflicts": {
@@ -1640,6 +1658,27 @@
         "summary": "Dashboard",
         "tags": [
           "dashboard"
+        ]
+      }
+    },
+    "/api/media/upload-limits": {
+      "get": {
+        "operationId": "upload_limits_api_media_upload_limits_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadLimitsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Upload Limits",
+        "tags": [
+          "media"
         ]
       }
     },

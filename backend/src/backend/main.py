@@ -184,6 +184,7 @@ def create_app(
     app.include_router(activity_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(setup_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(media_router.router, dependencies=[Depends(get_current_client)])
+    app.include_router(media_router.limits_router, dependencies=[Depends(get_current_client)])
     app.include_router(settings_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(branding_assets_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(meta_router.router)

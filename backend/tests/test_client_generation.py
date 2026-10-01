@@ -56,3 +56,19 @@ def test_onboarding_generation_preserves_omission_and_typed_candidates(tmp_path)
     assert '"required"?: boolean;' in output
     assert '"candidates": Array<MetaCandidateOut>;' in output
     assert '"version"?: number | null;' in output
+
+
+def test_upload_generation_emits_wire_types(tmp_path):
+    from backend.main import create_app
+
+    module = generator()
+    module.ROOT = tmp_path
+    module.WEB_TARGET = tmp_path / "web.ts"
+    module.ANDROID_TARGET = tmp_path / "client.kt"
+    (tmp_path / "openapi.json").write_text(json.dumps(create_app().openapi()), encoding="utf-8")
+    module.main()
+    output = module.WEB_TARGET.read_text(encoding="utf-8")
+    assert 'export type UploadLimitsOut =' in output
+    assert 'export type UploadInitIn =' in output
+    assert 'export type UploadOut =' in output
+    assert '"received_ranges": Array<Array<number>>;' in output

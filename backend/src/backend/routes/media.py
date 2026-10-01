@@ -26,6 +26,23 @@ def get_publishing(request: Request) -> DojoPublishing:
 
 
 router = APIRouter(prefix="/api/media/uploads", tags=["media"])
+limits_router = APIRouter(prefix="/api/media", tags=["media"])
+
+
+class UploadLimitsOut(BaseModel):
+    max_file_bytes: int
+    max_package_bytes: int
+
+
+@limits_router.get("/upload-limits", response_model=UploadLimitsOut)
+def upload_limits(
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> UploadLimitsOut:
+    limits = publishing.get_upload_limits()
+    return UploadLimitsOut(
+        max_file_bytes=limits.max_file_bytes, max_package_bytes=limits.max_package_bytes
+    )
 
 
 class UploadInitIn(BaseModel):

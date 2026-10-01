@@ -23,6 +23,7 @@ export const API_PATHS: readonly string[] = [
   "/api/activity",
   "/api/compat",
   "/api/dashboard",
+  "/api/media/upload-limits",
   "/api/media/uploads",
   "/api/media/uploads/{upload_id}",
   "/api/media/uploads/{upload_id}/abort",
@@ -250,6 +251,27 @@ export type StatusOut = {
   "last_refreshed_at"?: string | null;
   "page_id"?: string | null;
   "page_name"?: string | null;
+};
+
+export type UploadInitIn = {
+  "content_type": string;
+  "declared_size_bytes": number;
+  "filename": string;
+};
+
+export type UploadLimitsOut = {
+  "max_file_bytes": number;
+  "max_package_bytes": number;
+};
+
+export type UploadOut = {
+  "conflicts"?: Array<Record<string, unknown>>;
+  "declared_size_bytes": number;
+  "error_reason"?: string | null;
+  "received_bytes": number;
+  "received_ranges": Array<Array<number>>;
+  "status": string;
+  "upload_id": string;
 };
 
 export type ValidateIn = {
