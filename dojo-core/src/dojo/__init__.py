@@ -14,6 +14,7 @@ from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
 from dojo.dashboard import NextSlot, PendingAction, PublishingDashboard
 from dojo.exceptions import (
     ActivePackageExists,
+    BrandingInvalid,
     ClientNotFound,
     ConsentError,
     ConsentPolicyChanged,
@@ -125,6 +126,7 @@ __all__ = [
     "ActivityPage",
     "AuditEvent",
     "BrandingConfig",
+    "BrandingInvalid",
     "Client",
     "ClientNotFound",
     "ConsentAcceptance",

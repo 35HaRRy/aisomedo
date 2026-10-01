@@ -122,6 +122,10 @@ class LogoNotConfigured(DojoError):
     pass
 
 
+class BrandingInvalid(DojoError):
+    pass
+
+
 class RenderFailed(DojoError):
     pass
 

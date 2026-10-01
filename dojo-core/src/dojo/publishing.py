@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
+from math import isfinite
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +17,7 @@ from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlSt
 from dojo.dashboard import PendingAction, PublishingDashboard, next_slot
 from dojo.exceptions import (
     ActivePackageExists,
+    BrandingInvalid,
     JobNotFound,
     LogoNotConfigured,
     ManualPublishConflict,
@@ -1842,6 +1844,38 @@ class DojoPublishing:
             )
         )
         return self.get_branding_defaults()
+
+    def patch_branding_defaults(
+        self, changes: dict[str, object], requester: str | None = None
+    ) -> BrandingConfig:
+        """Validate a partial update before writing only the changed settings."""
+        current = self.get_branding_defaults().to_dict()
+        if changes.keys() - current.keys():
+            raise BrandingInvalid("unknown branding field")
+        updates = dict(changes)
+        for key, value in changes.items():
+            if value is None:
+                continue
+            if key.endswith("_duration"):
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not isfinite(value) or value <= 0):
+                    raise BrandingInvalid("card duration must be a positive finite number")
+            elif not isinstance(value, str) or not value.strip():
+                raise BrandingInvalid("branding text and asset references must be nonempty")
+        for kind in ("intro", "outro"):
+            asset_key, duration_key = f"{kind}_asset", f"{kind}_duration"
+            if asset_key in updates and updates[asset_key] is None:
+                updates[duration_key] = None
+            combined = {**current, **updates}
+            if combined[asset_key] is None and combined[duration_key] is not None:
+                raise BrandingInvalid("card duration requires a card asset")
+        now = self._clock.now()
+        for key, value in updates.items():
+            self._settings.set(f"branding.{key}", value, updated_at=now)
+        result = self.get_branding_defaults()
+        self._audit.append(AuditEvent(action="branding.defaults_updated",
+            actor=requester or "system", occurred_at=now, details=result.to_dict()))
+        return result
 
     def _seed_draft_defaults(self, package: Package) -> None:
         defaults = self.get_branding_defaults()
