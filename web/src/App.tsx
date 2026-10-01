@@ -12,6 +12,7 @@ import { SessionProvider, useSession } from "./session";
 import { useLiveData } from "./useLiveData";
 import { OnboardingProvider, useOnboarding } from "./onboarding/useOnboarding";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
+import { UploadProvider } from "./uploads/UploadProvider";
 
 function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
   return <div role="alert" className="notice"><p>{stale ? tr.stale : tr.loadError}</p>
@@ -32,7 +33,7 @@ function PairedShell() {
   const activity = useLiveData(api.activity, area === "activity");
   const areas: Exclude<Area, "onboarding">[] = ["dashboard", "package", "activity", "settings"];
   useEffect(() => { document.title = `${area === "onboarding" ? "Kurulum" : tr[area]} · ${tr.app}`; }, [area]);
-  return <div className="app-shell">
+  return <UploadProvider onPackageChanged={snapshot.retry}><div className="app-shell">
     <aside className="sidebar"><a className="brand" href="#/dashboard">{tr.app}</a>
       <nav aria-label={tr.navigation}>{areas.map(item => <a key={item} href={`#/${item}`} aria-current={area === item ? "page" : undefined}>{tr[item]}</a>)}</nav>
       <div className="sidebar-foot"><span>{tr.client}</span><strong>{client?.name}</strong></div>
@@ -51,7 +52,7 @@ function PairedShell() {
         {area === "settings" && client && <SettingsSummary data={snapshot.data} client={client} />}
       </>}
     </main>
-  </div>;
+  </div></UploadProvider>;
 }
 
 function SessionGate() {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "./api/client";
 import { startLiveRefresh } from "./live";
 import { useSession } from "./session";
@@ -28,5 +28,6 @@ export function useLiveData<T>(load: (signal: AbortSignal) => Promise<T>, enable
     });
     return () => { active = false; stop(); window.removeEventListener("offline", offline); };
   }, [load, enabled, attempt, invalidate]);
-  return { data, error, updatedAt, retry: () => setAttempt(value => value + 1) };
+  const retry = useCallback(() => setAttempt(value => value + 1), []);
+  return { data, error, updatedAt, retry };
 }

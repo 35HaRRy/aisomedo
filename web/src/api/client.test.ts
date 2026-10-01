@@ -64,3 +64,32 @@ it("uploads raw file without JSON content type", async () => {
   expect(fetcher.mock.calls[0][1]).toMatchObject({ method: "POST", body: file });
   expect(fetcher.mock.calls[0][1].headers).not.toHaveProperty("Content-Type", "application/json");
 });
+
+it("sends upload operations with encoded IDs, raw ranges, and cookies", async () => {
+  const fetcher = vi.fn(async (_url: string, _init: RequestInit) => new Response("{}"));
+  vi.stubGlobal("fetch", fetcher);
+  const body = new Blob(["media"]);
+  await api.uploadLimits();
+  await api.startUpload({ filename: "dojo.mov", content_type: "video/quicktime", declared_size_bytes: 5 });
+  await api.uploadStatus("id/1");
+  await api.uploadRange("id/1", 2, "a+b", body);
+  await api.completeUpload("id/1");
+  expect(fetcher.mock.calls.map(call => call[0])).toEqual([
+    "/api/media/upload-limits", "/api/media/uploads", "/api/media/uploads/id%2F1",
+    "/api/media/uploads/id%2F1/ranges?offset=2&checksum_sha256=a%2Bb", "/api/media/uploads/id%2F1/complete",
+  ]);
+  expect(fetcher.mock.calls[1][1]).toMatchObject({ method: "POST", body: '{"filename":"dojo.mov","content_type":"video/quicktime","declared_size_bytes":5}' });
+  expect(fetcher.mock.calls[3][1]).toMatchObject({ method: "PUT", body, headers: { "Content-Type": "application/octet-stream" } });
+  expect(fetcher.mock.calls[4][1]).toMatchObject({ method: "POST" });
+  expect(fetcher.mock.calls.every(call => call[1].credentials === "same-origin")).toBe(true);
+});
+
+it("retains only textual JSON error detail", async () => {
+  vi.stubGlobal("fetch", async () => new Response('{"detail":"chunk checksum mismatch"}', { status: 400 }));
+  await expect(request("/api/media/uploads")).rejects.toMatchObject({ status: 400, detail: "chunk checksum mismatch" });
+});
+
+it.each(["private body", '{"detail":[{"input":"secret"}]}', "{"])("ignores unstructured error body %s", async body => {
+  vi.stubGlobal("fetch", async () => new Response(body, { status: 422 }));
+  await expect(request("/api/media/uploads")).rejects.toMatchObject({ status: 422, detail: undefined });
+});

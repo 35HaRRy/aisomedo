@@ -4,7 +4,7 @@ Date: 2026-10-01
 Issue: https://github.com/35HaRRy/aisomedo/issues/27
 Parent: #1, Dojo Reel Publishing MVP
 Prerequisites: #7 and #25 are closed.
-Status: conversational design and written spec approved; implementation-plan review pending.
+Status: design, written spec, and implementation plan approved; Native execution selected in an isolated worktree.
 
 ## Intent and approved decisions
 
