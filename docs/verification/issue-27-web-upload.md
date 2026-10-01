@@ -21,7 +21,7 @@ Run from repository root:
 
 | Command | Result |
 | --- | --- |
-| `npm --prefix web test` | 156 tests passed. |
+| `npm --prefix web test` | 158 tests passed after independent-review corrections. |
 | `npm --prefix web run typecheck` | Passed. |
 | `npm --prefix web run build` | Passed. |
 | `uv run --project backend pytest backend/tests -v` | 133 passed; existing Starlette/httpx deprecation warning. |
@@ -76,5 +76,46 @@ confirmation pass. Temporary browser/server were stopped after verification.
   Explicit retry can leave an empty orphan for existing backend cleanup.
 - Filename conflicts stop transfer. Rename/overwrite resolution remains #28.
   No new dependencies, background upload, cross-tab lock, or idempotency protocol.
-- Whole-branch independent review is required before the final handoff; findings
-  and verified corrections are recorded below when that review finishes.
+
+## Independent whole-branch review
+
+Read-only review of `48749a9..06a977c` found no Critical issues and two Important
+issues. Both were reproduced with failing regression tests, then corrected in
+one fix pass:
+
+1. Fresh retry used whole-controller reconciliation, changing another explicitly
+   resumed row from waiting to paused. Limits reload now reconciles restored rows
+   only on initial controller restoration, preserving subsequent scheduling
+   intent. `fresh retry keeps another explicitly resumed row eligible behind
+   active upload` passed after initially failing with an unexpectedly paused row.
+2. Status-read errors replaced a failed terminal phase/diagnostic with retryable,
+   potentially stranding explicit retry. Terminal phases and diagnostics survive
+   read errors, and new-upload eligibility also checks authoritative failed/aborted
+   status. `failed status survives restored status-read network error and remains
+   fresh-retryable` passed after initially failing with retryable instead of failed.
+
+Final fix-pass verification: 158 web tests, typecheck and build passed. No second
+review was dispatched; covering RED→GREEN tests and the full suite verify fixes.
+Browser screenshots predate these controller-only fixes; browser acceptance was
+not rerun after the fix pass.
+
+### Deferred minor
+
+Integer percentage formatting can round a nearly complete transfer to 100%
+before the last few bytes are acknowledged (e.g. 2 MiB of 2 MiB + 3 bytes).
+Native progress and confirmed byte count remain exact; this does not display
+finalization success. Percentage-display polish is deferred.
+
+### Rulings and deliberate exclusions
+
+- Shared status/range validation lives in `uploads/status.ts` instead of being
+  duplicated in storage and transfer. Cost if wrong: one extra small module.
+- Rename/overwrite remains #28. Cost: this panel cannot resolve an existing name.
+- Initiation idempotency/orphan elimination remains excluded. Cost: explicit
+  retry can leave empty records until existing cleanup runs.
+- Cross-tab locks and backend concurrency/cleanup redesign remain excluded.
+  Cost: no new coordination across simultaneous browser tabs.
+- Blob persistence and automatic/background recovery remain excluded. Cost:
+  reload needs the original file; uninterrupted background upload is not promised.
+- Existing audit vulnerabilities and unrelated Ruff E501 lines remain untouched.
+  Cost: existing dependency/lint debt persists; full Ruff verification is not green.

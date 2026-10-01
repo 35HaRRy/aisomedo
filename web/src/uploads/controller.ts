@@ -84,9 +84,9 @@ export function createUploadController(options: Options): UploadController {
       : error instanceof ApiError ? error.status === 0 ? "network" : error.status === 413 ? "oversize"
       : error.status === 404 ? "expired" : error.status === 409 && error.detail?.includes("package limit") ? "capacity"
       : error.status === 400 && error.detail?.includes("checksum") ? "checksum" : "server" : "server";
-    const processing = entry.row.phase === "queued" || entry.row.phase === "processing";
-    entry.row = { ...entry.row, error: code, diagnostic: null,
-      phase: code === "expired" ? "expired" : code === "wrong-file" ? "needs-file" : processing ? entry.row.phase : "retryable" };
+    const retained = ["queued", "processing", "failed", "expired", "conflict", "finalized"].includes(entry.row.phase);
+    entry.row = { ...entry.row, error: code, diagnostic: retained ? entry.row.diagnostic : null,
+      phase: code === "expired" ? "expired" : code === "wrong-file" ? "needs-file" : retained ? entry.row.phase : "retryable" };
     emit();
   }
   function applyStatus(entry: Entry, value: UploadOut, receiving: UploadPhase) {
@@ -187,7 +187,8 @@ export function createUploadController(options: Options): UploadController {
     async initialize(signal) {
       if (!alive() || initializeFlight) return initializeFlight ?? undefined;
       initializeFlight = (async () => {
-        if (!initialized) {
+        const restore = !initialized;
+        if (restore) {
           initialized = true;
           const saved = storage ? readUploads(storage, clientId) : { records: [], available: false };
           snapshot = { ...snapshot, storageAvailable: saved.available };
@@ -210,7 +211,9 @@ export function createUploadController(options: Options): UploadController {
           if (!Number.isSafeInteger(limits.max_file_bytes) || limits.max_file_bytes <= 0
             || !Number.isSafeInteger(limits.max_package_bytes) || limits.max_package_bytes <= 0) throw new UploadFlowError("invalid-response");
           snapshot = { ...snapshot, limits, limitsError: false }; emit(false);
-          for (const entry of entries.values()) { checkAbort(request.signal); await query(entry, request.signal); }
+          // Reconcile restored rows once. Later limit reloads must not change
+          // another row's explicit scheduling intent during a fresh retry.
+          if (restore) for (const entry of entries.values()) { checkAbort(request.signal); await query(entry, request.signal); }
         } catch (error) { if (!request.signal.aborted && alive()) failure(error); }
         finally {
           signal.removeEventListener("abort", cancel); lifetime.signal.removeEventListener("abort", cancel);
@@ -239,7 +242,8 @@ export function createUploadController(options: Options): UploadController {
       const entry = entries.get(id);
       if (!alive() || !entry || entry.flight || pending.has(id) || entry.row.phase === "conflict" || entry.row.phase === "finalized") return;
       if (["queued", "processing"].includes(entry.row.phase)) { await query(entry, lifetime.signal); return; }
-      const fresh = ["failed", "expired"].includes(entry.row.phase) || !entry.row.status;
+      const fresh = ["failed", "expired"].includes(entry.row.phase) || !entry.row.status
+        || entry.row.status.status === "failed" || entry.row.status.status === "aborted";
       if (fresh) {
         await controller.initialize(lifetime.signal);
         if (!alive() || !snapshot.limits || snapshot.limitsError) return;

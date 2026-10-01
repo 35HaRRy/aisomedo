@@ -281,3 +281,41 @@ it("missing crypto yields actionable row instead of crashing selection", async (
   expect(f.controller.getSnapshot().rows[0].error).toBe("hash-unavailable");
   expect(f.transport.start).not.toHaveBeenCalled();
 });
+
+it("fresh retry keeps another explicitly resumed row eligible behind active upload", async () => {
+  const f = await fixture();
+  f.transport.start.mockRejectedValueOnce(new ApiError(0));
+  await f.controller.add([new File(["fresh"], "fresh.jpg")]);
+  f.transport.range.mockRejectedValueOnce(new ApiError(0));
+  await f.controller.add([new File(["resume"], "resume.jpg")]);
+  const pending = deferred<UploadOut>();
+  f.transport.range.mockImplementationOnce(() => pending.promise);
+  const active = f.controller.add([new File(["active"], "active.jpg")]);
+  await vi.waitFor(() => expect(f.controller.getSnapshot().rows[2].phase).toBe("uploading"));
+  const [fresh, resumed] = f.controller.getSnapshot().rows;
+  const resume = f.controller.resume(resumed.id);
+  const retry = f.controller.retry(fresh.id);
+  await vi.waitFor(() => expect(f.controller.getSnapshot().rows[0].phase).toBe("waiting"));
+  pending.resolve({ ...f.records.get("upload-2")!, received_bytes: 6, received_ranges: [[0, 6]] });
+  await Promise.all([active, resume, retry]);
+  expect(f.controller.getSnapshot().rows.map(row => row.phase)).toEqual(["queued", "queued", "queued"]);
+  expect(f.transport.range.mock.calls.map(call => call[0])).toEqual(["upload-1", "upload-2", "upload-1", "upload-3"]);
+});
+
+it("failed status survives restored status-read network error and remains fresh-retryable", async () => {
+  const f = await fixture();
+  await f.controller.add([file()]);
+  f.records.set("upload-1", { ...f.records.get("upload-1")!, status: "failed", error_reason: "invalid JPEG" });
+  await f.controller.refresh(new AbortController().signal);
+  f.controller.dispose();
+  const next = createUploadController(f.options);
+  f.transport.status.mockRejectedValueOnce(new ApiError(0));
+  await next.initialize(new AbortController().signal);
+  const row = next.getSnapshot().rows[0];
+  expect(row.phase).toBe("failed");
+  expect(row.diagnostic).toBe("invalid JPEG");
+  expect(row.error).toBe("network");
+  await next.retry(row.id, file("valid"));
+  expect(next.getSnapshot().rows[0].phase).toBe("queued");
+  expect(f.transport.start).toHaveBeenCalledTimes(2);
+});
