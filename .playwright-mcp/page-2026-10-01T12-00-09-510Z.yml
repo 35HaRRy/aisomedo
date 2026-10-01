@@ -1,0 +1,8 @@
+- generic [ref=e2]:
+  - link "İçeriğe geç" [ref=e3] [cursor=pointer]:
+    - /url: "#content"
+  - main [ref=e4]:
+    - heading "Dojo Yayıncılık" [level=1] [ref=e5]
+    - alert [ref=e6]:
+      - paragraph [ref=e7]: Bilgiler alınamadı. Tekrar deneyin.
+      - button "Tekrar dene" [ref=e8] [cursor=pointer]
