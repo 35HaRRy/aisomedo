@@ -126,6 +126,18 @@ class BrandingInvalid(DojoError):
     pass
 
 
+class BrandingAssetInvalid(DojoError):
+    pass
+
+
+class BrandingAssetTooLarge(DojoError):
+    pass
+
+
+class BrandingAssetNotFound(DojoError):
+    pass
+
+
 class RenderFailed(DojoError):
     pass
 
