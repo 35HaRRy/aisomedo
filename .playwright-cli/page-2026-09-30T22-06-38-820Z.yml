@@ -1,0 +1,18 @@
+- generic [ref=f1e2]:
+  - link "İçeriğe geç" [ref=f1e3] [cursor=pointer]:
+    - /url: "#content"
+  - generic [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - strong [ref=f1e6]: Dojo Yayıncılık
+      - paragraph [ref=f1e7]: Paylaşmadan önce, birlikte gözden geçirin.
+    - main [ref=f1e8]:
+      - heading "Tarayıcıyı eşleştir" [level=1] [ref=f1e9]
+      - paragraph [ref=f1e10]: Dojo yayınlarını bu tarayıcıdan takip edin. Eşleştirilmiş bir cihazdan veya sistem yöneticinizden tek kullanımlık kod alın.
+      - generic [ref=f1e11]:
+        - generic [ref=f1e12]: Eşleştirme kodu
+        - textbox "Eşleştirme kodu" [ref=f1e13]
+        - generic [ref=f1e14]: Tarayıcı adı
+        - textbox "Tarayıcı adı" [ref=f1e15]
+        - generic [ref=f1e16]: Diğer cihazlarda tanıyabileceğiniz bir ad seçin.
+        - button "Eşleştir" [disabled] [ref=f1e17]
+      - paragraph [ref=f1e18]: Hesap veya parola gerekmez. Eşleştirilen tüm cihazlar aynı yetkilere sahiptir.

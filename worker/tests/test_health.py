@@ -5,6 +5,7 @@ import math
 from collections.abc import Callable
 from pathlib import Path
 
+import dojo.worker_health as shared_health
 import pytest
 import worker.health as wh
 from worker.health import WorkerHealth, check_health
@@ -12,6 +13,7 @@ from worker.health import WorkerHealth, check_health
 
 def _clock(monkeypatch: pytest.MonkeyPatch, now: list[float]) -> None:
     monkeypatch.setattr(wh, "monotonic", lambda: now[0])
+    monkeypatch.setattr(shared_health, "monotonic", lambda: now[0])
 
 
 def test_idle_boundary_119_healthy_120_not(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

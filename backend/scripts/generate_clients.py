@@ -21,6 +21,59 @@ ANDROID_TARGET = (
 )
 
 
+def typescript_models(schema: dict, roots: list[str]) -> str:
+    """Emit the browser DTO closure from OpenAPI, rejecting unsupported shapes."""
+    components = schema["components"]["schemas"]
+    pending = set(roots)
+    emitted: dict[str, str] = {}
+
+    def convert(node: dict) -> str:
+        if "$ref" in node:
+            prefix = "#/components/schemas/"
+            ref = node["$ref"]
+            if not ref.startswith(prefix):
+                raise ValueError(f"Unsupported reference: {ref}")
+            name = ref[len(prefix):]
+            pending.add(name)
+            return name
+        if "allOf" in node or "not" in node:
+            raise ValueError(f"Unsupported schema: {node}")
+        if "enum" in node:
+            return " | ".join(json.dumps(value, ensure_ascii=False) for value in node["enum"])
+        if "const" in node:
+            return json.dumps(node["const"], ensure_ascii=False)
+        for union in ("anyOf", "oneOf"):
+            if union in node:
+                return " | ".join(convert(part) for part in node[union])
+        kind = node.get("type")
+        scalars = {"string": "string", "integer": "number", "number": "number",
+                   "boolean": "boolean", "null": "null"}
+        if kind in scalars:
+            return scalars[kind]
+        if kind == "array":
+            return f"Array<{convert(node['items'])}>"
+        if kind == "object":
+            if "properties" in node:
+                required = node.get("required", [])
+                lines = ["{"]
+                for name, value in sorted(node["properties"].items()):
+                    optional = "" if name in required else "?"
+                    lines.append(f"  {json.dumps(name)}{optional}: {convert(value)};")
+                lines.append("}")
+                return "\n".join(lines)
+            extra = node.get("additionalProperties", True)
+            value = convert(extra) if isinstance(extra, dict) else "unknown" if extra else "never"
+            return f"Record<string, {value}>"
+        if not node or set(node).issubset({"title", "description"}):
+            return "unknown"
+        raise ValueError(f"Unsupported schema: {node}")
+
+    while pending - emitted.keys():
+        name = min(pending - emitted.keys())
+        emitted[name] = f"export type {name} = {convert(components[name])};"
+    return "\n\n".join(emitted[name] for name in sorted(emitted)) + "\n"
+
+
 def main() -> None:
     schema = json.loads((ROOT / "openapi.json").read_text(encoding="utf-8"))
     version = schema["info"]["version"]
@@ -53,6 +106,9 @@ def main() -> None:
         "];",
         "",
     ]
+    ts_lines.append(typescript_models(schema, [
+        "DashboardOut", "ClientOut", "ValidateIn", "ActivityPageOut",
+    ]))
     WEB_TARGET.parent.mkdir(parents=True, exist_ok=True)
     WEB_TARGET.write_text("\n".join(ts_lines), encoding="utf-8")
 

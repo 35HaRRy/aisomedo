@@ -11,6 +11,7 @@ from dojo.adapters import (
     SystemClock,
 )
 from dojo.adapters.meta import FernetCipher, StubMetaOAuthProvider
+from dojo.dashboard import NextSlot, PendingAction, PublishingDashboard
 from dojo.exceptions import (
     ActivePackageExists,
     ClientNotFound,
@@ -115,6 +116,9 @@ from dojo.publishing import DojoPublishing
 from dojo.setup import DojoSetup
 
 __all__ = [
+    "NextSlot",
+    "PendingAction",
+    "PublishingDashboard",
     "ActivePackageExists",
     "ActivityEntry",
     "ActivityPage",

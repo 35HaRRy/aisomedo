@@ -447,6 +447,205 @@
         "title": "ConsentOut",
         "type": "object"
       },
+      "DashboardActionOut": {
+        "properties": {
+          "due_at": {
+            "format": "date-time",
+            "title": "Due At",
+            "type": "string"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          },
+          "package_folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Folder"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          },
+          "state": {
+            "enum": [
+              "review_ready",
+              "empty_package",
+              "preparing"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "occurrence_id",
+          "review_id",
+          "version",
+          "due_at",
+          "package_folder",
+          "state"
+        ],
+        "title": "DashboardActionOut",
+        "type": "object"
+      },
+      "DashboardInstagramOut": {
+        "properties": {
+          "health": {
+            "title": "Health",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "health"
+        ],
+        "title": "DashboardInstagramOut",
+        "type": "object"
+      },
+      "DashboardOut": {
+        "properties": {
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "instagram": {
+            "$ref": "#/components/schemas/DashboardInstagramOut"
+          },
+          "next_slot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DashboardSlotOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "package": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackageOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_actions": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardActionOut"
+            },
+            "title": "Pending Actions",
+            "type": "array"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/PlanOut"
+          },
+          "worker": {
+            "$ref": "#/components/schemas/DashboardWorkerOut"
+          }
+        },
+        "required": [
+          "generated_at",
+          "package",
+          "next_slot",
+          "pending_actions",
+          "plan",
+          "instagram",
+          "worker"
+        ],
+        "title": "DashboardOut",
+        "type": "object"
+      },
+      "DashboardSlotOut": {
+        "properties": {
+          "due_at": {
+            "format": "date-time",
+            "title": "Due At",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "due_at"
+        ],
+        "title": "DashboardSlotOut",
+        "type": "object"
+      },
+      "DashboardWorkerOut": {
+        "properties": {
+          "phase": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "busy",
+                  "stopped"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "status": {
+            "enum": [
+              "healthy",
+              "unhealthy",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "phase"
+        ],
+        "title": "DashboardWorkerOut",
+        "type": "object"
+      },
       "DownloadIn": {
         "properties": {
           "artifact_ref": {
@@ -1268,6 +1467,27 @@
         "summary": "Compat",
         "tags": [
           "compat"
+        ]
+      }
+    },
+    "/api/dashboard": {
+      "get": {
+        "operationId": "dashboard_api_dashboard_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dashboard",
+        "tags": [
+          "dashboard"
         ]
       }
     },

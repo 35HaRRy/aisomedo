@@ -13,6 +13,7 @@ from typing import cast
 
 from dojo.adapters.clock import ISTANBUL, SystemClock
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
+from dojo.dashboard import PendingAction, PublishingDashboard, next_slot
 from dojo.exceptions import (
     ActivePackageExists,
     JobNotFound,
@@ -299,6 +300,50 @@ class DojoPublishing:
     def get_active_package(self) -> Package | None:
         """Return the current active package, if any."""
         return self._packages.get_active()
+
+    def get_dashboard_summary(self) -> PublishingDashboard:
+        """Observe publishing state without creating work or package folders."""
+        now = self._clock.now()
+        package = self.get_active_package() or self._get_publishing_package()
+        plan = self.get_plan()
+        occurrences = self._schedule.list_all()
+        by_id = {o.id: o for o in occurrences}
+        manifest = self._load_manifest(package) if package else {}
+        has_media = bool(self._finalized_in_order(manifest))
+        digest = self._render_digest(package, manifest) if package and has_media else None
+        actions = []
+        reviews = self.list_pending_reviews()
+        for review in reviews:
+            occurrence = by_id.get(review.occurrence_id)
+            ready = (
+                package is not None and review.package_folder == package.folder_name
+                and digest is not None and review.revision_digest == digest
+                and manifest.get("render_revision") == digest
+            )
+            actions.append(PendingAction(
+                occurrence_id=review.occurrence_id, review_id=review.id,
+                version=review.version,
+                due_at=occurrence.due_at if occurrence else review.created_at,
+                package_folder=review.package_folder,
+                state="review_ready" if ready else "preparing" if has_media else "empty_package",
+            ))
+        reviewed = {r.occurrence_id for r in reviews}
+        for occurrence in occurrences:
+            if (occurrence.status == "pending" and occurrence.due_at <= now
+                    and occurrence.id not in reviewed):
+                actions.append(PendingAction(
+                    occurrence_id=occurrence.id, review_id=None, version=None,
+                    due_at=occurrence.due_at,
+                    package_folder=package.folder_name if package else None,
+                    state="preparing" if has_media else "empty_package",
+                ))
+        return PublishingDashboard(
+            generated_at=now, package=package, next_slot=next_slot(plan, occurrences, now),
+            pending_actions=sorted(
+                actions, key=lambda action: (action.due_at, action.occurrence_id),
+            ),
+            plan=plan,
+        )
 
     # --- multi-open-folder recovery (issue #20) ---
 

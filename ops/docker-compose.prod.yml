@@ -85,6 +85,7 @@ services:
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-private_ranges}
       SIGNED_URL_SECRET: ${SIGNED_URL_SECRET:?set SIGNED_URL_SECRET in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      WORKER_HEALTH_PATH: ${WORKER_HEALTH_PATH:-/run/dojo-worker/health.json}
       META_APP_ID: ${META_APP_ID:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
       META_REDIRECT_URI: ${META_REDIRECT_URI:-}
@@ -94,6 +95,7 @@ services:
       META_OAUTH_SCOPE: ${META_OAUTH_SCOPE:-}
     volumes:
       - media-data:/media
+      - worker-health:/run/dojo-worker:ro
     depends_on:
       db:
         condition: service_healthy
@@ -132,7 +134,7 @@ services:
       # the runbook documents them as .env settings, and a hardcoded value would
       # make an operator's tuning silently ignored. The defaults are the
       # documented ones, so an .env that says nothing still renders them.
-      WORKER_HEALTH_PATH: ${WORKER_HEALTH_PATH:-/tmp/dojo-worker-health.json}
+      WORKER_HEALTH_PATH: ${WORKER_HEALTH_PATH:-/run/dojo-worker/health.json}
       WORKER_HEALTH_IDLE_SECONDS: ${WORKER_HEALTH_IDLE_SECONDS:-120}
       WORKER_HEALTH_BUSY_SECONDS: ${WORKER_HEALTH_BUSY_SECONDS:-3600}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
@@ -144,6 +146,7 @@ services:
       META_TOKEN_ENCRYPTION_KEY: ${META_TOKEN_ENCRYPTION_KEY:-}
     volumes:
       - media-data:/media
+      - worker-health:/run/dojo-worker
     depends_on:
       db:
         condition: service_healthy
@@ -193,6 +196,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  worker-health:
   db-data:
   media-data:
   caddy-data:

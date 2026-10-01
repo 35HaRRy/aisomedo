@@ -22,6 +22,7 @@ export async function fetchCompat(baseUrl: string): Promise<CompatInfo> {
 export const API_PATHS: readonly string[] = [
   "/api/activity",
   "/api/compat",
+  "/api/dashboard",
   "/api/media/uploads",
   "/api/media/uploads/{upload_id}",
   "/api/media/uploads/{upload_id}/abort",
@@ -75,3 +76,86 @@ export const API_PATHS: readonly string[] = [
   "/pub/{token}",
   "/ready",
 ];
+
+export type ActivityEventOut = {
+  "action": string;
+  "actor": ClientRefOut | string;
+  "details": Record<string, unknown>;
+  "id": number;
+  "occurred_at": string;
+};
+
+export type ActivityPageOut = {
+  "events": Array<ActivityEventOut>;
+  "next_cursor": number | null;
+};
+
+export type ClientOut = {
+  "created_at": string;
+  "created_by": string;
+  "id": number;
+  "kind": string;
+  "last_seen_at": string | null;
+  "name": string;
+  "revoked_at": string | null;
+};
+
+export type ClientRefOut = {
+  "id": number;
+  "kind": string;
+  "name": string;
+};
+
+export type DashboardActionOut = {
+  "due_at": string;
+  "occurrence_id": number;
+  "package_folder": string | null;
+  "review_id": number | null;
+  "state": "review_ready" | "empty_package" | "preparing";
+  "version": number | null;
+};
+
+export type DashboardInstagramOut = {
+  "health": string;
+  "username"?: string | null;
+};
+
+export type DashboardOut = {
+  "generated_at": string;
+  "instagram": DashboardInstagramOut;
+  "next_slot": DashboardSlotOut | null;
+  "package": PackageOut | null;
+  "pending_actions": Array<DashboardActionOut>;
+  "plan": PlanOut;
+  "worker": DashboardWorkerOut;
+};
+
+export type DashboardSlotOut = {
+  "due_at": string;
+  "kind": string;
+};
+
+export type DashboardWorkerOut = {
+  "phase": "idle" | "busy" | "stopped" | null;
+  "status": "healthy" | "unhealthy" | "unknown";
+};
+
+export type PackageOut = {
+  "created_at": string;
+  "folder_name": string;
+  "id": number;
+  "status": string;
+};
+
+export type PlanOut = {
+  "anchor_date": string | null;
+  "anchor_time": string | null;
+  "enabled": boolean;
+  "timezone": string;
+};
+
+export type ValidateIn = {
+  "code": string;
+  "kind": "device" | "browser";
+  "name": string;
+};
