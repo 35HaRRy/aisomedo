@@ -13,6 +13,7 @@ let setupStatus = 200;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
 beforeEach(() => {
+  localStorage.clear();
   paired = true; snapshot = dashboard(); dashboardStatus = 200; pairingStatus = 200; activityStatus = 200;
   setup = setupState(); setupStatus = 200;
   window.location.hash = "#/dashboard";
@@ -22,6 +23,7 @@ beforeEach(() => {
     if (url.endsWith("/validate")) { if (pairingStatus === 200) paired = true; return json({}, pairingStatus); }
     if (url.includes("/activity")) return json({ events: [{ id: 1, action: "future.event", actor: "system", details: {}, occurred_at: snapshot.generated_at }], next_cursor: null }, activityStatus);
     if (url === "/api/setup") return json(setup, setupStatus);
+    if (url === "/api/media/upload-limits") return json({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 });
     return json(snapshot, dashboardStatus);
   });
 });

@@ -1,6 +1,7 @@
 import type { DashboardOut } from "../api/openapi";
 import { formatDate, statusLabel, tr } from "../i18n";
 import { PendingActions } from "./Dashboard";
+import { UploadPanel } from "../uploads/UploadPanel";
 
 export function PackageSummary({ data, reviewId }: { data: DashboardOut; reviewId: number | null }) {
   const found = data.pending_actions.some(action => action.review_id === reviewId);
@@ -10,6 +11,7 @@ export function PackageSummary({ data, reviewId }: { data: DashboardOut; reviewI
       {data.package ? <dl><div><dt>{tr.state}</dt><dd>{statusLabel(data.package.status)}</dd></div>
         <div><dt>{tr.createdAt}</dt><dd>{formatDate(data.package.created_at)}</dd></div></dl> : <p>{tr.noPackageHelp}</p>}
     </section>
+    <UploadPanel />
     <PendingActions data={data} />
     <p className="muted">{tr.reviewNotice}</p>
   </>;
