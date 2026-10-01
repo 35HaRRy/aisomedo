@@ -42,6 +42,10 @@ class NoConsentPolicy(ConsentError):
     pass
 
 
+class ConsentPolicyChanged(ConsentError):
+    pass
+
+
 class UploadNotFound(DojoError):
     pass
 

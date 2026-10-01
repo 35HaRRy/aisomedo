@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 
+from dojo.exceptions import ConsentPolicyChanged, NoConsentPolicy
 from dojo.model import (
     AuditEvent,
     Client,
@@ -76,6 +77,7 @@ class InMemoryStore:
         self._acceptances: list[ConsentAcceptance] = []
         self._next_policy_id = 1
         self._next_acceptance_id = 1
+        self._consent_lock = RLock()
         self._uploads: list[Upload] = []
         self._jobs: list[Job] = []
         self._settings: dict[str, object] = {}
@@ -336,6 +338,14 @@ class InMemoryStore:
     def create_policy(
         self, *, version: int, text: str, created_by: str, created_at: datetime
     ) -> ConsentPolicy:
+        with self._consent_lock:
+            return self._create_policy(
+                version=version, text=text, created_by=created_by, created_at=created_at
+            )
+
+    def _create_policy(
+        self, *, version: int, text: str, created_by: str, created_at: datetime
+    ) -> ConsentPolicy:
         for i, existing in enumerate(self._policies):
             if existing.version == version:
                 updated = replace(
@@ -367,12 +377,38 @@ class InMemoryStore:
         return next((a for a in self._acceptances if a.policy_version == policy_version), None)
 
     def record_acceptance(self, acceptance: ConsentAcceptance) -> bool:
+        with self._consent_lock:
+            return self._record_acceptance(acceptance)
+
+    def _record_acceptance(self, acceptance: ConsentAcceptance) -> bool:
         if any(a.policy_version == acceptance.policy_version for a in self._acceptances):
             return False
         created = replace(acceptance, id=self._next_acceptance_id)
         self._next_acceptance_id += 1
         self._acceptances.append(created)
         return True
+
+    def accept_policy_version(
+        self, *, client: Client, version: int | None, accepted_at: datetime
+    ) -> tuple[ConsentAcceptance, bool]:
+        with self._consent_lock:
+            policy = self.get_current_policy()
+            if policy is None:
+                raise NoConsentPolicy("no consent policy configured")
+            if version is not None and version != policy.version:
+                raise ConsentPolicyChanged("consent policy changed; reload before accepting")
+            existing = self.find_acceptance(policy.version)
+            if existing is not None:
+                return existing, False
+            acceptance = ConsentAcceptance(
+                policy_version=policy.version, accepted_at=accepted_at,
+                accepting_client_id=client.id, accepting_client_name=client.name,
+                accepting_client_kind=client.kind,
+            )
+            self.record_acceptance(acceptance)
+            recorded = self.find_acceptance(policy.version)
+            assert recorded is not None
+            return recorded, True
 
     @overload
     def get(self, key: str) -> Upload | None: ...

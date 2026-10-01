@@ -30,6 +30,7 @@ from sqlalchemy.engine import Connection, CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+from dojo.exceptions import ConsentPolicyChanged, NoConsentPolicy
 from dojo.model import (
     AuditEvent,
     Client,
@@ -878,6 +879,7 @@ class PostgresStore:
         self, *, version: int, text: str, created_by: str, created_at: datetime
     ) -> ConsentPolicy:
         with self._session() as session:
+            session.execute(select(func.pg_advisory_xact_lock(func.hashtext("dojo.consent-policy"))))
             stmt = pg_insert(ConsentPolicyRow).values(
                 version=version, text=text, created_at=created_at, created_by=created_by
             )
@@ -939,6 +941,34 @@ class PostgresStore:
             except IntegrityError:
                 session.rollback()
                 return False
+
+    def accept_policy_version(
+        self, *, client: Client, version: int | None, accepted_at: datetime
+    ) -> tuple[ConsentAcceptance, bool]:
+        with self._session() as session:
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext('dojo.consent-policy'))"))
+            policy = session.scalar(
+                select(ConsentPolicyRow).order_by(ConsentPolicyRow.version.desc()).limit(1)
+            )
+            if policy is None:
+                raise NoConsentPolicy("no consent policy configured")
+            if version is not None and version != policy.version:
+                raise ConsentPolicyChanged("consent policy changed; reload before accepting")
+            row = session.scalar(select(ConsentAcceptanceRow).where(
+                ConsentAcceptanceRow.policy_version == policy.version
+            ))
+            if row is not None:
+                return self._acceptance_from_row(row), False
+            row = ConsentAcceptanceRow(
+                policy_version=policy.version, accepted_at=accepted_at,
+                accepting_client_id=client.id, accepting_client_name=client.name,
+                accepting_client_kind=client.kind,
+            )
+            session.add(row)
+            session.flush()
+            acceptance = self._acceptance_from_row(row)
+            session.commit()
+            return acceptance, True
 
     @overload
     def get(self, key: str) -> Upload | None: ...

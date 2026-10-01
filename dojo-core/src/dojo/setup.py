@@ -5,7 +5,7 @@ from math import isfinite
 from typing import cast
 
 from dojo.adapters.clock import SystemClock
-from dojo.exceptions import ConsentPolicyDowngrade, NoConsentPolicy
+from dojo.exceptions import ConsentPolicyDowngrade
 from dojo.model import (
     AuditEvent,
     Client,
@@ -94,39 +94,24 @@ class DojoSetup:
             return None
         return self._setup.find_acceptance(policy.version)
 
-    def accept_current_policy(self, *, client: Client) -> ConsentAcceptance:
-        """Accept the current policy version, once per version, idempotently."""
-        policy = self._setup.get_current_policy()
-        if policy is None:
-            raise NoConsentPolicy("no consent policy configured")
-        existing = self._setup.find_acceptance(policy.version)
-        if existing is not None:
-            return existing
+    def accept_current_policy(
+        self, *, client: Client, version: int | None = None
+    ) -> ConsentAcceptance:
+        """Accept only the displayed current version, atomically and idempotently."""
         now = self._clock.now()
-        acceptance = ConsentAcceptance(
-            policy_version=policy.version,
-            accepted_at=now,
-            accepting_client_id=client.id,
-            accepting_client_name=client.name,
-            accepting_client_kind=client.kind,
+        acceptance, inserted = self._setup.accept_policy_version(
+            client=client, version=version, accepted_at=now
         )
-        if self._setup.record_acceptance(acceptance):
+        if inserted:
             self._audit.append(
                 AuditEvent(
                     action="consent.accepted",
                     actor=str(client.id),
                     occurred_at=now,
-                    details={"version": policy.version},
+                    details={"version": acceptance.policy_version},
                 )
             )
-            recorded = self._setup.find_acceptance(policy.version)
-            if recorded is None:
-                raise NoConsentPolicy("consent acceptance lost")
-            return recorded
-        raced = self._setup.find_acceptance(policy.version)
-        if raced is None:
-            raise NoConsentPolicy("consent acceptance lost")
-        return raced
+        return acceptance
 
     def checklist(self) -> list[SetupItem]:
         """Derive the onboarding checklist from real state."""

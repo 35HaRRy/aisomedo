@@ -107,6 +107,10 @@ class SetupStore(Protocol):
     def find_acceptance(self, policy_version: int) -> ConsentAcceptance | None: ...
     def record_acceptance(self, acceptance: ConsentAcceptance) -> bool: ...
 
+    def accept_policy_version(
+        self, *, client: Client, version: int | None, accepted_at: datetime
+    ) -> tuple[ConsentAcceptance, bool]: ...
+
 
 @runtime_checkable
 class UploadStore(Protocol):
