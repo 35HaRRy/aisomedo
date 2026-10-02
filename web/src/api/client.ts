@@ -1,4 +1,4 @@
-import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn } from "./openapi";
+import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn, ActiveEditorOut, CompletedPackageOut, SelectionIn, MontageOut, PackageOut } from "./openapi";
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly detail?: string) { super(`api:${status}`); }
@@ -36,6 +36,13 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 }
 
 export const api = {
+  packageEditor: (signal?: AbortSignal) => request<ActiveEditorOut>("/api/packages/active/editor", { signal }),
+  saveSelections: (body: SelectionIn, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/selections", { method: "PUT", body: JSON.stringify(body), signal }),
+  saveOrder: (order: string[], expectedFolder: string, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/order", { method: "PUT", body: JSON.stringify({ order, expected_folder_name: expectedFolder }), signal }),
+  removeMedia: async (id: string, expectedFolder: string, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/remove?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", signal }); },
+  restoreMedia: async (id: string, expectedFolder: string, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/restore?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", signal }); },
+  completedPackages: (signal?: AbortSignal) => request<PackageOut[]>("/api/packages", { signal }),
+  completedPackage: (folder: string, signal?: AbortSignal) => request<CompletedPackageOut>(`/api/packages/${encodeURIComponent(folder)}`, { signal }),
   uploadLimits: (signal?: AbortSignal) => request<UploadLimitsOut>("/api/media/upload-limits", { signal }),
   startUpload: (body: UploadInitIn, signal?: AbortSignal) => request<UploadOut>("/api/media/uploads", { method: "POST", body: JSON.stringify(body), signal }),
   uploadStatus: (id: string, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}`, { signal }),

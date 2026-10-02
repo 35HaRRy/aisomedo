@@ -37,6 +37,35 @@
         "title": "AcceptanceOut",
         "type": "object"
       },
+      "ActiveEditorOut": {
+        "properties": {
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/EditorMediaOut"
+            },
+            "title": "Media",
+            "type": "array"
+          },
+          "montage": {
+            "$ref": "#/components/schemas/MontageOut"
+          },
+          "package": {
+            "$ref": "#/components/schemas/PackageOut"
+          },
+          "render_stale": {
+            "title": "Render Stale",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "package",
+          "render_stale",
+          "media",
+          "montage"
+        ],
+        "title": "ActiveEditorOut",
+        "type": "object"
+      },
       "ActivityEventOut": {
         "properties": {
           "action": {
@@ -523,6 +552,141 @@
         "title": "CodeOut",
         "type": "object"
       },
+      "CompletedMediaOut": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/PackageArtifactOut"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          },
+          "preview_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Url"
+          },
+          "processed": {
+            "$ref": "#/components/schemas/ProcessedMetadataOut"
+          },
+          "removed_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed Position"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uploaded_at": {
+            "format": "date-time",
+            "title": "Uploaded At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "uploaded_at",
+          "status",
+          "processed",
+          "preview_url",
+          "artifacts"
+        ],
+        "title": "CompletedMediaOut",
+        "type": "object"
+      },
+      "CompletedPackageOut": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/PackageArtifactOut"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "folder_name": {
+            "title": "Folder Name",
+            "type": "string"
+          },
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/CompletedMediaOut"
+            },
+            "title": "Media",
+            "type": "array"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Order",
+            "type": "array"
+          },
+          "render_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Revision"
+          }
+        },
+        "required": [
+          "folder_name",
+          "media",
+          "order",
+          "caption",
+          "render_revision",
+          "artifacts"
+        ],
+        "title": "CompletedPackageOut",
+        "type": "object"
+      },
       "ConsentOut": {
         "properties": {
           "accepted_at": {
@@ -779,6 +943,109 @@
         "title": "DownloadOut",
         "type": "object"
       },
+      "EditorMediaOut": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/PackageArtifactOut"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "effective_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Duration"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "is_video": {
+            "title": "Is Video",
+            "type": "boolean"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          },
+          "preview_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Url"
+          },
+          "processed": {
+            "$ref": "#/components/schemas/ProcessedMetadataOut"
+          },
+          "removed_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed Position"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "source_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Duration"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "uploaded_at": {
+            "format": "date-time",
+            "title": "Uploaded At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "uploaded_at",
+          "status",
+          "processed",
+          "preview_url",
+          "artifacts",
+          "is_video",
+          "source_duration",
+          "effective_duration"
+        ],
+        "title": "EditorMediaOut",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -832,6 +1099,131 @@
         "title": "MetaCandidateOut",
         "type": "object"
       },
+      "MontageClipOut": {
+        "properties": {
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "effective_duration": {
+            "title": "Effective Duration",
+            "type": "number"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "is_video": {
+            "title": "Is Video",
+            "type": "boolean"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          },
+          "source_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Duration"
+          }
+        },
+        "required": [
+          "media_id",
+          "filename",
+          "content_type",
+          "is_video",
+          "source_duration",
+          "effective_duration"
+        ],
+        "title": "MontageClipOut",
+        "type": "object"
+      },
+      "MontageOut": {
+        "properties": {
+          "card_duration": {
+            "title": "Card Duration",
+            "type": "number"
+          },
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/MontageClipOut"
+            },
+            "title": "Clips",
+            "type": "array"
+          },
+          "combined_duration": {
+            "title": "Combined Duration",
+            "type": "number"
+          },
+          "duration_complete": {
+            "title": "Duration Complete",
+            "type": "boolean"
+          },
+          "max_duration_seconds": {
+            "title": "Max Duration Seconds",
+            "type": "number"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Order",
+            "type": "array"
+          },
+          "over_limit": {
+            "title": "Over Limit",
+            "type": "boolean"
+          },
+          "required_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Action"
+          },
+          "selections": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/VideoRangeOut"
+              },
+              "type": "array"
+            },
+            "title": "Selections",
+            "type": "object"
+          },
+          "trims": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VideoRangeOut"
+            },
+            "title": "Trims",
+            "type": "object"
+          }
+        },
+        "required": [
+          "order",
+          "trims",
+          "selections",
+          "clips",
+          "combined_duration",
+          "max_duration_seconds",
+          "over_limit",
+          "required_action",
+          "card_duration",
+          "duration_complete"
+        ],
+        "title": "MontageOut",
+        "type": "object"
+      },
       "OccurrenceOut": {
         "properties": {
           "due_at": {
@@ -862,6 +1254,17 @@
       },
       "OrderIn": {
         "properties": {
+          "expected_folder_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Folder Name"
+          },
           "order": {
             "items": {
               "type": "string"
@@ -874,6 +1277,68 @@
           "order"
         ],
         "title": "OrderIn",
+        "type": "object"
+      },
+      "PackageArtifactOut": {
+        "properties": {
+          "artifact_ref": {
+            "title": "Artifact Ref",
+            "type": "string"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "original",
+              "processed",
+              "render"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "preview_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Url"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "artifact_ref",
+          "kind",
+          "filename",
+          "content_type",
+          "available",
+          "url",
+          "preview_url"
+        ],
+        "title": "PackageArtifactOut",
         "type": "object"
       },
       "PackageOut": {
@@ -980,6 +1445,70 @@
           "timezone"
         ],
         "title": "PlanOut",
+        "type": "object"
+      },
+      "ProcessedMetadataOut": {
+        "properties": {
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "dimensions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "title": "ProcessedMetadataOut",
         "type": "object"
       },
       "PushTokenIn": {
@@ -1152,6 +1681,30 @@
           "ig_user_id"
         ],
         "title": "SelectIn",
+        "type": "object"
+      },
+      "SelectionIn": {
+        "properties": {
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "selections": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/VideoRangeOut"
+              },
+              "type": "array"
+            },
+            "title": "Selections",
+            "type": "object"
+          }
+        },
+        "required": [
+          "expected_folder_name",
+          "selections"
+        ],
+        "title": "SelectionIn",
         "type": "object"
       },
       "SetupItemOut": {
@@ -1546,6 +2099,25 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VideoRangeOut": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "number"
+          },
+          "start": {
+            "title": "Start",
+            "type": "number"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "VideoRangeOut",
         "type": "object"
       }
     }
@@ -2493,6 +3065,76 @@
         ]
       }
     },
+    "/api/packages/active/editor": {
+      "get": {
+        "operationId": "get_editor_api_packages_active_editor_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveEditorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Editor",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/media/{media_id}/preview": {
+      "get": {
+        "operationId": "media_preview_api_packages_active_media__media_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Media Preview",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/packages/active/media/{media_id}/remove": {
       "post": {
         "operationId": "remove_media_api_packages_active_media__media_id__remove_post",
@@ -2504,6 +3146,22 @@
             "schema": {
               "title": "Media Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Folder Name"
             }
           }
         ],
@@ -2551,6 +3209,22 @@
               "title": "Media Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Folder Name"
+            }
           }
         ],
         "responses": {
@@ -2593,9 +3267,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Montage Api Packages Active Montage Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/MontageOut"
                 }
               }
             },
@@ -2626,9 +3298,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Set Order Api Packages Active Order Put",
-                  "type": "object"
+                  "$ref": "#/components/schemas/MontageOut"
                 }
               }
             },
@@ -2786,6 +3456,47 @@
         ]
       }
     },
+    "/api/packages/active/selections": {
+      "put": {
+        "operationId": "set_selections_api_packages_active_selections_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MontageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Selections",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/packages/active/trims": {
       "put": {
         "operationId": "set_trims_api_packages_active_trims_put",
@@ -2804,9 +3515,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Set Trims Api Packages Active Trims Put",
-                  "type": "object"
+                  "$ref": "#/components/schemas/MontageOut"
                 }
               }
             },
@@ -2959,9 +3668,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Browse Completed Api Packages  Folder Name  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/CompletedPackageOut"
                 }
               }
             },
@@ -2979,6 +3686,65 @@
           }
         },
         "summary": "Browse Completed",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/{folder_name}/artifacts": {
+      "get": {
+        "operationId": "completed_artifact_api_packages__folder_name__artifacts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "folder_name",
+            "required": true,
+            "schema": {
+              "title": "Folder Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "artifact_ref",
+            "required": true,
+            "schema": {
+              "title": "Artifact Ref",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "download",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Download",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Completed Artifact",
         "tags": [
           "packages"
         ]

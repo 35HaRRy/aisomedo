@@ -250,7 +250,13 @@ class DojoPublishing:
         if self._get_publishing_package() is not None:
             raise PublicationInProgress("publication must be reconciled first")
         now = self._clock.now().astimezone(ISTANBUL)
-        folder_name = now.strftime(PACKAGE_FOLDER_FORMAT)
+        folder_time = now
+        used_names = {p.folder_name.removesuffix("-completed")
+                      for p in self._packages.list_completed()}
+        folder_name = folder_time.strftime(PACKAGE_FOLDER_FORMAT)
+        while folder_name in used_names:
+            folder_time += timedelta(minutes=1)
+            folder_name = folder_time.strftime(PACKAGE_FOLDER_FORMAT)
         folder = self.media_root / folder_name
         folder.mkdir(parents=True, exist_ok=False)
         (folder / "manifest.json").write_text(

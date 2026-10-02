@@ -42,6 +42,8 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/active/branding",
   "/api/packages/active/caption",
   "/api/packages/active/complete",
+  "/api/packages/active/editor",
+  "/api/packages/active/media/{media_id}/preview",
   "/api/packages/active/media/{media_id}/remove",
   "/api/packages/active/media/{media_id}/restore",
   "/api/packages/active/montage",
@@ -51,11 +53,13 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/active/publication/recover",
   "/api/packages/active/publication/retry",
   "/api/packages/active/publish",
+  "/api/packages/active/selections",
   "/api/packages/active/trims",
   "/api/packages/recovered",
   "/api/packages/recovered/{folder_name}/import",
   "/api/packages/recovered/{folder_name}/resolve",
   "/api/packages/{folder_name}",
+  "/api/packages/{folder_name}/artifacts",
   "/api/packages/{folder_name}/download",
   "/api/pairing/clients",
   "/api/pairing/clients/{client_id}/revoke",
@@ -89,6 +93,13 @@ export type AcceptanceIn = {
 export type AcceptanceOut = {
   "accepted_at": string;
   "version": number;
+};
+
+export type ActiveEditorOut = {
+  "media": Array<EditorMediaOut>;
+  "montage": MontageOut;
+  "package": PackageOut;
+  "render_stale": boolean;
 };
 
 export type ActivityEventOut = {
@@ -149,6 +160,28 @@ export type ClientRefOut = {
   "name": string;
 };
 
+export type CompletedMediaOut = {
+  "artifacts": Array<PackageArtifactOut>;
+  "content_type": string;
+  "filename": string;
+  "media_id": string;
+  "preview_url": string | null;
+  "processed": ProcessedMetadataOut;
+  "removed_position"?: number | null;
+  "size_bytes": number;
+  "status": string;
+  "uploaded_at": string;
+};
+
+export type CompletedPackageOut = {
+  "artifacts": Array<PackageArtifactOut>;
+  "caption": string | null;
+  "folder_name": string;
+  "media": Array<CompletedMediaOut>;
+  "order": Array<string>;
+  "render_revision": string | null;
+};
+
 export type ConsentOut = {
   "accepted_at": string | null;
   "text": string;
@@ -189,11 +222,59 @@ export type DashboardWorkerOut = {
   "status": "healthy" | "unhealthy" | "unknown";
 };
 
+export type EditorMediaOut = {
+  "artifacts": Array<PackageArtifactOut>;
+  "content_type": string;
+  "effective_duration": number | null;
+  "filename": string;
+  "is_video": boolean;
+  "media_id": string;
+  "preview_url": string | null;
+  "processed": ProcessedMetadataOut;
+  "removed_position"?: number | null;
+  "size_bytes": number;
+  "source_duration": number | null;
+  "status": string;
+  "uploaded_at": string;
+};
+
 export type MetaCandidateOut = {
   "ig_user_id": string;
   "ig_username": string;
   "page_id"?: string | null;
   "page_name"?: string | null;
+};
+
+export type MontageClipOut = {
+  "content_type": string;
+  "effective_duration": number;
+  "filename": string;
+  "is_video": boolean;
+  "media_id": string;
+  "source_duration": number | null;
+};
+
+export type MontageOut = {
+  "card_duration": number;
+  "clips": Array<MontageClipOut>;
+  "combined_duration": number;
+  "duration_complete": boolean;
+  "max_duration_seconds": number;
+  "order": Array<string>;
+  "over_limit": boolean;
+  "required_action": string | null;
+  "selections": Record<string, Array<VideoRangeOut>>;
+  "trims": Record<string, VideoRangeOut>;
+};
+
+export type PackageArtifactOut = {
+  "artifact_ref": string;
+  "available": boolean;
+  "content_type": string;
+  "filename": string;
+  "kind": "original" | "processed" | "render";
+  "preview_url": string | null;
+  "url": string | null;
 };
 
 export type PackageOut = {
@@ -216,6 +297,14 @@ export type PlanOut = {
   "timezone": string;
 };
 
+export type ProcessedMetadataOut = {
+  "content_type"?: string | null;
+  "dimensions"?: Array<number> | null;
+  "duration"?: number | null;
+  "path"?: string | null;
+  "size_bytes"?: number | null;
+};
+
 export type ResolveConflictIn = {
   "apply_to_all"?: boolean;
   "confirmed_overwrite"?: boolean;
@@ -225,6 +314,11 @@ export type ResolveConflictIn = {
 
 export type SelectIn = {
   "ig_user_id": string;
+};
+
+export type SelectionIn = {
+  "expected_folder_name": string;
+  "selections": Record<string, Array<VideoRangeOut>>;
 };
 
 export type SetupItemOut = {
@@ -286,4 +380,9 @@ export type ValidateIn = {
   "code": string;
   "kind": "device" | "browser";
   "name": string;
+};
+
+export type VideoRangeOut = {
+  "end": number;
+  "start": number;
 };

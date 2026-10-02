@@ -584,7 +584,8 @@ def test_download_completed_artifact(tmp_path: Path) -> None:
     )
 
     assert resp.status_code == 200
-    assert resp.json()["url"].startswith("https://signed.local/")
+    assert resp.json()["url"].startswith("/api/packages/")
+    assert client.get(resp.json()["url"], headers=bearer(token)).status_code == 200
 
 
 def test_download_artifact_traversal_400(tmp_path: Path) -> None:

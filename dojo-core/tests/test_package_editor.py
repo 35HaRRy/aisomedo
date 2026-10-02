@@ -179,3 +179,12 @@ def test_toggles_invalidate_render_and_keep_sections(tmp_path):
         assert snapshot["render_stale"] is True
         assert snapshot["montage"]["selections"][mid] == ranges
         assert json.loads(path.read_text())["render_revision"] is None
+
+
+def test_same_minute_rollover_has_distinct_editor_identity(tmp_path):
+    seam, _, _ = make_package(tmp_path)
+    old = seam.get_active_package().folder_name
+    archive(seam)
+    assert seam.get_active_package().folder_name != old
+    with pytest.raises(PackageChanged):
+        seam.set_selections({}, expected_folder_name=old)

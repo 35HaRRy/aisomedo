@@ -81,7 +81,9 @@ Add named cases for finite endpoints/booleans, `1/25` minimum, overlap/duplicate
 - [x] **Observe GREEN/regressions:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py dojo-core/tests/test_montage.py dojo-core/tests/test_media_removal.py -v` — all pass.
 - [x] **Commit named files:** `feat(core): retain multiple video sections`.
 
-### Task 2: Render actual retained sections without duplicate outputs
+### Task 2: Render actual retained sections without duplicate outputs — complete
+
+Verified: seven new tests RED→GREEN; 39 focused tests passed; full core 624 passed/3 existing skips. Actual production renderer checked via Docker transport. Commit: `9c679df`.
 
 **Files:** Modify `dojo-core/src/dojo/publishing.py` (`_render_digest`, `_build_reel`, render-limit check), `dojo-core/src/dojo/adapters/render.py`, `dojo-core/tests/test_render.py`; create `dojo-core/tests/test_render_selections.py` and `dojo-core/tests/ffmpeg_transport.py` if native FFmpeg is unavailable.
 
@@ -100,7 +102,9 @@ Add a real render test with a six-second source containing distinct colored/audi
 - [ ] **Observe GREEN/regressions:** `uv run --project dojo-core pytest dojo-core/tests/test_render_selections.py dojo-core/tests/test_render.py dojo-core/tests/test_review.py dojo-core/tests/test_review_resolution.py dojo-core/tests/test_ffmpeg_fixtures.py -v` — behavioral and real render checks pass; disclose skips.
 - [ ] **Commit named files:** `feat(render): assemble retained video sections`.
 
-### Task 3: Authoritative editor snapshots and private artifact resolution
+### Task 3: Authoritative editor snapshots and private artifact resolution — complete
+
+Verified: focused 56 passed/1 symlink-privilege skip; full core 639 passed/4 skips. Windows cannot execute the symlink escape test (WinError 1314); retained for Linux CI. Commit: `4427608`.
 
 **Files:** Create `dojo-core/src/dojo/package_media.py`, `dojo-core/tests/test_package_editor.py`; modify `dojo-core/src/dojo/model.py`, `__init__.py`, `publishing.py` (media toggles/completed browsing/download methods), and `dojo-core/tests/test_media_removal.py`.
 
@@ -223,4 +227,4 @@ From `web/`: `npm test`, `npm run typecheck`, `npm run build`, `npm run test:bro
 - [x] Type consistency: facade `VideoSelections`, API `SelectionIn`/`MontageOut`/`ActiveEditorOut`, and browser `SelectionMap` carry the same retained interval representation and identity field.
 - [x] Review focus: all five listed failure classes have explicit owning test steps.
 - [x] Proportion: decisions/signatures/tests are specified; no copied product implementation bodies.
-- [ ] User reviews this plan and chooses Native or Subagent-driven execution. Product implementation remains blocked until that response.
+- [x] User reviewed plan and chose same-session inline execution ("aynı oturum") in an isolated worktree.
