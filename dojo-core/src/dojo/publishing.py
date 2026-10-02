@@ -2405,13 +2405,8 @@ class DojoPublishing:
         """Render when stale; explicit retry also allows failed/completed revisions."""
         package = self._require_active_package()
         self._assert_logo_configured()
-        status = self.get_montage_status()
-        if status.over_limit:
-            raise MontageDurationExceeded(
-                f"combined duration {status.combined_duration:.1f}s exceeds "
-                f"{status.max_duration_seconds:.1f}s limit; {status.required_action}"
-            )
         manifest = self._load_manifest(package)
+        self._validate_montage(manifest)
         digest = self._render_digest(package, manifest)
         stale = manifest.get("render_revision") != digest
         if stale or retry:
@@ -2455,6 +2450,8 @@ class DojoPublishing:
             "caption": manifest.get("caption"),
             "photo_duration": limits.photo_duration_seconds,
         }
+        if "selections" in manifest:
+            inputs["selections"] = manifest_selections(manifest)
         canonical = json.dumps(inputs, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -2517,28 +2514,29 @@ class DojoPublishing:
         )
 
     def _build_reel(self, package: Package, manifest: dict) -> ReelBuild:
+        self._validate_montage(manifest)
         limits = self.get_montage_limits()
-        trims = manifest.get("trims", {})
+        selections = manifest_selections(manifest)
         clips: list[ReelClip] = []
         for media_id, entry in self._finalized_in_order(manifest):
             processed = entry.get("processed", {})
             path = self.media_root / package.folder_name / str(processed.get("path", ""))
             is_video = str(entry.get("content_type", "")).startswith("video/")
-            trim = trims.get(media_id)
-            clips.append(
-                ReelClip(
-                    media_id=media_id,
-                    path=path,
-                    is_video=is_video,
-                    duration=(
-                        float(processed.get("duration") or 0.0)
-                        if is_video
-                        else limits.photo_duration_seconds
-                    ),
-                    trim_start=float(trim["start"]) if trim else 0.0,
-                    trim_end=float(trim["end"]) if trim else None,
+            ranges = selections.get(media_id) if is_video else None
+            if ranges is not None:
+                for section in ranges:
+                    clips.append(ReelClip(
+                        media_id=media_id, path=path, is_video=True,
+                        duration=section["end"] - section["start"],
+                        trim_start=section["start"], trim_end=section["end"],
+                    ))
+            else:
+                clips.append(
+                    ReelClip(
+                        media_id=media_id, path=path, is_video=is_video,
+                        duration=effective_duration(entry, None, limits.photo_duration_seconds),
+                    )
                 )
-            )
         branding = dict(manifest.get("branding", {}))
         logo = branding.get("logo_asset") or self.get_branding_defaults().logo_asset
         logo_path = self._resolve_asset(logo)

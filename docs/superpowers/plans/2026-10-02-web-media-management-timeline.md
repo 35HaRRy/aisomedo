@@ -55,7 +55,9 @@ Test files live beside web units. New Python seam tests: `dojo-core/tests/test_s
 
 ---
 
-### Task 1: Canonical retained selections and coherent duration
+### Task 1: Canonical retained selections and coherent duration — complete
+
+Verified: 25 expected RED failures; 57 focused tests passed; full core suite 617 passed/3 existing skips and backend 135 passed. Commit: `9c377b3`. Existing unrelated lint/typecheck findings are recorded in the execution ledger.
 
 **Files:** Create `dojo-core/src/dojo/montage.py`, `dojo-core/tests/test_selections.py`; modify `dojo-core/src/dojo/model.py`, `exceptions.py`, `__init__.py`, `publishing.py` (montage methods around 1996–2160), and `dojo-core/tests/test_montage.py`.
 
@@ -74,10 +76,10 @@ def test_selected_sections_are_retained(tmp_path):
 ```
 
 Add named cases for finite endpoints/booleans, `1/25` minimum, overlap/duplicates, adjacency, sorting, empty arrays, photos/unknown/removed targets, invalid source duration, no active package, expected-folder mismatch, completed IDs, batch correction, actor audit and stale revision. Pin floating-point boundary behavior: `[10, 10.04)` is a valid one-frame range; minimum-length comparison permits only `1e-9` seconds of arithmetic tolerance, not a shorter user-visible section. `test_removed_sections_survive_other_video_save` removes selected A, edits B, restores A, and asserts A's ranges/position survive. Test a 30-second legacy range 10–20 totals 10 seconds rather than the old 20; rewrite old duration/over-limit expectations accordingly. Test cards counted once and rejection leaves manifest bytes unchanged.
-- [ ] **Observe RED:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py -v` — missing facade operation/assertion failures, not broken imports.
+- [x] **Observe RED:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py -v` — missing facade operation/assertion failures, not broken imports.
 - [ ] **Implement selection rules.** In `montage.py`, define `manifest_selections(manifest: dict) -> VideoSelections`, `validate_ranges(ranges: list[VideoRange], source_duration: float) -> list[VideoRange]`, and `effective_duration(entry: dict, ranges: list[VideoRange] | None, photo_seconds: float) -> float`. Use one interpretation for status and mutation checks, reject invalid numeric inputs before conversion, preserve removed selections, and synchronize legacy single-range projection. Card accounting uses the same copied branding/assets/default-duration rules as `_build_reel`. Guard legacy replacement when active multi-ranges exist; validation completes before any manifest/audit write.
-- [ ] **Observe GREEN/regressions:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py dojo-core/tests/test_montage.py dojo-core/tests/test_media_removal.py -v` — all pass.
-- [ ] **Commit named files:** `feat(core): retain multiple video sections`.
+- [x] **Observe GREEN/regressions:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py dojo-core/tests/test_montage.py dojo-core/tests/test_media_removal.py -v` — all pass.
+- [x] **Commit named files:** `feat(core): retain multiple video sections`.
 
 ### Task 2: Render actual retained sections without duplicate outputs
 
