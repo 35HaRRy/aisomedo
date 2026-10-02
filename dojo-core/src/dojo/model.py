@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
+from typing import TypedDict
+
+
+class VideoRange(TypedDict):
+    start: float
+    end: float
+
+
+VideoSelections = dict[str, list[VideoRange]]
 
 PACKAGE_FOLDER_FORMAT = "%d-%m-%Y %H-%M"
 
@@ -265,6 +274,9 @@ class MontageStatus:
     max_duration_seconds: float
     over_limit: bool
     required_action: str | None = None
+    selections: VideoSelections = field(default_factory=dict)
+    card_duration: float = 0.0
+    duration_complete: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -275,6 +287,9 @@ class MontageStatus:
             "max_duration_seconds": self.max_duration_seconds,
             "over_limit": self.over_limit,
             "required_action": self.required_action,
+            "selections": self.selections,
+            "card_duration": self.card_duration,
+            "duration_complete": self.duration_complete,
         }
 
 

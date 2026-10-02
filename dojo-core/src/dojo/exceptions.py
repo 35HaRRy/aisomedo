@@ -114,6 +114,14 @@ class MontageTrimInvalid(DojoError):
     pass
 
 
+class PackageChanged(DojoError):
+    pass
+
+
+class LegacyTrimConflict(DojoError):
+    pass
+
+
 class MontageDurationExceeded(DojoError):
     pass
 
