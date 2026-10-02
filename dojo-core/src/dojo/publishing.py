@@ -78,6 +78,7 @@ from dojo.model import (
     MontageStatus,
     Notification,
     Package,
+    PackageArtifact,
     ProcessedMedia,
     ReelBuild,
     ReelClip,
@@ -92,6 +93,7 @@ from dojo.model import (
     YayinZamani,
 )
 from dojo.montage import effective_duration, manifest_selections, source_duration, validate_ranges
+from dojo.package_media import describe_artifacts, extension_for, public_media, resolve_artifact
 from dojo.ports import (
     AuditStore,
     Clock,
@@ -138,16 +140,7 @@ def merge_ranges(existing: list[list[int]], new_start: int, new_end: int) -> lis
 
 
 def _ext_for(content_type: str) -> str:
-    mapping = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/heic": ".heic",
-        "image/heif": ".heif",
-        "video/mp4": ".mp4",
-        "video/quicktime": ".mov",
-    }
-    return mapping.get(content_type, "")
+    return extension_for(content_type)
 
 
 def _normalize(filename: str) -> str:
@@ -1731,16 +1724,63 @@ class DojoPublishing:
         """Return completed packages (read-only historical packages)."""
         return self._packages.list_completed()
 
+    def get_active_editor(self) -> dict:
+        package = self._require_active_package()
+        manifest = self._load_manifest(package)
+        root = self.media_root / package.folder_name
+        artifacts = describe_artifacts(root, manifest)
+        selections = manifest_selections(manifest)
+        limits = self.get_montage_limits()
+        media = []
+        for entry in manifest.get("media", []):
+            mid = entry.get("media_id")
+            items = [a for a in artifacts if a["kind"] != "render"
+                     and a["artifact_ref"].split("/")[1] == mid]
+            preview = next((a["artifact_ref"] for a in items
+                            if a["kind"] == "processed" and a["available"]), None)
+            is_video = str(entry.get("content_type", "")).startswith("video/")
+            source = source_duration(entry) if is_video else None
+            media.append({
+                **public_media(entry), "is_video": is_video, "source_duration": source,
+                "effective_duration": effective_duration(
+                    entry, selections.get(mid), limits.photo_duration_seconds
+                ) if not is_video or source is not None else None,
+                "preview_ref": preview, "artifacts": items,
+            })
+        return {
+            "package": dict(package.__dict__),
+            "render_stale": manifest.get("render_revision") != self._render_digest(package, manifest),
+            "media": media, "montage": self._montage_status(manifest).to_dict(),
+        }
+
+    def get_media_preview(self, media_id: str, *, expected_folder_name: str) -> PackageArtifact:
+        package = self._require_editor_package(expected_folder_name)
+        manifest = self._load_manifest(package)
+        root = self.media_root / package.folder_name
+        entry = next((e for e in manifest.get("media", []) if e.get("media_id") == media_id), None)
+        if entry is None or entry.get("status") not in ("finalized", "removed"):
+            raise MediaNotFound("media preview is unavailable")
+        prefix = "removed" if entry["status"] == "removed" else "media"
+        suffix = extension_for(str(entry.get("processed", {}).get("content_type", "")))
+        reference = f"{prefix}/{media_id}/processed{suffix}"
+        return resolve_artifact(root, manifest, reference)
+
+    def resolve_completed_artifact(self, folder_name: str, artifact_ref: str) -> PackageArtifact:
+        package = self._get_completed_package(folder_name)
+        return resolve_artifact(self.media_root / package.folder_name,
+                                self._load_manifest(package), artifact_ref)
+
     def browse_completed_package(self, folder_name: str) -> dict:
         """Return a read-only manifest view of a completed package."""
         package = self._get_completed_package(folder_name)
         manifest = self._load_manifest(package)
         return {
             "folder_name": package.folder_name,
-            "media": manifest.get("media", []),
+            "media": [public_media(entry) for entry in manifest.get("media", [])],
             "order": manifest.get("order", []),
             "caption": manifest.get("caption"),
             "render_revision": manifest.get("render_revision"),
+            "artifacts": describe_artifacts(self.media_root / package.folder_name, manifest),
         }
 
     def create_download_url(self, folder_name: str, artifact_ref: str) -> str:

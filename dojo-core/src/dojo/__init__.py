@@ -101,6 +101,7 @@ from dojo.model import (
     Notification,
     NotificationResult,
     Package,
+    PackageArtifact,
     PairingCode,
     PairingCodeIssued,
     PairingResult,
@@ -127,6 +128,7 @@ from dojo.publishing import DojoPublishing
 from dojo.setup import DojoSetup
 
 __all__ = [
+    "PackageArtifact",
     "VideoRange",
     "VideoSelections",
     "REEL_FPS",

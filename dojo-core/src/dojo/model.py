@@ -30,6 +30,13 @@ class Package:
 
 
 @dataclass(frozen=True)
+class PackageArtifact:
+    path: Path
+    filename: str
+    content_type: str
+
+
+@dataclass(frozen=True)
 class Manifest:
     media: list[dict] = field(default_factory=list)
     order: list[str] = field(default_factory=list)
