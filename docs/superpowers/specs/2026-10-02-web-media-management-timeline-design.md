@@ -188,4 +188,4 @@ Use tests at the existing `DojoPublishing` behavioral seam rather than tests of 
 
 ## Review status
 
-Conversational design approved with the visual-timeline addition. Written specification awaits user review. Implementation planning and product changes have not begun.
+Conversational design approved with the visual-timeline addition. The user approved the written specification ("uygun"). Implementation plan: `docs/superpowers/plans/2026-10-02-web-media-management-timeline.md`; plan review and execution-method selection remain pending. Product changes have not begun.
