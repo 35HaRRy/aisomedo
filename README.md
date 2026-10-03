@@ -112,6 +112,28 @@ setup and an enabled valid plan.
 
 Verification evidence: [issue #26](docs/verification/issue-26-web-onboarding.md).
 
+### Package media in the browser
+
+In **Güncel Paket**, use **Paketten çıkar / Geri yükle** without deleting original
+files. Drag a media item's **Sürükle** handle or use **Yukarı / Aşağı** to persist
+montage order. Open **Bölümleri düzenle** on a video to drag retained sections on
+the timeline or enter exact start/end seconds. Selected sections play in source
+order; no selection means the whole video. Only one video editor opens at a time,
+but unsaved drafts across several videos are saved together with **Bölümleri kaydet**.
+
+The proposed total includes photos and intro/outro cards. Correct invalid ranges
+or excess duration before saving. Edits mark the existing render stale; they do
+not automatically render or publish. Navigation asks before discarding unsaved
+drafts. If a write result is uncertain, refresh before sending it again.
+
+**Tamamlanmış paketler** is read-only: view processed media and available final
+Reels, or download original/processed/render files through authenticated
+same-origin links. Missing artifacts are shown as unavailable. Browsing archives
+never moves the active upload queue into an archived package.
+
+Verification evidence: [issue #29](docs/verification/issue-29-web-media-management.md).
+This package editor does not complete the separate #30/#35 web approval/publish work.
+
 ### Publishing flow
 
 1. **Pair** an Android device or browser using a one-time pairing code.
@@ -150,7 +172,15 @@ Web build and typecheck:
 cd web
 npm run typecheck
 npm run build
+npm test
+npx playwright install chromium
+npm run test:browser
 ```
+
+Browser tests run desktop and touch/mobile Chromium against synthetic MP4 media
+and deterministic API fixtures. If port 3000 is occupied, use
+`PLAYWRIGHT_PORT=3100 npm run test:browser` (PowerShell:
+`$env:PLAYWRIGHT_PORT='3100'; npm run test:browser`).
 
 Deployment verification (needs Docker; uses a disposable project and synthetic
 env, never reads `ops/.env`):

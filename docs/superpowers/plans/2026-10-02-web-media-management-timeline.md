@@ -124,7 +124,9 @@ Also test removed-selection survival, Unicode/no-extension originals, unavailabl
 - [ ] **Observe GREEN:** `uv run --project dojo-core pytest dojo-core/tests/test_package_editor.py dojo-core/tests/test_media_removal.py dojo-core/tests/test_selections.py -v` — all pass.
 - [ ] **Commit named files:** `feat(core): expose private package artifacts`.
 
-### Task 4: Typed authenticated API, generated contracts, and browser transport
+### Task 4: Typed authenticated API, generated contracts, and browser transport — complete
+
+Verified: backend 155 passed; core 640 passed/4 environment skips; web 179 passed. DTO generation byte-deterministic. Commit: `eeff5fa`.
 
 **Files:** Create `backend/src/backend/routes/package_models.py`, `backend/tests/test_package_editor_api.py`; modify `backend/src/backend/routes/packages.py`, `backend/scripts/generate_clients.py`, `backend/tests/test_contract.py`, `web/src/api/client.ts`, `web/src/api/client.test.ts`; regenerate `backend/openapi.json`, `web/src/api/openapi.ts`, `android/app/src/main/java/com/dojo/aisomedo/api/GeneratedApi.kt`.
 
@@ -138,7 +140,9 @@ Browser methods on `api`: `packageEditor(signal?) -> Promise<ActiveEditorOut>`, 
 - [ ] **Regenerate and observe GREEN:** run `uv run --project backend python backend/scripts/export_openapi.py`, then `uv run --project backend python backend/scripts/generate_clients.py`; run `uv run --project backend pytest backend/tests/test_package_editor_api.py backend/tests/test_contract.py backend/tests/test_publication_api.py -v`; from `web/`, run `npm test -- src/api/client.test.ts` and `npm run typecheck`. Regenerate a second time; generated-file diff must not change.
 - [ ] **Commit named source/tests/generated files:** `feat(api): expose package editor contracts`.
 
-### Task 5: Draft-safe live editor state and navigation ownership
+### Task 5: Draft-safe live editor state and navigation ownership — complete
+
+Verified: 48 focused tests passed; full web 207 passed; typecheck clean. Commit: `28380f8`.
 
 **Files:** Create `web/src/packages/ranges.ts`, `ranges.test.ts`, `usePackageEditor.ts`, `usePackageEditor.test.tsx`, `PackageEditorProvider.tsx`, `PackageEditorProvider.test.tsx`; modify `web/src/navigation.ts`, `web/src/App.tsx`, `web/src/i18n/tr.ts` and affected App/upload navigation test fixtures.
 
@@ -157,7 +161,9 @@ Provider tests navigate away with dirty edits: cancel stays on package; discard 
 - [ ] **Observe GREEN/regressions:** from `web/`, run focused tests, `npm test -- src/App.test.tsx src/uploads/UploadFlow.test.tsx src/session.test.tsx`, and `npm run typecheck` — all pass.
 - [ ] **Commit named files:** `feat(web): preserve package editing drafts`.
 
-### Task 6: Accessible visual timeline and precise video controls
+### Task 6: Accessible visual timeline and precise video controls — complete
+
+Verified: 10 interaction tests RED→GREEN; full web 217 passed; typecheck clean. Commit: `46bc918`.
 
 **Files:** Create `web/src/packages/RangeTimeline.tsx`, `RangeTimeline.test.tsx`, `VideoSectionEditor.tsx`, `VideoSectionEditor.test.tsx`; modify `web/src/packages/ranges.ts`, `web/src/i18n/tr.ts`, `web/src/styles.css`.
 
@@ -176,7 +182,9 @@ expect(screen.getByLabelText(/1\. bölüm bitişi/i)).toHaveValue(15);
 - [ ] **Observe GREEN:** from `web/`, run focused tests and `npm run typecheck`; no mutation on gesture, correct ARIA values/focus, all pass. Real geometry/mobile/seek checks follow in Task 8.
 - [ ] **Commit named files:** `feat(web): add multi-range video timeline`.
 
-### Task 7: Active media management and read-only completed browsing
+### Task 7: Active media management and read-only completed browsing — complete
+
+Verified: full web 228 passed; production build/typecheck clean. Commit: `1ef2488`.
 
 **Files:** Create `web/src/packages/ActivePackagePanel.tsx`, `ActivePackagePanel.test.tsx`, `CompletedPackages.tsx`, `CompletedPackages.test.tsx`, `PackageManager.tsx`, `PackageManager.test.tsx`; modify `web/src/components/PackageSummary.tsx`, `web/src/i18n/tr.ts`, `web/src/styles.css`, `web/src/App.test.tsx`, `web/src/uploads/UploadFlow.test.tsx`, `web/src/test/fixtures.ts` as needed.
 

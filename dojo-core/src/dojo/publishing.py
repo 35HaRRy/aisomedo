@@ -1755,7 +1755,9 @@ class DojoPublishing:
             })
         return {
             "package": dict(package.__dict__),
-            "render_stale": manifest.get("render_revision") != self._render_digest(package, manifest),
+            "render_stale": (
+                manifest.get("render_revision") != self._render_digest(package, manifest)
+            ),
             "media": media, "montage": self._montage_status(manifest).to_dict(),
         }
 
