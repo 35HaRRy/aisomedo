@@ -19,6 +19,8 @@ export interface UploadController {
   initialize(signal: AbortSignal): Promise<void>;
   add(files: readonly File[]): Promise<void>;
   pause(id: string): void;
+  pauseAll(): void;
+  reset(): void;
   resume(id: string, file?: File): Promise<void>;
   retry(id: string, file?: File): Promise<void>;
   resolve(id: string, body: ConflictResolution): Promise<void>;
@@ -58,12 +60,13 @@ export function createUploadController(options: Options): UploadController {
   const lifetime = new AbortController();
   let initialized = false;
   let sequence = 0;
+  let queueGeneration = 0;
   let pumpFlight: Promise<void> | null = null;
   let refreshFlight: Promise<void> | null = null;
   let initializeFlight: Promise<void> | null = null;
   let snapshot: UploadSnapshot = { rows: [], limits: null, limitsError: false, storageAvailable: !!storage };
   const alive = () => !lifetime.signal.aborted;
-  const valid = (entry: Entry, flight: AbortController) => alive() && entry.flight === flight && !flight.signal.aborted;
+  const valid = (entry: Entry, flight: AbortController) => alive() && entries.get(entry.row.id) === entry && entry.flight === flight && !flight.signal.aborted;
 
   function emit(persist = true) {
     if (persist && storage && alive()) {
@@ -98,6 +101,7 @@ export function createUploadController(options: Options): UploadController {
   }
   function applyStatus(entry: Entry, value: UploadOut, receiving: UploadPhase) {
     assertUploadStatus(value, entry.row.size, entry.row.status?.upload_id);
+    if (snapshot.limits && value.package_id != null) snapshot = { ...snapshot, limits: { ...snapshot.limits, active_package_id: value.package_id } };
     if (entry.row.pendingDecision) {
       entry.row = { ...entry.row, skipped: value.status === "aborted" && entry.row.pendingDecision === "keep_target",
         pendingDecision: undefined };
@@ -106,6 +110,11 @@ export function createUploadController(options: Options): UploadController {
     const phase: UploadPhase = value.status === "receiving" ? receiving : value.status === "aborted" ? entry.row.skipped ? "skipped" : "expired" : value.status as UploadPhase;
     entry.row = { ...entry.row, status: structuredClone(value), phase, error: phase === "expired" ? "expired" : phase === "conflict" ? "conflict" : null,
       diagnostic: value.status === "failed" ? value.error_reason ?? null : null };
+    if (value.status === "finalized") {
+      pending.delete(entry.row.id);
+      entries.delete(entry.row.id);
+      entry.file = undefined;
+    }
     emit();
     if (value.status === "finalized" && !wasFinalized) onPackageChanged();
   }
@@ -157,7 +166,8 @@ export function createUploadController(options: Options): UploadController {
         entry.row = { ...entry.row, identity }; entry.verified = true; emit();
       }
       if (!entry.row.status) {
-        const value = await abortable(transport.start({ filename: entry.row.filename, content_type: entry.row.contentType, declared_size_bytes: entry.row.size }, signal), signal);
+        const value = await abortable(transport.start({ filename: entry.row.filename, content_type: entry.row.contentType, declared_size_bytes: entry.row.size,
+          ...(snapshot.limits?.active_package_id != null ? { expected_package_id: snapshot.limits.active_package_id } : {}) }, signal), signal);
         if (!valid(entry, flight)) return;
         applyStatus(entry, value, "uploading");
         onPackageChanged();
@@ -211,7 +221,7 @@ export function createUploadController(options: Options): UploadController {
             entries.set(record.id, { verified: false, row: { ...record, phase, preparedBytes: 0, error: null,
               diagnostic: record.status?.status === "failed" ? record.status.error_reason ?? null : null } });
           }
-          emit(false);
+          emit(saved.available);
         }
         const cancel = () => request.abort();
         const request = new AbortController();
@@ -250,8 +260,25 @@ export function createUploadController(options: Options): UploadController {
       entry.flight?.abort(); pending.delete(id);
       entry.row = { ...entry.row, phase: "paused" }; emit();
     },
+    pauseAll() {
+      queueGeneration++;
+      snapshot = { ...snapshot, resolvingId: null };
+      pending.clear();
+      for (const entry of entries.values()) {
+        entry.flight?.abort();
+        if (["preparing", "waiting", "uploading"].includes(entry.row.phase)) entry.row = { ...entry.row, phase: "paused" };
+      }
+      emit();
+    },
+    reset() {
+      controller.pauseAll();
+      entries.clear();
+      snapshot = { ...snapshot, resolvingId: null, limits: snapshot.limits ? { ...snapshot.limits, active_package_id: 0 } : null };
+      emit();
+    },
     resume,
     async resolve(id, body) {
+      const generation = queueGeneration;
       const entry = entries.get(id);
       if (!alive() || !entry || snapshot.resolvingId || initializeFlight || entry.row.phase !== "conflict" || !entry.row.status) return;
       if (!["keep_both", "keep_selected", "keep_target"].includes(body.decision)
@@ -302,9 +329,10 @@ export function createUploadController(options: Options): UploadController {
           failure(error, entry); resolutionError = entry.row.error;
         }
       } finally { finish(); }
+      if (generation !== queueGeneration) return;
       try {
         for (const candidate of candidates) {
-          if (!alive()) return;
+          if (!alive() || generation !== queueGeneration) return;
           await query(candidate, lifetime.signal);
           if (candidate.row.phase === "paused" && candidate.file && !candidate.row.error) {
             candidate.row = { ...candidate.row, phase: "waiting" }; pending.add(candidate.row.id); emit();

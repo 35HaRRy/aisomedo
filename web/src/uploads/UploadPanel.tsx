@@ -10,7 +10,7 @@ function bytes(value: number): string {
 const formats = ".jpg,.jpeg,.png,.webp,.heic,.heif,.mp4,.mov,image/jpeg,image/png,image/webp,image/heic,image/heif,video/mp4,video/quicktime";
 
 function UploadItem({ row }: { row: UploadRow }) {
-  const { controller, snapshot } = useUploads();
+  const { controller } = useUploads();
   const count = row.status?.received_bytes ?? 0;
   const percentage = new Intl.NumberFormat("tr-TR", { style: "percent", maximumFractionDigits: 0 }).format(row.size ? count / row.size : 0);
   const receiving = row.status?.status === "receiving";
@@ -31,7 +31,6 @@ function UploadItem({ row }: { row: UploadRow }) {
       {row.phase === "paused" && <button onClick={() => void controller.resume(row.id)}>{tr.upload.resume}</button>}
       {(row.phase === "retryable" || ((row.phase === "queued" || row.phase === "processing") && row.error)) && <button onClick={() => void controller.retry(row.id)}>{tr.retry}</button>}
       {["failed", "expired"].includes(row.phase) && <button onClick={() => void controller.retry(row.id)}>{tr.upload.startNew}</button>}
-      {["finalized", "failed", "expired", "conflict", "skipped"].includes(row.phase) && <button disabled={!!snapshot.resolvingId} onClick={() => controller.dismiss(row.id)}>{tr.upload.dismiss}</button>}
     </div>
     {row.phase === "conflict" && <ConflictControls key={JSON.stringify(row.status?.conflicts)} row={row} />}
     {selectFile && <div className="upload-reselect"><label htmlFor={`${row.id}-file`}>{label}: {row.filename}</label>

@@ -67,6 +67,7 @@ from dojo.monitoring_models import (
     retry_delay_seconds,
     token_fingerprint,
 )
+from dojo.package_cleanup import owns_record
 
 
 class Base(DeclarativeBase):
@@ -348,11 +349,95 @@ class PostgresStore:
         self._emission_connection: ContextVar[Connection | None] = ContextVar(
             "emission_connection", default=None,
         )
+        self._package_locked: ContextVar[bool] = ContextVar("package_locked", default=False)
+        self._package_connection: ContextVar[Connection | None] = ContextVar(
+            "package_connection", default=None,
+        )
+
+    @contextmanager
+    def package_lock(self, *, wait: bool = True) -> Iterator[bool]:
+        # ponytail: one package writer; per-package locks if multiple active packages exist.
+        if self._package_locked.get():
+            yield True
+            return
+        token = self._package_locked.set(True)
+        try:
+            emission = self._emission_connection.get()
+            if emission is not None:
+                acquired = True if wait else bool(emission.execute(
+                    text("SELECT pg_try_advisory_xact_lock(72861403)"),
+                ).scalar_one())
+                if wait:
+                    emission.execute(text("SELECT pg_advisory_xact_lock(72861403)"))
+                yield acquired
+            else:
+                with self._engine.connect() as connection:
+                    acquired = True if wait else bool(connection.execute(
+                        text("SELECT pg_try_advisory_lock(72861403)"),
+                    ).scalar_one())
+                    if wait:
+                        connection.execute(text("SELECT pg_advisory_lock(72861403)"))
+                    # Session-level lock survives commit; reuse its connection for local sessions.
+                    connection.commit()
+                    binding = self._package_connection.set(connection) if acquired else None
+                    try:
+                        yield acquired
+                    finally:
+                        if binding is not None:
+                            self._package_connection.reset(binding)
+                        if acquired:
+                            connection.execute(text("SELECT pg_advisory_unlock(72861403)"))
+                            connection.commit()
+        finally:
+            self._package_locked.reset(token)
+
+    def package_work(self, package: Package) -> tuple[list[Upload], list[Job]]:
+        with self._session() as session:
+            uploads = list(session.scalars(
+                select(UploadRow).where(UploadRow.package_id == package.id),
+            ))
+            jobs = list(session.scalars(select(JobRow).where(or_(
+                JobRow.upload_id.in_([u.id for u in uploads]),
+                JobRow.payload["package"].as_string() == package.folder_name,
+            ))))
+            return ([self._upload_from_row(u) for u in uploads],
+                    [self._job_from_row(j) for j in jobs])
+
+    def delete_package_records(self, package: Package, media_ids: set[str]) -> None:
+        with self._session() as session:
+            uploads = list(session.scalars(
+                select(UploadRow).where(UploadRow.package_id == package.id),
+            ))
+            jobs = list(session.scalars(select(JobRow).where(or_(
+                JobRow.upload_id.in_([u.id for u in uploads]),
+                JobRow.payload["package"].as_string() == package.folder_name,
+            ))))
+            review_ids = set(session.scalars(select(YayinIncelemesiRow.id).where(
+                YayinIncelemesiRow.package_folder == package.folder_name,
+            )))
+            upload_ids, job_ids = {u.upload_id for u in uploads}, {j.job_id for j in jobs}
+            # ponytail: scan legacy audit JSON; index ownership if history grows large.
+            event_ids = [e.id for e in session.scalars(select(AuditRow)) if owns_record(
+                e.details, package.folder_name, upload_ids, job_ids, media_ids, review_ids,
+            )]
+            alert_ids = list(session.scalars(select(OperationalAlertRow.alert_id).where(
+                OperationalAlertRow.data["job_id"].as_string().in_(job_ids),
+            )))
+            session.execute(delete(OperationalDeliveryRow).where(OperationalDeliveryRow.alert_id.in_(alert_ids)))
+            session.execute(delete(OperationalAlertRow).where(OperationalAlertRow.alert_id.in_(alert_ids)))
+            session.execute(delete(AuditRow).where(AuditRow.id.in_(event_ids)))
+            session.execute(delete(YayinIncelemesiRow).where(YayinIncelemesiRow.id.in_(review_ids)))
+            session.execute(delete(JobRow).where(JobRow.id.in_([j.id for j in jobs])))
+            session.execute(delete(UploadRow).where(UploadRow.id.in_([u.id for u in uploads])))
+            session.execute(delete(PackageRow).where(PackageRow.id == package.id))
+            session.commit()
 
     def _session(self) -> Session:
         connection = self._emission_connection.get()
         if connection is None:
-            return self._session_factory()
+            package_connection = self._package_connection.get()
+            return (self._session_factory(bind=package_connection)
+                    if package_connection is not None else self._session_factory())
         # Method-local sessions flush on commit, but neither commit nor close
         # the outer transaction. Reads/refreshes also use the lock connection.
         return self._session_factory(bind=connection, join_transaction_mode="rollback_only")

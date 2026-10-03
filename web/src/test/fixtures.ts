@@ -1,4 +1,4 @@
-import type { ClientOut, DashboardOut, SetupOut } from "../api/openapi";
+import type { ActiveEditorOut, ClientOut, DashboardOut, SetupOut } from "../api/openapi";
 
 export function setupState(unfinished?: string): SetupOut {
   return { ready: !unfinished, checklist: ["pairing", "instagram", "schedule", "consent", "logo", "caption_template", "cards"].map(key => ({ key, label: key, complete: key !== unfinished && key !== "cards", required: key !== "cards" })) };
@@ -18,4 +18,12 @@ export function dashboard(): DashboardOut {
     instagram: { health: "healthy", username: "dojo" },
     worker: { status: "healthy", phase: "idle" },
   };
+}
+
+export function emptyEditor(): ActiveEditorOut {
+  return { package: dashboard().package!, render_stale: true, media: [], montage: {
+    order: [], trims: {}, selections: {}, clips: [], combined_duration: 0,
+    max_duration_seconds: 90, over_limit: false, required_action: null,
+    card_duration: 0, duration_complete: true,
+  } };
 }

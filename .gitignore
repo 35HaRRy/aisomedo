@@ -23,6 +23,8 @@ node_modules/
 out/
 coverage/
 dist/
+playwright-report/
+test-results/
 build/
 
 .agents/

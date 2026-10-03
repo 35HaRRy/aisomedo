@@ -102,3 +102,25 @@ it.each(["private body", '{"detail":[{"input":"secret"}]}', "{"])("ignores unstr
   vi.stubGlobal("fetch", async () => new Response(body, { status: 422 }));
   await expect(request("/api/media/uploads")).rejects.toMatchObject({ status: 422, detail: undefined });
 });
+
+it("sends package editing and history through session-aware encoded URLs", async () => {
+  const fetcher = vi.fn(async (_url: string, _init: RequestInit) => new Response("{}"));
+  vi.stubGlobal("fetch", fetcher);
+  const folder = "Çalışma 1";
+  const selections = { a: [{ start: 0, end: 5 }, { start: 10, end: 15 }] };
+  await api.packageEditor();
+  await api.saveSelections({ expected_folder_name: folder, selections });
+  await api.saveOrder(["b", "a"], folder);
+  await api.removeMedia("id/1", folder); await api.restoreMedia("id/1", folder);
+  await api.completedPackages(); await api.completedPackage(folder);
+  const encoded = encodeURIComponent(folder);
+  expect(fetcher.mock.calls.map(call => call[0])).toEqual([
+    "/api/packages/active/editor", "/api/packages/active/selections", "/api/packages/active/order",
+    `/api/packages/active/media/id%2F1/remove?expected_folder_name=${encoded}`,
+    `/api/packages/active/media/id%2F1/restore?expected_folder_name=${encoded}`,
+    "/api/packages", `/api/packages/${encoded}`,
+  ]);
+  expect(JSON.parse(String(fetcher.mock.calls[1][1].body))).toEqual({ expected_folder_name: folder, selections });
+  expect(JSON.parse(String(fetcher.mock.calls[2][1].body))).toEqual({ expected_folder_name: folder, order: ["b", "a"] });
+  expect(fetcher.mock.calls.every(call => call[1].credentials === "same-origin" && call[1].cache === "no-store")).toBe(true);
+});

@@ -55,7 +55,9 @@ Test files live beside web units. New Python seam tests: `dojo-core/tests/test_s
 
 ---
 
-### Task 1: Canonical retained selections and coherent duration
+### Task 1: Canonical retained selections and coherent duration — complete
+
+Verified: 25 expected RED failures; 57 focused tests passed; full core suite 617 passed/3 existing skips and backend 135 passed. Commit: `9c377b3`. Existing unrelated lint/typecheck findings are recorded in the execution ledger.
 
 **Files:** Create `dojo-core/src/dojo/montage.py`, `dojo-core/tests/test_selections.py`; modify `dojo-core/src/dojo/model.py`, `exceptions.py`, `__init__.py`, `publishing.py` (montage methods around 1996–2160), and `dojo-core/tests/test_montage.py`.
 
@@ -74,12 +76,14 @@ def test_selected_sections_are_retained(tmp_path):
 ```
 
 Add named cases for finite endpoints/booleans, `1/25` minimum, overlap/duplicates, adjacency, sorting, empty arrays, photos/unknown/removed targets, invalid source duration, no active package, expected-folder mismatch, completed IDs, batch correction, actor audit and stale revision. Pin floating-point boundary behavior: `[10, 10.04)` is a valid one-frame range; minimum-length comparison permits only `1e-9` seconds of arithmetic tolerance, not a shorter user-visible section. `test_removed_sections_survive_other_video_save` removes selected A, edits B, restores A, and asserts A's ranges/position survive. Test a 30-second legacy range 10–20 totals 10 seconds rather than the old 20; rewrite old duration/over-limit expectations accordingly. Test cards counted once and rejection leaves manifest bytes unchanged.
-- [ ] **Observe RED:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py -v` — missing facade operation/assertion failures, not broken imports.
+- [x] **Observe RED:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py -v` — missing facade operation/assertion failures, not broken imports.
 - [ ] **Implement selection rules.** In `montage.py`, define `manifest_selections(manifest: dict) -> VideoSelections`, `validate_ranges(ranges: list[VideoRange], source_duration: float) -> list[VideoRange]`, and `effective_duration(entry: dict, ranges: list[VideoRange] | None, photo_seconds: float) -> float`. Use one interpretation for status and mutation checks, reject invalid numeric inputs before conversion, preserve removed selections, and synchronize legacy single-range projection. Card accounting uses the same copied branding/assets/default-duration rules as `_build_reel`. Guard legacy replacement when active multi-ranges exist; validation completes before any manifest/audit write.
-- [ ] **Observe GREEN/regressions:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py dojo-core/tests/test_montage.py dojo-core/tests/test_media_removal.py -v` — all pass.
-- [ ] **Commit named files:** `feat(core): retain multiple video sections`.
+- [x] **Observe GREEN/regressions:** `uv run --project dojo-core pytest dojo-core/tests/test_selections.py dojo-core/tests/test_montage.py dojo-core/tests/test_media_removal.py -v` — all pass.
+- [x] **Commit named files:** `feat(core): retain multiple video sections`.
 
-### Task 2: Render actual retained sections without duplicate outputs
+### Task 2: Render actual retained sections without duplicate outputs — complete
+
+Verified: seven new tests RED→GREEN; 39 focused tests passed; full core 624 passed/3 existing skips. Actual production renderer checked via Docker transport. Commit: `9c679df`.
 
 **Files:** Modify `dojo-core/src/dojo/publishing.py` (`_render_digest`, `_build_reel`, render-limit check), `dojo-core/src/dojo/adapters/render.py`, `dojo-core/tests/test_render.py`; create `dojo-core/tests/test_render_selections.py` and `dojo-core/tests/ffmpeg_transport.py` if native FFmpeg is unavailable.
 
@@ -98,7 +102,9 @@ Add a real render test with a six-second source containing distinct colored/audi
 - [ ] **Observe GREEN/regressions:** `uv run --project dojo-core pytest dojo-core/tests/test_render_selections.py dojo-core/tests/test_render.py dojo-core/tests/test_review.py dojo-core/tests/test_review_resolution.py dojo-core/tests/test_ffmpeg_fixtures.py -v` — behavioral and real render checks pass; disclose skips.
 - [ ] **Commit named files:** `feat(render): assemble retained video sections`.
 
-### Task 3: Authoritative editor snapshots and private artifact resolution
+### Task 3: Authoritative editor snapshots and private artifact resolution — complete
+
+Verified: focused 56 passed/1 symlink-privilege skip; full core 639 passed/4 skips. Windows cannot execute the symlink escape test (WinError 1314); retained for Linux CI. Commit: `4427608`.
 
 **Files:** Create `dojo-core/src/dojo/package_media.py`, `dojo-core/tests/test_package_editor.py`; modify `dojo-core/src/dojo/model.py`, `__init__.py`, `publishing.py` (media toggles/completed browsing/download methods), and `dojo-core/tests/test_media_removal.py`.
 
@@ -118,7 +124,9 @@ Also test removed-selection survival, Unicode/no-extension originals, unavailabl
 - [ ] **Observe GREEN:** `uv run --project dojo-core pytest dojo-core/tests/test_package_editor.py dojo-core/tests/test_media_removal.py dojo-core/tests/test_selections.py -v` — all pass.
 - [ ] **Commit named files:** `feat(core): expose private package artifacts`.
 
-### Task 4: Typed authenticated API, generated contracts, and browser transport
+### Task 4: Typed authenticated API, generated contracts, and browser transport — complete
+
+Verified: backend 155 passed; core 640 passed/4 environment skips; web 179 passed. DTO generation byte-deterministic. Commit: `eeff5fa`.
 
 **Files:** Create `backend/src/backend/routes/package_models.py`, `backend/tests/test_package_editor_api.py`; modify `backend/src/backend/routes/packages.py`, `backend/scripts/generate_clients.py`, `backend/tests/test_contract.py`, `web/src/api/client.ts`, `web/src/api/client.test.ts`; regenerate `backend/openapi.json`, `web/src/api/openapi.ts`, `android/app/src/main/java/com/dojo/aisomedo/api/GeneratedApi.kt`.
 
@@ -132,7 +140,9 @@ Browser methods on `api`: `packageEditor(signal?) -> Promise<ActiveEditorOut>`, 
 - [ ] **Regenerate and observe GREEN:** run `uv run --project backend python backend/scripts/export_openapi.py`, then `uv run --project backend python backend/scripts/generate_clients.py`; run `uv run --project backend pytest backend/tests/test_package_editor_api.py backend/tests/test_contract.py backend/tests/test_publication_api.py -v`; from `web/`, run `npm test -- src/api/client.test.ts` and `npm run typecheck`. Regenerate a second time; generated-file diff must not change.
 - [ ] **Commit named source/tests/generated files:** `feat(api): expose package editor contracts`.
 
-### Task 5: Draft-safe live editor state and navigation ownership
+### Task 5: Draft-safe live editor state and navigation ownership — complete
+
+Verified: 48 focused tests passed; full web 207 passed; typecheck clean. Commit: `28380f8`.
 
 **Files:** Create `web/src/packages/ranges.ts`, `ranges.test.ts`, `usePackageEditor.ts`, `usePackageEditor.test.tsx`, `PackageEditorProvider.tsx`, `PackageEditorProvider.test.tsx`; modify `web/src/navigation.ts`, `web/src/App.tsx`, `web/src/i18n/tr.ts` and affected App/upload navigation test fixtures.
 
@@ -151,7 +161,9 @@ Provider tests navigate away with dirty edits: cancel stays on package; discard 
 - [ ] **Observe GREEN/regressions:** from `web/`, run focused tests, `npm test -- src/App.test.tsx src/uploads/UploadFlow.test.tsx src/session.test.tsx`, and `npm run typecheck` — all pass.
 - [ ] **Commit named files:** `feat(web): preserve package editing drafts`.
 
-### Task 6: Accessible visual timeline and precise video controls
+### Task 6: Accessible visual timeline and precise video controls — complete
+
+Verified: 10 interaction tests RED→GREEN; full web 217 passed; typecheck clean. Commit: `46bc918`.
 
 **Files:** Create `web/src/packages/RangeTimeline.tsx`, `RangeTimeline.test.tsx`, `VideoSectionEditor.tsx`, `VideoSectionEditor.test.tsx`; modify `web/src/packages/ranges.ts`, `web/src/i18n/tr.ts`, `web/src/styles.css`.
 
@@ -170,7 +182,9 @@ expect(screen.getByLabelText(/1\. bölüm bitişi/i)).toHaveValue(15);
 - [ ] **Observe GREEN:** from `web/`, run focused tests and `npm run typecheck`; no mutation on gesture, correct ARIA values/focus, all pass. Real geometry/mobile/seek checks follow in Task 8.
 - [ ] **Commit named files:** `feat(web): add multi-range video timeline`.
 
-### Task 7: Active media management and read-only completed browsing
+### Task 7: Active media management and read-only completed browsing — complete
+
+Verified: full web 228 passed; production build/typecheck clean. Commit: `1ef2488`.
 
 **Files:** Create `web/src/packages/ActivePackagePanel.tsx`, `ActivePackagePanel.test.tsx`, `CompletedPackages.tsx`, `CompletedPackages.test.tsx`, `PackageManager.tsx`, `PackageManager.test.tsx`; modify `web/src/components/PackageSummary.tsx`, `web/src/i18n/tr.ts`, `web/src/styles.css`, `web/src/App.test.tsx`, `web/src/uploads/UploadFlow.test.tsx`, `web/src/test/fixtures.ts` as needed.
 
@@ -188,7 +202,11 @@ expect(screen.getByRole("link", { name: /orijinali indir/i })).toHaveAttribute("
 - [ ] **Observe GREEN/regressions:** from `web/`, run focused tests, `npm test`, `npm run typecheck`, and `npm run build` — new package flows and existing pairing/onboarding/uploads pass.
 - [ ] **Commit named files:** `feat(web): manage active and completed media`.
 
-### Task 8: Real-browser regression checks, CI, and verification evidence
+### Task 8: Real-browser regression checks, CI, and verification evidence — complete
+
+Verified: Chromium desktop/mobile 4 passed; web 228 passed before final review; core 640 passed/4 environment skips, backend 155 passed, worker 140 passed. Commit: `31fbd38`. Unrelated baseline Python static checks remain red, as documented in the execution rulings.
+
+Final independent review found four Important issues and one Minor. All Important issues reproduced RED→GREEN in one correction pass; final core 646 passed/4 skips, web 233 passed (default and capped workers), backend 155 passed, browser 4 passed; build/typecheck clean. Minor fractional timeline rounding deferred because validation prevents persistence. Full evidence and execution rulings: `docs/verification/issue-29-web-media-management.md`.
 
 **Files:** Create `web/playwright.config.ts`, `web/e2e/package-management.spec.ts`, `web/e2e/fixtures/timeline.mp4`, `docs/verification/issue-29-web-media-management.md`; modify `web/package.json`, `web/package-lock.json`, `web/vitest.config.ts`, `.github/workflows/ci.yml`, `.gitignore`, `README.md`.
 
@@ -221,4 +239,4 @@ From `web/`: `npm test`, `npm run typecheck`, `npm run build`, `npm run test:bro
 - [x] Type consistency: facade `VideoSelections`, API `SelectionIn`/`MontageOut`/`ActiveEditorOut`, and browser `SelectionMap` carry the same retained interval representation and identity field.
 - [x] Review focus: all five listed failure classes have explicit owning test steps.
 - [x] Proportion: decisions/signatures/tests are specified; no copied product implementation bodies.
-- [ ] User reviews this plan and chooses Native or Subagent-driven execution. Product implementation remains blocked until that response.
+- [x] User reviewed plan and chose same-session inline execution ("aynı oturum") in an isolated worktree.

@@ -25,7 +25,9 @@ def test_limits_defaults_and_read_only(tmp_path: Path) -> None:
     before = publishing._audit.list_recent()
     response = client.get("/api/media/upload-limits")
     assert response.status_code == 200
-    assert response.json() == {"max_file_bytes": 2 * 1024**3, "max_package_bytes": 20 * 1024**3}
+    assert response.json() == {
+        "max_file_bytes": 2 * 1024**3, "max_package_bytes": 20 * 1024**3, "active_package_id": 0,
+    }
     assert publishing.get_active_package() is None
     assert publishing.list_active_uploads() == []
     assert publishing.claim_next_job() is None
@@ -41,5 +43,5 @@ def test_limits_configured_values(tmp_path: Path) -> None:
     publishing._settings.set("upload.max_file_bytes", 5, updated_at=FakeClock().now())
     publishing._settings.set("upload.max_package_bytes", 100, updated_at=FakeClock().now())
     assert client.get("/api/media/upload-limits").json() == {
-        "max_file_bytes": 5, "max_package_bytes": 100,
+        "max_file_bytes": 5, "max_package_bytes": 100, "active_package_id": 0,
     }

@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from pathlib import Path
 
 from dojo.exceptions import RenderFailed
 from dojo.model import ReelBuild
+from dojo.montage import REEL_FPS
 
 logger = logging.getLogger("render: ")
 
 CANVAS_W = 1080
 CANVAS_H = 1920
-FPS = 25
+FPS = REEL_FPS
 AUDIO_RATE = 44100
 
 
@@ -41,18 +43,21 @@ def _probe_is_video(path: Path) -> bool:
             "ffprobe",
             "-v",
             "error",
-            "-select_streams",
-            "v",
             "-show_entries",
-            "stream=index",
+            "stream=codec_type:format=format_name",
             "-of",
-            "csv=p=0",
+            "json",
             str(path),
         ],
         capture_output=True,
         text=True,
     )
-    return bool(result.stdout.strip())
+    info = json.loads(result.stdout or "{}")
+    still_formats = {"image2", "png_pipe", "jpeg_pipe", "webp_pipe", "bmp_pipe", "tiff_pipe"}
+    return (
+        info.get("format", {}).get("format_name") not in still_formats
+        and any(stream.get("codec_type") == "video" for stream in info.get("streams", []))
+    )
 
 
 class FfmpegReelRenderer:
@@ -74,7 +79,7 @@ class FfmpegReelRenderer:
                         name="intro",
                     )
                 )
-            for clip in build.clips:
+            for index, clip in enumerate(build.clips):
                 segments.append(
                     self._render_segment(
                         clip.path,
@@ -84,7 +89,7 @@ class FfmpegReelRenderer:
                         trim_end=clip.trim_end,
                         logo_asset=build.logo_asset,
                         work_dir=work_dir,
-                        name=clip.media_id,
+                        name=f"{index}-{clip.media_id}",
                     )
                 )
             if build.outro_asset is not None:
@@ -125,6 +130,9 @@ class FfmpegReelRenderer:
         input_args = (
             ["-loop", "1", "-framerate", str(FPS)] if not is_video else []
         )
+        if is_video and trim_start > 0:
+            # Seek only the source input, never the generated silent audio input.
+            input_args += ["-ss", f"{trim_start:.9f}"]
 
         has_audio = _probe_has_audio(source)
         audio_map: list[str] = []
@@ -135,12 +143,8 @@ class FfmpegReelRenderer:
             audio_map = ["-map", f"{silent_idx}:a"]
 
         if is_video and trim_end is not None:
-            duration_args = ["-ss", f"{trim_start:.3f}",
-                             "-t", f"{trim_end - trim_start:.3f}"]
-        elif not is_video and trim_start > 0:
-            duration_args = ["-ss", f"{trim_start:.3f}", "-t", f"{duration:.3f}"]
-        else:
-            duration_args = ["-t", f"{duration:.3f}"]
+            duration = trim_end - trim_start
+        duration_args = ["-t", f"{duration:.9f}"]
 
         filter_complex = (
             f"[0:v]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,crop={CANVAS_W}:{CANVAS_H},"
@@ -157,7 +161,7 @@ class FfmpegReelRenderer:
         command = ["ffmpeg", "-y"]
         command += [*input_args, "-i", str(source), *logo_args]
         if not has_audio:
-            command += ["-f", "lavfi", "-t", f"{duration:.3f}", "-i",
+            command += ["-f", "lavfi", "-t", f"{duration:.9f}", "-i",
                         f"anullsrc=channel_layout=stereo:sample_rate={AUDIO_RATE}"]
         command += ["-filter_complex", filter_complex,
                     "-map", out_chain, *audio_map,

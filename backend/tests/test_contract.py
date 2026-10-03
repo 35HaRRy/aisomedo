@@ -121,3 +121,20 @@ def test_compat_and_health_exempt_without_header(tmp_path: Path, monkeypatch) ->
     client = make_contract_app(tmp_path)
     assert client.get("/api/compat").status_code == 200
     assert client.get("/health").status_code == 200
+
+
+def test_package_editor_contract_has_typed_selections_artifacts_and_identity(
+    tmp_path: Path,
+) -> None:
+    schema = make_contract_app(tmp_path).app.openapi()  # type: ignore[attr-defined]
+    models = schema["components"]["schemas"]
+    assert models["SelectionIn"]["required"] == ["expected_folder_name", "selections"]
+    items = models["SelectionIn"]["properties"]["selections"]["additionalProperties"]["items"]
+    assert items == {"$ref": "#/components/schemas/VideoRangeOut"}
+    assert "expected_folder_name" in models["OrderIn"]["properties"]
+    assert models["ActiveEditorOut"]["properties"]["montage"] == {
+        "$ref": "#/components/schemas/MontageOut",
+    }
+    assert models["CompletedPackageOut"]["properties"]["artifacts"]["items"] == {
+        "$ref": "#/components/schemas/PackageArtifactOut",
+    }

@@ -209,7 +209,7 @@ def test_combined_duration_math(tmp_path):
 
     seam.set_trims({video: {"start": 1.0, "end": 6.0}})
     status = seam.get_montage_status()
-    # photo default 3.0 + video (10 - (6-1)) = 5.0
+    # Photo default 3.0 + retained video (6-1) = 5.0.
     assert abs(status.combined_duration - 8.0) < 1e-6
 
 
@@ -234,12 +234,12 @@ def test_over_limit_trims_rejected_and_unchanged(tmp_path):
         tmp_path, seam, store, filename="clip.mp4",
         content_type="video/mp4", duration=10.0,
     )
-    seam.set_trims({video: {"start": 0.0, "end": 9.0}})  # effective 1.0s, valid
-    # Shrinking the trim window lengthens the clip; pushing effective past 6s.
+    seam.set_trims({video: {"start": 0.0, "end": 1.0}})  # retained 1.0s, valid
+    # Expanding the retained window pushes duration past 6 seconds.
     with pytest.raises(MontageDurationExceeded):
-        seam.set_trims({video: {"start": 0.0, "end": 1.0}})  # effective 9.0s > 6s
+        seam.set_trims({video: {"start": 0.0, "end": 9.0}})  # retained 9.0s > 6s
     manifest = load_manifest(tmp_path, seam)
-    assert manifest["trims"] == {video: {"start": 0.0, "end": 9.0}}  # unchanged
+    assert manifest["trims"] == {video: {"start": 0.0, "end": 1.0}}  # unchanged
 
 
 def test_order_and_trim_edits_clear_render_revision(tmp_path):

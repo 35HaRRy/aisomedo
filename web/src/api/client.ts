@@ -1,15 +1,15 @@
-import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn } from "./openapi";
+import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn, ActiveEditorOut, CompletedPackageOut, SelectionIn, MontageOut, PackageOut, ClearPackageIn, ClearPackageOut, RenderOut } from "./openapi";
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly detail?: string) { super(`api:${status}`); }
 }
 
-export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 10000): Promise<T> {
   const controller = new AbortController();
   const cancel = () => controller.abort();
   if (init.signal?.aborted) throw new DOMException("", "AbortError");
   init.signal?.addEventListener("abort", cancel, { once: true });
-  const timeout = window.setTimeout(cancel, 10000);
+  const timeout = window.setTimeout(cancel, timeoutMs);
   try {
     const response = await fetch(path, {
       ...init, credentials: "same-origin", cache: "no-store", signal: controller.signal,
@@ -36,6 +36,15 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 }
 
 export const api = {
+  packageEditor: (signal?: AbortSignal) => request<ActiveEditorOut>("/api/packages/active/editor", { signal }),
+  clearPackage: (body: ClearPackageIn, signal?: AbortSignal) => request<ClearPackageOut>("/api/packages/active/clear", { method: "POST", body: JSON.stringify(body), signal }, 120000),
+  renderPackage: (folder: string, retry: boolean, signal?: AbortSignal) => request<RenderOut>("/api/packages/active/render", { method: "POST", body: JSON.stringify({ expected_folder_name: folder, retry }), signal }),
+  saveSelections: (body: SelectionIn, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/selections", { method: "PUT", body: JSON.stringify(body), signal }),
+  saveOrder: (order: string[], expectedFolder: string, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/order", { method: "PUT", body: JSON.stringify({ order, expected_folder_name: expectedFolder }), signal }),
+  removeMedia: async (id: string, expectedFolder: string, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/remove?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", signal }); },
+  restoreMedia: async (id: string, expectedFolder: string, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/restore?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", signal }); },
+  completedPackages: (signal?: AbortSignal) => request<PackageOut[]>("/api/packages", { signal }),
+  completedPackage: (folder: string, signal?: AbortSignal) => request<CompletedPackageOut>(`/api/packages/${encodeURIComponent(folder)}`, { signal }),
   uploadLimits: (signal?: AbortSignal) => request<UploadLimitsOut>("/api/media/upload-limits", { signal }),
   startUpload: (body: UploadInitIn, signal?: AbortSignal) => request<UploadOut>("/api/media/uploads", { method: "POST", body: JSON.stringify(body), signal }),
   uploadStatus: (id: string, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}`, { signal }),

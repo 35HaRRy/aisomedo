@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { client, dashboard, setupState } from "./test/fixtures";
+import { client, dashboard, emptyEditor, setupState } from "./test/fixtures";
 
 let paired = true;
 let snapshot = dashboard();
@@ -24,6 +24,8 @@ beforeEach(() => {
     if (url.includes("/activity")) return json({ events: [{ id: 1, action: "future.event", actor: "system", details: {}, occurred_at: snapshot.generated_at }], next_cursor: null }, activityStatus);
     if (url === "/api/setup") return json(setup, setupStatus);
     if (url === "/api/media/upload-limits") return json({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 });
+    if (url === "/api/packages/active/editor") return snapshot.package ? json({ ...emptyEditor(), package: snapshot.package }) : json({}, 404);
+    if (url === "/api/packages") return json([]);
     return json(snapshot, dashboardStatus);
   });
 });

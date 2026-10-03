@@ -60,7 +60,9 @@ it("foreground polling stops hidden, coalesces wake, and never overlaps", async 
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(server.transport.status).toHaveBeenCalledTimes(2);
   await act(async () => pending.resolve({ ...server.records.get("upload-1")!, status: "finalized" }));
-  expect(screen.getByText("finalized")).toBeInTheDocument();
+  expect(screen.getByText("empty")).toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+  expect(server.transport.status).toHaveBeenCalledTimes(2);
 });
 
 it("401 while uploading clears paired state and ignores late work", async () => {

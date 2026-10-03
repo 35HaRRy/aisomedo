@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { vi } from "vitest";
-import type { UploadInitIn, UploadOut } from "../api/openapi";
+import type { UploadInitIn, UploadLimitsOut, UploadOut } from "../api/openapi";
 
 export function installCrypto() {
   const digest = vi.fn(async (_algorithm: string, input: ArrayBuffer | Uint8Array) =>
@@ -19,7 +19,7 @@ export function uploadServer({ conflicts = false } = {}) {
   const filenames = new Map<string, string>();
   let sequence = 0;
   const transport = {
-    limits: vi.fn(async (_signal: AbortSignal) => ({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 })),
+    limits: vi.fn(async (_signal: AbortSignal): Promise<UploadLimitsOut> => ({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 })),
     start: vi.fn(async (body: UploadInitIn, _signal: AbortSignal) => {
       const value: UploadOut = { upload_id: `upload-${++sequence}`, declared_size_bytes: body.declared_size_bytes,
         received_bytes: 0, received_ranges: [], status: conflicts ? "conflict" : "receiving", error_reason: null,

@@ -64,6 +64,26 @@ def test_single_open_folder_needs_no_repair(tmp_path: Path) -> None:
     assert result["recovered"] == []
 
 
+@pytest.mark.parametrize("with_package", [False, True])
+def test_repair_preserves_shared_branding_assets(tmp_path: Path, with_package: bool) -> None:
+    _, seam = make_seam(tmp_path)
+    logo = tmp_path / "branding" / "assets" / "logo.png"
+    logo.parent.mkdir(parents=True)
+    logo.write_bytes(b"dojo-logo")
+    if with_package:
+        write_open_folder(tmp_path, "06-08-2026 14-30")
+
+    result = seam.repair_open_folders()
+
+    assert logo.is_file(), "startup recovery must not move shared branding assets"
+    assert logo.read_bytes() == b"dojo-logo"
+    assert result == {"active": "06-08-2026 14-30" if with_package else None, "recovered": []}
+    assert not (tmp_path / "branding" / "manifest.json").exists()
+    assert not seam.list_recovered_folders()
+    if not with_package:
+        assert seam.get_active_package() is None
+
+
 def test_unparseable_folder_never_wins(tmp_path: Path) -> None:
     _, seam = make_seam(tmp_path)
     write_open_folder(tmp_path, "06-08-2026 14-30")

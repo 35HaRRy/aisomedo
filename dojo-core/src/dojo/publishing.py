@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
+from functools import wraps
 from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -22,6 +23,7 @@ from dojo.exceptions import (
     ActivePackageExists,
     BrandingInvalid,
     JobNotFound,
+    LegacyTrimConflict,
     LogoNotConfigured,
     ManualPublishConflict,
     MediaNotFound,
@@ -36,6 +38,7 @@ from dojo.exceptions import (
     MontageOrderInvalid,
     MontageTrimInvalid,
     NoActivePackage,
+    PackageChanged,
     PackageCompleted,
     PackageLimitExceeded,
     PlanInvalid,
@@ -76,6 +79,7 @@ from dojo.model import (
     MontageStatus,
     Notification,
     Package,
+    PackageArtifact,
     ProcessedMedia,
     ReelBuild,
     ReelClip,
@@ -85,9 +89,12 @@ from dojo.model import (
     Upload,
     UploadLimits,
     UploadStatus,
+    VideoSelections,
     YayinIncelemesi,
     YayinZamani,
 )
+from dojo.montage import effective_duration, manifest_selections, source_duration, validate_ranges
+from dojo.package_media import describe_artifacts, extension_for, public_media, resolve_artifact
 from dojo.ports import (
     AuditStore,
     Clock,
@@ -113,6 +120,15 @@ STALE_TTL = timedelta(hours=24)
 DEFAULT_MAX_MONTAGE_SECONDS = 90.0
 DEFAULT_PHOTO_SECONDS = 3.0
 
+def _package_operation[**P, T](method: Callable[P, T]) -> Callable[P, T]:
+    """Serialize file/record lifecycle writes across API and worker processes."""
+    @wraps(method)
+    def locked(*args: P.args, **kwargs: P.kwargs) -> T:
+        seam = cast("DojoPublishing", args[0])
+        with seam._packages.package_lock():
+            return method(*args, **kwargs)
+    return locked
+
 REMINDER_INTERVAL_KEY = "reminders.interval_minutes"
 REMINDER_START_KEY = "reminders.delivery_start"
 REMINDER_END_KEY = "reminders.delivery_end"
@@ -134,16 +150,7 @@ def merge_ranges(existing: list[list[int]], new_start: int, new_end: int) -> lis
 
 
 def _ext_for(content_type: str) -> str:
-    mapping = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/heic": ".heic",
-        "image/heif": ".heif",
-        "video/mp4": ".mp4",
-        "video/quicktime": ".mov",
-    }
-    return mapping.get(content_type, "")
+    return extension_for(content_type)
 
 
 def _normalize(filename: str) -> str:
@@ -235,6 +242,7 @@ class DojoPublishing:
         self._media = media
         self._renderer = renderer
 
+    @_package_operation
     def ensure_active_package(self, *, requester: str | None = None) -> Package:
         """Create an active Dojo Paylaşım Paketi; raise if one already exists."""
         existing = self._packages.get_active()
@@ -242,6 +250,7 @@ class DojoPublishing:
             raise ActivePackageExists(f"active package {existing.folder_name} already exists")
         return self._create_active_package(requester=requester)
 
+    @_package_operation
     def get_or_create_active_package(self, *, requester: str | None = None) -> Package:
         """Return the active package, creating it when none exists."""
         existing = self._packages.get_active()
@@ -253,7 +262,13 @@ class DojoPublishing:
         if self._get_publishing_package() is not None:
             raise PublicationInProgress("publication must be reconciled first")
         now = self._clock.now().astimezone(ISTANBUL)
-        folder_name = now.strftime(PACKAGE_FOLDER_FORMAT)
+        folder_time = now
+        used_names = {p.folder_name.removesuffix("-completed")
+                      for p in self._packages.list_completed()}
+        folder_name = folder_time.strftime(PACKAGE_FOLDER_FORMAT)
+        while folder_name in used_names:
+            folder_time += timedelta(minutes=1)
+            folder_name = folder_time.strftime(PACKAGE_FOLDER_FORMAT)
         folder = self.media_root / folder_name
         folder.mkdir(parents=True, exist_ok=False)
         (folder / "manifest.json").write_text(
@@ -274,6 +289,7 @@ class DojoPublishing:
         )
         return package
 
+    @_package_operation
     def complete_active_package(self, *, requester: str | None = None) -> Package:
         """Complete the active package and create the next empty active package."""
         existing = self._packages.get_active()
@@ -307,6 +323,82 @@ class DojoPublishing:
     def get_active_package(self) -> Package | None:
         """Return the current active package, if any."""
         return self._packages.get_active()
+
+    @_package_operation
+    def clear_active_package(
+        self, *, expected_folder_name: str, expected_package_id: int | None = None,
+    ) -> dict:
+        """Delete this active package only, including staged work and owned records."""
+        root = self.media_root.resolve()
+        if expected_package_id is not None:
+            journal = self.media_root / f".clearing-{expected_package_id}.json"
+            trash = self.media_root / f".clearing-{expected_package_id}"
+            if journal.is_symlink() or trash.is_symlink():
+                raise ValueError("cleanup storage escapes media root")
+            if journal.is_file():
+                pending = _read_json(journal)
+                if pending["result"]["folder_name"] != expected_folder_name:
+                    raise PackageChanged("cleanup package identity changed")
+                stored = self._packages.get_by_folder(expected_folder_name)
+                if stored is None or stored.id != expected_package_id:
+                    # DB deletion succeeded. A retry must purge only the old staged files.
+                    if trash.exists():
+                        shutil.rmtree(trash)
+                    journal.unlink()
+                    return pending["result"]
+                # Process stopped before committing deletion. Restore staged directories first.
+                for index, relative in enumerate(pending["sources"]):
+                    source = self.media_root / relative
+                    if source.is_symlink() or not source.resolve().is_relative_to(root):
+                        raise ValueError("cleanup storage escapes media root")
+                    target = trash / str(index)
+                    if target.exists():
+                        target.rename(source)
+                if trash.exists():
+                    trash.rmdir()
+                journal.unlink()
+        package = self._require_editor_package(expected_folder_name)
+        if expected_package_id is not None and package.id != expected_package_id:
+            raise PackageChanged("active package changed; refresh before clearing")
+        uploads, jobs = self._packages.package_work(package)
+        manifest = self._load_manifest(package)
+        sources = [self.media_root / package.folder_name]
+        sources.extend(self.media_root / "tmp" / u.upload_id for u in uploads)
+        sources.extend(self.media_root / "tmp" / f"render-{j.job_id}" for j in jobs)
+        for source in sources:
+            resolved = source.resolve()
+            if source.is_symlink() or not resolved.is_relative_to(root) or resolved == root:
+                raise ValueError("package storage escapes media root")
+        # Stage first: a database failure restores every directory intact.
+        result = {"folder_name": package.folder_name, "upload_ids": [u.upload_id for u in uploads]}
+        trash = self.media_root / f".clearing-{package.id}"
+        journal = self.media_root / f".clearing-{package.id}.json"
+        if trash.exists():
+            trash.rmdir()  # Only an empty pre-journal directory can be safely reused.
+        trash.mkdir()
+        moved: list[tuple[Path, Path]] = []
+        try:
+            journal.write_text(json.dumps({"result": result, "sources": [
+                str(source.relative_to(self.media_root)) for source in sources
+            ]}), encoding="utf-8")
+            for index, source in enumerate(sources):
+                if source.exists():
+                    target = trash / str(index)
+                    source.rename(target)
+                    moved.append((source, target))
+            self._packages.delete_package_records(
+                package, {e["media_id"] for e in manifest.get("media", [])},
+            )
+        except Exception:
+            for source, target in reversed(moved):
+                target.rename(source)
+            trash.rmdir()
+            journal.unlink(missing_ok=True)
+            raise
+        # Never hide filesystem errors or claim that a partial purge succeeded.
+        shutil.rmtree(trash)
+        journal.unlink()
+        return result
 
     def get_dashboard_summary(self) -> PublishingDashboard:
         """Observe publishing state without creating work or package folders."""
@@ -378,7 +470,7 @@ class DojoPublishing:
         for entry in self.media_root.iterdir():
             if not entry.is_dir():
                 continue
-            if entry.name == "tmp":
+            if entry.name in ("tmp", "branding") or entry.name.startswith(".clearing-"):
                 continue
             if self._is_settled(entry.name):
                 continue
@@ -451,6 +543,7 @@ class DojoPublishing:
             except Exception:  # noqa: BLE001
                 pass
 
+    @_package_operation
     def repair_open_folders(self, *, requester: str | None = None) -> dict:
         """Reconcile multiple unsuffixed folders: newest wins, older → -recovered.
 
@@ -584,6 +677,7 @@ class DojoPublishing:
             return filename, content_type, flat.read_bytes()
         raise MediaNotFound(f"recovered media {filename!r} missing")
 
+    @_package_operation
     def import_recovered_media(
         self, folder_name: str, *, requester: str | None = None
     ) -> dict:
@@ -640,6 +734,7 @@ class DojoPublishing:
             "failed": failed,
         }
 
+    @_package_operation
     def mark_recovered_resolved(
         self, folder_name: str, *, requester: str | None = None
     ) -> str:
@@ -692,6 +787,21 @@ class DojoPublishing:
         content_type: str,
         declared_size_bytes: int,
         requester: str | None = None,
+        *, expected_package_id: int | None = None,
+    ) -> UploadStatus:
+        observed = self._packages.get_active()
+        expected = expected_package_id
+        if expected is None:
+            expected = observed.id if observed else 0
+        with self._packages.package_lock():
+            current = self._packages.get_active()
+            if (current.id if current else 0) != expected:
+                raise PackageChanged("active package changed; refresh before uploading")
+            return self._start_upload(filename, content_type, declared_size_bytes, requester)
+
+    def _start_upload(
+        self, filename: str, content_type: str, declared_size_bytes: int,
+        requester: str | None,
     ) -> UploadStatus:
         if not filename or any(c in filename for c in ("/", "\\")) or any(
             ord(c) < 32 for c in filename
@@ -771,6 +881,7 @@ class DojoPublishing:
         )
         return self._status(upload)
 
+    @_package_operation
     def append_upload_range(
         self,
         upload_id: str,
@@ -821,6 +932,7 @@ class DojoPublishing:
             )
         return statuses
 
+    @_package_operation
     def complete_upload(
         self, upload_id: str, requester: str | None = None
     ) -> UploadStatus:
@@ -859,6 +971,7 @@ class DojoPublishing:
         )
         return self._status(queued)
 
+    @_package_operation
     def abort_upload(self, upload_id: str, requester: str | None = None) -> None:
         upload = self._uploads.get(upload_id)
         if upload is None:
@@ -924,6 +1037,7 @@ class DojoPublishing:
             if package is not None:
                 conflicts = self._manifest_collisions(package, upload.filename)
         return UploadStatus(
+            package_id=upload.package_id,
             upload_id=upload.upload_id,
             received_bytes=upload.received_bytes,
             declared_size_bytes=upload.declared_size_bytes,
@@ -936,6 +1050,7 @@ class DojoPublishing:
     def claim_next_job(self) -> Job | None:
         return self._jobs.claim_next(self._clock.now())
 
+    @_package_operation
     def process_job(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is None:
@@ -969,6 +1084,7 @@ class DojoPublishing:
             return
         self.finalize_media(job.job_id, processed)
 
+    @_package_operation
     def finalize_media(self, job_id: str, processed: ProcessedMedia) -> None:
         job = self._jobs.get(job_id)
         if job is None:
@@ -1084,6 +1200,7 @@ class DojoPublishing:
                 )
             )
 
+    @_package_operation
     def sweep_stale_uploads(self, ttl: timedelta = STALE_TTL) -> int:
         cutoff = self._clock.now() - ttl
         stale = self._uploads.list_stale(cutoff)
@@ -1105,7 +1222,7 @@ class DojoPublishing:
         payload = job.payload or {}
         try:
             self._render_job(job, str(payload.get("package", "")))
-        except RenderFailed as exc:
+        except (RenderFailed, MontageDurationExceeded, MontageTrimInvalid) as exc:
             now = self._clock.now()
             self._fail_job(job, str(exc))
             self._audit.append(
@@ -1178,10 +1295,11 @@ class DojoPublishing:
         and HTTP work stays outside: ``process_job`` is called separately,
         after the scope closes.
         """
-        if self._setup is not None and not self._setup.is_ready():
-            return
-        self.ensure_schedule_upto()
-        self._ensure_reviews_for_due()
+        with self._packages.package_lock(wait=False) as acquired:
+            if not acquired or self._setup is not None and not self._setup.is_ready():
+                return
+            self.ensure_schedule_upto()
+            self._ensure_reviews_for_due()
 
     def _ensure_reviews_for_due(self) -> None:
         """Create at most one durable review per due occurrence for the active revision.
@@ -1196,6 +1314,11 @@ class DojoPublishing:
             return
         manifest = self._load_manifest(package)
         if not self._finalized_in_order(manifest):
+            return
+        try:
+            self._validate_montage(manifest)
+        except (MontageDurationExceeded, MontageTrimInvalid):
+            # Keep due occurrences pending until the editor makes inputs eligible.
             return
         digest = self._render_digest(package, manifest)
         if manifest.get("render_revision") == digest:
@@ -1347,6 +1470,7 @@ class DojoPublishing:
         # crosses midnight
         return now_t >= start or now_t < end
 
+    @_package_operation
     def send_due_reminders(self) -> None:
         logger = logging.getLogger(__name__)
         policy = self.get_reminder_policy()
@@ -1464,6 +1588,7 @@ class DojoPublishing:
             raise MediaNotFound("conflict preview unavailable")
         return path, str(content_type)
 
+    @_package_operation
     def resolve_conflict(
         self,
         upload_id: str,
@@ -1620,7 +1745,11 @@ class DojoPublishing:
             if _normalize(candidate.filename) == key
         ]
 
-    def remove_media(self, media_id: str, requester: str | None = None) -> None:
+    @_package_operation
+    def remove_media(
+        self, media_id: str, requester: str | None = None, *,
+        expected_folder_name: str | None = None,
+    ) -> None:
         """Exclude ``media_id`` from the active montage without deleting its file.
 
         The media dir moves to package-local ``removed/`` storage, the manifest
@@ -1633,9 +1762,14 @@ class DojoPublishing:
             to_status="removed",
             action="media.removed",
             requester=requester,
+            expected_folder_name=expected_folder_name,
         )
 
-    def restore_media(self, media_id: str, requester: str | None = None) -> None:
+    @_package_operation
+    def restore_media(
+        self, media_id: str, requester: str | None = None, *,
+        expected_folder_name: str | None = None,
+    ) -> None:
         """Return removed ``media_id`` to the active montage."""
         self._toggle_media(
             media_id,
@@ -1643,6 +1777,7 @@ class DojoPublishing:
             to_status="finalized",
             action="media.restored",
             requester=requester,
+            expected_folder_name=expected_folder_name,
         )
 
     def _toggle_media(
@@ -1653,8 +1788,9 @@ class DojoPublishing:
         to_status: str,
         action: str,
         requester: str | None,
+        expected_folder_name: str | None = None,
     ) -> None:
-        package = self._require_active_package()
+        package = self._require_editor_package(expected_folder_name)
         if self._media_in_completed(media_id):
             raise PackageCompleted(f"media {media_id} belongs to a completed package")
         manifest = self._load_manifest(package)
@@ -1689,6 +1825,7 @@ class DojoPublishing:
             order = manifest.get("order", [])
             order.insert(min(position, len(order)), media_id)
             manifest["order"] = order
+        manifest["render_revision"] = None
         self._write_manifest(package, manifest)
 
         now = self._clock.now()
@@ -1707,9 +1844,87 @@ class DojoPublishing:
             raise NoActivePackage("no active package to mutate")
         return package
 
+    def _require_editor_package(self, expected_folder_name: str | None) -> Package:
+        package = self._require_active_package()
+        if expected_folder_name is not None and package.folder_name != expected_folder_name:
+            raise PackageChanged("active package changed; refresh the editor")
+        return package
+
     def list_completed_packages(self) -> list[Package]:
         """Return completed packages (read-only historical packages)."""
         return self._packages.list_completed()
+
+    def get_active_editor(self) -> dict:
+        package = self._require_active_package()
+        manifest = self._load_manifest(package)
+        root = self.media_root / package.folder_name
+        artifacts = describe_artifacts(root, manifest)
+        selections = manifest_selections(manifest)
+        limits = self.get_montage_limits()
+        media = []
+        for entry in manifest.get("media", []):
+            mid = entry.get("media_id")
+            items = [a for a in artifacts if a["kind"] != "render"
+                     and a["artifact_ref"].split("/")[1] == mid]
+            preview = next((a["artifact_ref"] for a in items
+                            if a["kind"] == "processed" and a["available"]), None)
+            is_video = str(entry.get("content_type", "")).startswith("video/")
+            source = source_duration(entry) if is_video else None
+            media.append({
+                **public_media(entry), "is_video": is_video, "source_duration": source,
+                "effective_duration": effective_duration(
+                    entry, selections.get(mid), limits.photo_duration_seconds
+                ) if not is_video or source is not None else None,
+                "preview_ref": preview, "artifacts": items,
+            })
+        digest = self._render_digest(package, manifest)
+        stale = manifest.get("render_revision") != digest
+        render_artifact = next(a for a in artifacts if a["kind"] == "render")
+        _, jobs = self._packages.package_work(package)
+        render_jobs = sorted(
+            (j for j in jobs if j.kind == "render" and j.payload.get("digest") == digest),
+            key=lambda j: j.id, reverse=True,
+        )
+        render_status = "stale" if stale and render_artifact["available"] else "missing"
+        if not stale and render_artifact["available"]:
+            render_status = "ready"
+        elif render_jobs and render_jobs[0].status in ("queued", "processing", "failed"):
+            render_status = render_jobs[0].status
+        return {
+            "package": dict(package.__dict__),
+            "render_stale": stale,
+            "render_status": render_status,
+            "render_revision": manifest.get("render_revision"),
+            "media": media, "montage": self._montage_status(manifest).to_dict(),
+        }
+
+    def get_render_preview(
+        self, *, expected_folder_name: str, expected_revision: str | None = None,
+    ) -> PackageArtifact:
+        package = self._require_editor_package(expected_folder_name)
+        manifest = self._load_manifest(package)
+        revision = manifest.get("render_revision")
+        if (revision != self._render_digest(package, manifest)
+                or expected_revision is not None and expected_revision != revision):
+            raise MediaNotFound("saved montage render is not current")
+        return resolve_artifact(self.media_root / package.folder_name, manifest, "render/reel.mp4")
+
+    def get_media_preview(self, media_id: str, *, expected_folder_name: str) -> PackageArtifact:
+        package = self._require_editor_package(expected_folder_name)
+        manifest = self._load_manifest(package)
+        root = self.media_root / package.folder_name
+        entry = next((e for e in manifest.get("media", []) if e.get("media_id") == media_id), None)
+        if entry is None or entry.get("status") not in ("finalized", "removed"):
+            raise MediaNotFound("media preview is unavailable")
+        prefix = "removed" if entry["status"] == "removed" else "media"
+        suffix = extension_for(str(entry.get("processed", {}).get("content_type", "")))
+        reference = f"{prefix}/{media_id}/processed{suffix}"
+        return resolve_artifact(root, manifest, reference)
+
+    def resolve_completed_artifact(self, folder_name: str, artifact_ref: str) -> PackageArtifact:
+        package = self._get_completed_package(folder_name)
+        return resolve_artifact(self.media_root / package.folder_name,
+                                self._load_manifest(package), artifact_ref)
 
     def browse_completed_package(self, folder_name: str) -> dict:
         """Return a read-only manifest view of a completed package."""
@@ -1717,10 +1932,11 @@ class DojoPublishing:
         manifest = self._load_manifest(package)
         return {
             "folder_name": package.folder_name,
-            "media": manifest.get("media", []),
+            "media": [public_media(entry) for entry in manifest.get("media", [])],
             "order": manifest.get("order", []),
             "caption": manifest.get("caption"),
             "render_revision": manifest.get("render_revision"),
+            "artifacts": describe_artifacts(self.media_root / package.folder_name, manifest),
         }
 
     def create_download_url(self, folder_name: str, artifact_ref: str) -> str:
@@ -1947,6 +2163,7 @@ class DojoPublishing:
         package = self._require_active_package()
         return self._load_manifest(package).get("caption")
 
+    @_package_operation
     def set_branding(self, branding: dict, requester: str | None = None) -> dict:
         """Override intro/outro (and logo) for one draft without touching globals."""
         package = self._require_active_package()
@@ -1966,6 +2183,7 @@ class DojoPublishing:
         )
         return current
 
+    @_package_operation
     def set_caption(self, caption: str, requester: str | None = None) -> str:
         """Edit the draft caption copy without changing the global template."""
         package = self._require_active_package()
@@ -2007,47 +2225,26 @@ class DojoPublishing:
             photo_duration_seconds=float(cast(float, photo_seconds)),
         )
 
-    def _clip_duration(self, entry: dict, trims: dict, photo_duration: float) -> float:
-        if str(entry.get("content_type", "")).startswith("video/"):
-            source = float(entry.get("processed", {}).get("duration") or 0.0)
-            trim = trims.get(entry.get("media_id"))
-            if trim:
-                source -= float(trim["end"]) - float(trim["start"])
-            return max(source, 0.0)
-        return photo_duration
-
-    def _combined_duration(self, order: list[str], trims: dict) -> float:
-        limits = self.get_montage_limits()
-        package = self._packages.get_active()
-        if package is None:
-            return 0.0
-        manifest = self._load_manifest(package)
-        by_id = {e.get("media_id"): e for e in manifest.get("media", [])}
-        total = 0.0
-        for media_id in order:
-            entry = by_id.get(media_id)
-            if entry is None or entry.get("status") != "finalized":
-                continue
-            total += self._clip_duration(entry, trims, limits.photo_duration_seconds)
-        return total
-
     def get_montage_status(self) -> MontageStatus:
         package = self._require_active_package()
-        manifest = self._load_manifest(package)
+        return self._montage_status(self._load_manifest(package))
+
+    def _montage_status(self, manifest: dict) -> MontageStatus:
         limits = self.get_montage_limits()
         order = manifest.get("order", [])
         trims = manifest.get("trims", {})
+        selections = manifest_selections(manifest)
         by_id = {e.get("media_id"): e for e in manifest.get("media", [])}
         clips: list[MontageClip] = []
+        complete = True
         for media_id in order:
             entry = by_id.get(media_id)
             if entry is None or entry.get("status") != "finalized":
                 continue
             is_video = str(entry.get("content_type", "")).startswith("video/")
-            source = (
-                float(entry.get("processed", {}).get("duration") or 0.0)
-                if is_video else None
-            )
+            source = source_duration(entry) if is_video else None
+            if is_video and source is None:
+                complete = False
             clips.append(
                 MontageClip(
                     media_id=media_id,
@@ -2055,17 +2252,24 @@ class DojoPublishing:
                     content_type=str(entry.get("content_type", "")),
                     is_video=is_video,
                     source_duration=source,
-                    effective_duration=self._clip_duration(
-                        entry, trims, limits.photo_duration_seconds
+                    effective_duration=effective_duration(
+                        entry, selections.get(media_id), limits.photo_duration_seconds
                     ),
                 )
             )
-        combined = sum(c.effective_duration for c in clips)
+        branding = manifest.get("branding", {})
+        card_duration = sum(
+            float(branding.get(f"{kind}_duration") or limits.photo_duration_seconds)
+            for kind in ("intro", "outro") if branding.get(f"{kind}_asset")
+        )
+        combined = sum(c.effective_duration for c in clips) + card_duration
         over_limit = combined > limits.max_duration_seconds
         required_action = None
         if over_limit:
             excess = combined - limits.max_duration_seconds
             required_action = f"trim or remove {excess:.1f}s"
+        if not complete:
+            required_action = "video source duration unavailable; reprocess or remove the video"
         return MontageStatus(
             order=order,
             trims=trims,
@@ -2074,10 +2278,28 @@ class DojoPublishing:
             max_duration_seconds=limits.max_duration_seconds,
             over_limit=over_limit,
             required_action=required_action,
+            selections=selections,
+            card_duration=card_duration,
+            duration_complete=complete,
         )
 
-    def set_order(self, order: list[str], requester: str | None = None) -> MontageStatus:
-        package = self._require_active_package()
+    def _validate_montage(self, manifest: dict) -> None:
+        status = self._montage_status(manifest)
+        if not status.duration_complete:
+            raise MontageTrimInvalid("video source duration unavailable")
+        if status.over_limit:
+            excess = status.combined_duration - status.max_duration_seconds
+            raise MontageDurationExceeded(
+                f"combined duration {status.combined_duration:.1f}s exceeds "
+                f"{status.max_duration_seconds:.1f}s limit; trim or remove {excess:.1f}s"
+            )
+
+    @_package_operation
+    def set_order(
+        self, order: list[str], requester: str | None = None, *,
+        expected_folder_name: str | None = None,
+    ) -> MontageStatus:
+        package = self._require_editor_package(expected_folder_name)
         if any(self._media_in_completed(mid) for mid in order):
             raise PackageCompleted("media belongs to a completed package")
         manifest = self._load_manifest(package)
@@ -2090,15 +2312,8 @@ class DojoPublishing:
             raise MontageOrderInvalid(
                 "order must contain every finalized media id exactly once"
             )
-        limits = self.get_montage_limits()
-        combined = self._combined_duration(order, manifest.get("trims", {}))
-        if combined > limits.max_duration_seconds:
-            excess = combined - limits.max_duration_seconds
-            raise MontageDurationExceeded(
-                f"combined duration {combined:.1f}s exceeds {limits.max_duration_seconds:.1f}s "
-                f"limit; trim or remove {excess:.1f}s"
-            )
         manifest["order"] = list(order)
+        self._validate_montage(manifest)
         manifest["render_revision"] = None
         self._write_manifest(package, manifest)
         self._audit.append(
@@ -2111,18 +2326,60 @@ class DojoPublishing:
         )
         return self.get_montage_status()
 
-    def set_trims(self, trims: dict, requester: str | None = None) -> MontageStatus:
-        package = self._require_active_package()
-        if any(self._media_in_completed(mid) for mid in trims):
-            raise PackageCompleted("media belongs to a completed package")
+    @_package_operation
+    def set_trims(
+        self, trims: dict, requester: str | None = None, *,
+        expected_folder_name: str | None = None,
+    ) -> MontageStatus:
+        package = self._require_editor_package(expected_folder_name)
         manifest = self._load_manifest(package)
+        active = {e["media_id"] for e in manifest.get("media", [])
+                  if e.get("status") == "finalized"}
+        if any(len(ranges) > 1 for mid, ranges in manifest_selections(manifest).items()
+               if mid in active):
+            raise LegacyTrimConflict("multiple sections exist; use an updated editor")
+        return self._save_selections(
+            package, manifest, {mid: [trim] for mid, trim in trims.items()},
+            requester=requester, action="montage.trim_changed",
+        )
+
+    @_package_operation
+    def set_selections(
+        self, selections: VideoSelections, requester: str | None = None, *,
+        expected_folder_name: str,
+        photo_durations: dict[str, float] | None = None,
+    ) -> MontageStatus:
+        package = self._require_editor_package(expected_folder_name)
+        return self._save_selections(
+            package, self._load_manifest(package), selections,
+            requester=requester, action="montage.selections_changed",
+            photo_durations=photo_durations,
+        )
+
+    def _save_selections(
+        self, package: Package, manifest: dict, selections: VideoSelections, *,
+        requester: str | None, action: str,
+        photo_durations: dict[str, float] | None = None,
+    ) -> MontageStatus:
+        if any(self._media_in_completed(mid) for mid in selections):
+            raise PackageCompleted("media belongs to a completed package")
         by_id = {
             e.get("media_id"): e
             for e in manifest.get("media", [])
             if e.get("status") == "finalized"
         }
-        cleaned: dict = {}
-        for media_id, trim in trims.items():
+        cleaned: VideoSelections = {}
+        for media_id, seconds in (photo_durations or {}).items():
+            entry = by_id.get(media_id)
+            if entry is None:
+                raise MediaNotFound(f"media {media_id} not found in active package")
+            if str(entry.get("content_type", "")).startswith("video/"):
+                raise MontageTrimInvalid("photo duration applies to photos only")
+            if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                    or not isfinite(seconds) or seconds < 1 / 25):
+                raise MontageTrimInvalid("photo duration must be finite and at least one frame")
+            entry["photo_duration_seconds"] = float(seconds)
+        for media_id, ranges in selections.items():
             entry = by_id.get(media_id)
             if entry is None:
                 raise MediaNotFound(f"media {media_id} not found in active package")
@@ -2130,31 +2387,25 @@ class DojoPublishing:
                 raise MontageTrimInvalid(
                     f"media {media_id} is not a video; trims apply to videos only"
                 )
-            start = float(trim["start"])
-            end = float(trim["end"])
-            duration = float(entry.get("processed", {}).get("duration") or 0.0)
-            if not (0.0 <= start < end <= duration):
-                raise MontageTrimInvalid(
-                    f"invalid trim [{start}, {end}) for media {media_id} with duration {duration}"
-                )
-            cleaned[media_id] = {"start": start, "end": end}
-        limits = self.get_montage_limits()
-        combined = self._combined_duration(manifest.get("order", []), cleaned)
-        if combined > limits.max_duration_seconds:
-            excess = combined - limits.max_duration_seconds
-            raise MontageDurationExceeded(
-                f"combined duration {combined:.1f}s exceeds {limits.max_duration_seconds:.1f}s "
-                f"limit; trim or remove {excess:.1f}s"
-            )
-        manifest["trims"] = cleaned
+            duration = source_duration(entry)
+            if duration is None:
+                raise MontageTrimInvalid("video source duration unavailable")
+            cleaned[media_id] = validate_ranges(ranges, duration)
+        removed = {e["media_id"] for e in manifest.get("media", []) if e.get("status") == "removed"}
+        cleaned.update({mid: ranges for mid, ranges in manifest_selections(manifest).items()
+                        if mid in removed})
+        manifest["selections"] = cleaned
+        manifest["trims"] = {mid: ranges[0] for mid, ranges in cleaned.items() if len(ranges) == 1}
+        self._validate_montage(manifest)
         manifest["render_revision"] = None
         self._write_manifest(package, manifest)
         self._audit.append(
             AuditEvent(
-                action="montage.trim_changed",
+                action=action,
                 actor=requester or "system",
                 occurred_at=self._clock.now(),
-                details={"trims": cleaned, "package": package.folder_name},
+                details={"selections": cleaned, "trims": manifest["trims"],
+                         "package": package.folder_name},
             )
         )
         return self.get_montage_status()
@@ -2162,6 +2413,7 @@ class DojoPublishing:
     def create_review(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
+    @_package_operation
     def approve(
         self,
         review_id: int,
@@ -2179,6 +2431,7 @@ class DojoPublishing:
         self._start_publication_for_review(resolved, requester=requester)
         return resolved
 
+    @_package_operation
     def skip(
         self,
         review_id: int,
@@ -2201,6 +2454,7 @@ class DojoPublishing:
             next_regular_at=next_regular.due_at if next_regular is not None else None,
         )
 
+    @_package_operation
     def reschedule(
         self,
         review_id: int,
@@ -2364,17 +2618,15 @@ class DojoPublishing:
         )
         return resolved_review
 
-    def render_preview(self, *, retry: bool = False) -> dict:
+    @_package_operation
+    def render_preview(
+        self, *, retry: bool = False, expected_folder_name: str | None = None,
+    ) -> dict:
         """Render when stale; explicit retry also allows failed/completed revisions."""
-        package = self._require_active_package()
+        package = self._require_editor_package(expected_folder_name)
         self._assert_logo_configured()
-        status = self.get_montage_status()
-        if status.over_limit:
-            raise MontageDurationExceeded(
-                f"combined duration {status.combined_duration:.1f}s exceeds "
-                f"{status.max_duration_seconds:.1f}s limit; {status.required_action}"
-            )
         manifest = self._load_manifest(package)
+        self._validate_montage(manifest)
         digest = self._render_digest(package, manifest)
         stale = manifest.get("render_revision") != digest
         if stale or retry:
@@ -2409,6 +2661,8 @@ class DojoPublishing:
                     "content_type": entry.get("content_type"),
                     "duration": entry.get("processed", {}).get("duration"),
                     "is_video": str(entry.get("content_type", "")).startswith("video/"),
+                    **({"photo_duration": entry["photo_duration_seconds"]}
+                       if "photo_duration_seconds" in entry else {}),
                 }
             )
         inputs = {
@@ -2418,6 +2672,8 @@ class DojoPublishing:
             "caption": manifest.get("caption"),
             "photo_duration": limits.photo_duration_seconds,
         }
+        if "selections" in manifest:
+            inputs["selections"] = manifest_selections(manifest)
         canonical = json.dumps(inputs, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -2461,7 +2717,10 @@ class DojoPublishing:
             renderer = FfmpegReelRenderer()
         out = self.media_root / package.folder_name / "render" / "reel.mp4"
         work = self.media_root / "tmp" / f"render-{job.job_id}"
-        renderer.render(build, work, out)
+        staged = work / "reel.mp4"
+        renderer.render(build, work, staged)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        staged.replace(out)
         manifest["render_revision"] = digest
         self._write_manifest(package, manifest)
         self._create_review_if_due(package, digest)
@@ -2480,28 +2739,29 @@ class DojoPublishing:
         )
 
     def _build_reel(self, package: Package, manifest: dict) -> ReelBuild:
+        self._validate_montage(manifest)
         limits = self.get_montage_limits()
-        trims = manifest.get("trims", {})
+        selections = manifest_selections(manifest)
         clips: list[ReelClip] = []
         for media_id, entry in self._finalized_in_order(manifest):
             processed = entry.get("processed", {})
             path = self.media_root / package.folder_name / str(processed.get("path", ""))
             is_video = str(entry.get("content_type", "")).startswith("video/")
-            trim = trims.get(media_id)
-            clips.append(
-                ReelClip(
-                    media_id=media_id,
-                    path=path,
-                    is_video=is_video,
-                    duration=(
-                        float(processed.get("duration") or 0.0)
-                        if is_video
-                        else limits.photo_duration_seconds
-                    ),
-                    trim_start=float(trim["start"]) if trim else 0.0,
-                    trim_end=float(trim["end"]) if trim else None,
+            ranges = selections.get(media_id) if is_video else None
+            if ranges is not None:
+                for section in ranges:
+                    clips.append(ReelClip(
+                        media_id=media_id, path=path, is_video=True,
+                        duration=section["end"] - section["start"],
+                        trim_start=section["start"], trim_end=section["end"],
+                    ))
+            else:
+                clips.append(
+                    ReelClip(
+                        media_id=media_id, path=path, is_video=is_video,
+                        duration=effective_duration(entry, None, limits.photo_duration_seconds),
+                    )
                 )
-            )
         branding = dict(manifest.get("branding", {}))
         logo = branding.get("logo_asset") or self.get_branding_defaults().logo_asset
         logo_path = self._resolve_asset(logo)
@@ -2937,6 +3197,7 @@ class DojoPublishing:
         )
         return path
 
+    @_package_operation
     def recover_publication(
         self, action: str, *, confirmed: bool = False,
         new_due_at: datetime | None = None, requester: str | None = None,
@@ -3014,6 +3275,7 @@ class DojoPublishing:
                 }
         return None
 
+    @_package_operation
     def retry_publication(self, *, requester: str | None = None) -> dict:
         if self._get_publishing_package() is not None:
             raise PublicationInProgress("another publication is already in progress")
@@ -3045,6 +3307,7 @@ class DojoPublishing:
             raise PublicationNotReady("publication finished without a status record")
         return status
 
+    @_package_operation
     def reconcile_publication(self, *, requester: str | None = None) -> dict | None:
         """Poll saved Meta identifiers for a ``-publishing`` package.
 
