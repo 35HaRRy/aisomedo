@@ -10,6 +10,28 @@
   --accent-soft: #e6f1ee;
 }
 .editor-dialog-backdrop { position: fixed; inset: 0; background: rgb(20 35 32 / 45%); z-index: 30; display: grid; place-items: center; padding: 20px; }
+.package-mode-actions { display: flex; justify-content: flex-end; margin: 0 0 16px; }
+.package-section-heading, .package-media-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.package-editor > .notice { margin-top: 20px; }
+.package-media-list { list-style: none; padding: 0; margin: 24px 0 0; }
+.package-media-list > li { padding: 24px 0; border-top: 1px solid var(--line); display: grid; gap: 16px; min-width: 0; }
+.package-media-list h3 { font-size: 1rem; }
+.package-media-list .package-media-heading > div:first-child { min-width: 0; }
+.montage-duration { display: grid; gap: 8px; margin: 20px 0; font-variant-numeric: tabular-nums; }
+.package-save-actions { margin-top: 20px; }
+.removed-media { margin-top: 32px; }
+.removed-media > p { margin-top: 8px; }
+.package-media-list > li.package-media-heading { display: flex; }
+.package-photo-preview { width: 180px; max-width: 100%; max-height: 180px; object-fit: contain; }
+.completed-picker { display: grid; gap: 8px; margin: 24px 0; }
+.completed-picker select { width: 100%; min-width: 0; min-height: 48px; padding: 8px; font: inherit; background: var(--surface); color: inherit; border: 1px solid #8b9b9f; border-radius: 8px; }
+.completed-detail { margin-top: 24px; }
+.completed-render, .completed-media-preview { display: block; width: 100%; max-width: 440px; max-height: 340px; margin-top: 16px; background: #202b30; }
+.artifact-links { list-style: none; padding: 0; margin: 16px 0; display: grid; gap: 8px; font-size: .875rem; }
+.artifact-links a { display: inline-flex; align-items: center; min-height: 44px; overflow-wrap: anywhere; }
+.artifact-links span { color: var(--muted); }
+.completed-caption { margin-top: 20px; white-space: pre-wrap; }
+@media (max-width: 700px) { .package-section-heading, .package-media-heading { flex-direction: column; } .package-media-list > li.package-media-heading { flex-direction: column; } }
 .editor-dialog { max-width: 560px; background: var(--surface); padding: 28px; border-radius: 12px; display: grid; gap: 20px; box-shadow: 0 16px 48px rgb(20 35 32 / 20%); }
 .editor-dialog .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .video-section-editor { display: grid; grid-template-columns: minmax(160px, 260px) minmax(0, 1fr); gap: 24px; padding: 24px 0 8px; }

@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { App } from "../App";
 import type { UploadOut } from "../api/openapi";
-import { client, dashboard, setupState } from "../test/fixtures";
+import { client, dashboard, emptyEditor, setupState } from "../test/fixtures";
 import { deferred, installCrypto } from "./testFixtures";
 
 beforeEach(() => { localStorage.clear(); installCrypto(); window.location.hash = "#/package"; });
@@ -18,6 +18,8 @@ function fixture({ fileLimit = 100000000, holdFirst = false, loseFirst = false, 
     if (url === "/api/pairing/me") return json(client);
     if (url === "/api/setup") return json(setupState());
     if (url === "/api/dashboard") return json(dashboard());
+    if (url === "/api/packages/active/editor") return json(emptyEditor());
+    if (url === "/api/packages") return json([]);
     if (url === "/api/media/upload-limits") return json({ max_file_bytes: fileLimit, max_package_bytes: 1000000000 });
     if (url === "/api/media/uploads" && init.method === "POST") {
       const body = JSON.parse(String(init.body));
@@ -126,4 +128,19 @@ it("actual API explicit retry reconciles lost response then waits for finalized"
   f.set({ ...f.current(), status: "finalized" });
   await act(async () => window.dispatchEvent(new Event("focus")));
   await screen.findByText("Pakete eklendi");
+});
+
+it("completed browsing leaves active upload File and accepted offsets intact", async () => {
+  const f = fixture({ holdFirst: true }); render(<App />);
+  await select(new File([new Uint8Array(2097155)], "dojo.mp4", { type: "video/mp4" }));
+  await waitFor(() => expect(f.offsets).toEqual([0]));
+  fireEvent.click(screen.getByRole("button", { name: "Duraklat" }));
+  fireEvent.click(screen.getByRole("button", { name: "Tamamlanmış paketler" }));
+  await screen.findByText("Henüz tamamlanmış paket yok.");
+  expect(screen.queryByLabelText("Fotoğraf ve video seç")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Aktif pakete dön" }));
+  await screen.findByText("Duraklatıldı"); f.first.resolve(json(f.current()));
+  fireEvent.click(screen.getByRole("button", { name: "Devam et" }));
+  await screen.findByText("İşlem sırasına alındı");
+  expect(f.offsets).toEqual([0, 2097152]); expect(f.initializations()).toBe(1);
 });

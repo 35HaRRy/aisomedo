@@ -1,4 +1,25 @@
 export const tr = {
+  packageManagement: {
+    activeMedia: "Aktif paket medyası", completed: "Tamamlanmış paketler", backActive: "Aktif pakete dön",
+    refresh: "Paketi yenile", noActive: "Aktif paket yok. Medya yükleyerek yeni paket oluşturabilirsiniz.", noMedia: "Bu pakette henüz kullanılacak medya yok.",
+    save: "Bölümleri kaydet", saving: "İşlem sürüyor…", discard: "Taslakları at", saved: "Bölümler kaydedildi.", unsaved: "Kaydedilmemiş bölüm değişiklikleri var.",
+    total: "Önerilen toplam süre", unknownTotal: "Süre hesaplanamıyor", unknownDuration: "Süre bilinmiyor", limitHelp: "Sınırı aşan süreyi azaltın:",
+    renderStale: "Render güncel değil. Bölüm ve sıra değişiklikleri yeni render gerektirir.",
+    stale: "Paket dışarıdan değişti. Taslaklar korunuyor; yazmadan önce yenileyin veya değişiklikleri atın.", offline: "Çevrimdışısınız. Taslaklar korunuyor; işlemler için bağlantıyı bekleyin.",
+    order: "Montaj sırası", video: "Video", photo: "Fotoğraf", preview: "önizlemesi",
+    drag: "Sürükle", up: "Yukarı", down: "Aşağı", dragLabel: "sırasını sürükle", upLabel: "dosyasını yukarı taşı", downLabel: "dosyasını aşağı taşı",
+    edit: "Bölümleri düzenle", editLabel: "bölümlerini düzenle", closeEditor: "Düzenleyiciyi kapat",
+    remove: "Paketten çıkar", removeLabel: "dosyasını paketten çıkar", restore: "Geri yükle", restoreLabel: "dosyasını geri yükle",
+    removed: "Paketten çıkarılmış medya", removedHelp: "Orijinal dosyalar ve seçili bölümler korunur. Geri yükleme önceki konumu kullanır.",
+    readOnly: "Tamamlanmış paketler salt okunurdur. Dosyaları görüntüleyebilir ve indirebilirsiniz; aktif yükleme kuyruğu değişmez.", chooseCompleted: "Tamamlanmış paket seç", noCompleted: "Henüz tamamlanmış paket yok.", historyError: "Paket arşivi yüklenemedi. Tekrar deneyin.",
+    originalDownload: "Orijinali indir", processedDownload: "İşlenmiş dosyayı indir", renderDownload: "Son Reel'i indir", finalPreview: "Son Reel önizlemesi", fileMissing: "dosya mevcut değil",
+    errors: {
+      read: "Paket bilgileri yüklenemedi. Mevcut bilgiler ve taslaklar korunuyor; paketi yenileyin.",
+      uncertain: "İşlemin sonucu doğrulanamadı. Taslaklar korunuyor; tekrar göndermeden önce paketi yenileyin.",
+      conflict: "Paket değişti veya işlem reddedildi. Taslakları kontrol ederek paketi yenileyin.",
+      invalid: "Bölüm sınırları geçersiz. Alanları düzeltip tekrar kaydedin.", limit: "Toplam süre sınırı aşılıyor. Bölümleri kısaltın veya medya çıkarın.",
+    },
+  },
   editor: {
     leaveTitle: "Kaydedilmemiş bölümler var", leaveHelp: "Bölümleri kaydedin, değişiklikleri atın veya düzenlemeye devam edin.",
     removeDraft: "Bu videonun bölümleri kaydedilmedi. At seçeneği yalnızca bu videonun taslağını siler; diğer taslaklar korunur.",

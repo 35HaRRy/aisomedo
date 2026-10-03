@@ -36,6 +36,7 @@ export function editorServer() {
   const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
   const fetcher = async (url: string, init: RequestInit = {}) => {
     if (url === "/api/pairing/me") return json(client);
+    if (url === "/api/media/upload-limits") return json({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 });
     if (url === "/api/packages/active/editor") {
       if (pendingRead) { const read = pendingRead; pendingRead = null; return read; }
       return json(snapshot);
