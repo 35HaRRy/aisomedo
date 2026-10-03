@@ -3,6 +3,12 @@ export const tr = {
     leaveTitle: "Kaydedilmemiş bölümler var", leaveHelp: "Bölümleri kaydedin, değişiklikleri atın veya düzenlemeye devam edin.",
     removeDraft: "Bu videonun bölümleri kaydedilmedi. At seçeneği yalnızca bu videonun taslağını siler; diğer taslaklar korunur.",
     cancel: "Vazgeç", discard: "Değişiklikleri at", saveContinue: "Kaydet ve devam et",
+    timeline: "Video zaman çizelgesi", timelineHelp: "Boş alanda sürükleyerek bölüm seçin; tıklayarak videoya gidin. Sınırları ok tuşlarıyla 0,1 saniye, Shift ile 1 saniye değiştirin.",
+    wholeTrack: "Tüm video", wholeVideo: "Bölüm seçilmedi: videonun tamamı kullanılacak.", selectedOnly: "Yalnızca seçili bölümler kullanılacak.",
+    unknownDuration: "Video süresi bilinmiyor. Videoyu yeniden işleyin veya paketten çıkarın.",
+    addSection: "Bölüm ekle", removeSection: "Bölümü kaldır", noGap: "Bu konumda en az bir kare uzunluğunda boş bölüm yok.",
+    previewFailed: "Video önizlemesi yüklenemedi.", previewRetry: "Önizlemeyi yeniden yükle", previewMissing: "Önizleme dosyası mevcut değil.",
+    playhead: "Oynatma konumu", retained: "Kullanılacak süre", invalidRange: "Başlangıç ve bitiş sayı olmalı; bölümler çakışmamalı, video içinde kalmalı ve en az 0,04 saniye sürmeli.",
   },
   conflict: {
     title: "Dosya adı çakışmasını çöz", intro: "Bu adla mevcut medya var. Karar verene kadar yeni dosya gönderilmez.",
