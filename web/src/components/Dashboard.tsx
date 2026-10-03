@@ -7,7 +7,7 @@ export function PendingActions({ data }: { data: DashboardOut }) {
     {data.pending_actions.length === 0 ? <><h3>{tr.noPending}</h3><p>{tr.noPendingHelp}</p></>
       : <ul className="action-list">{data.pending_actions.map(action => <li key={`${action.occurrence_id}-${action.review_id}`}>
         <div><h3>{statusLabel(action.state)}</h3><p>{formatDate(action.due_at)}</p></div>
-        <a className="action-link" href={action.review_id ? `#/package?review=${action.review_id}` : "#/package"}>
+        <a className="action-link" href={action.review_id ? `#/package?review=${action.review_id}` : `#/package?occurrence=${action.occurrence_id}${action.package_folder ? `&folder=${encodeURIComponent(action.package_folder)}` : ""}`}>
           {action.review_id ? tr.reviewSummary : tr.openPackage}
         </a>
       </li>)}</ul>}

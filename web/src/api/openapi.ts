@@ -71,6 +71,7 @@ export const API_PATHS: readonly string[] = [
   "/api/pairing/me/push-token",
   "/api/pairing/validate",
   "/api/reviews/pending",
+  "/api/reviews/{review_id}",
   "/api/reviews/{review_id}/approve",
   "/api/reviews/{review_id}/reschedule",
   "/api/reviews/{review_id}/skip",
@@ -119,6 +120,10 @@ export type ActivityEventOut = {
 export type ActivityPageOut = {
   "events": Array<ActivityEventOut>;
   "next_cursor": number | null;
+};
+
+export type ApproveIn = {
+  "version": number;
 };
 
 export type AttemptOut = {
@@ -332,11 +337,34 @@ export type RenderOut = {
   "stale": boolean;
 };
 
+export type RescheduleIn = {
+  "new_due_at": string;
+  "version": number;
+};
+
 export type ResolveConflictIn = {
   "apply_to_all"?: boolean;
   "confirmed_overwrite"?: boolean;
   "decision": string;
   "target_media_id"?: string | null;
+};
+
+export type ReviewDetailOut = {
+  "next_regular_at": string | null;
+  "preview_url": string | null;
+  "render_ready": boolean;
+  "review": ReviewOut;
+};
+
+export type ReviewOut = {
+  "caption": string | null;
+  "created_at": string;
+  "id": number;
+  "occurrence_id": number;
+  "package_folder": string;
+  "revision_digest": string;
+  "status": string;
+  "version": number;
 };
 
 export type SelectIn = {
@@ -359,6 +387,11 @@ export type SetupItemOut = {
 export type SetupOut = {
   "checklist": Array<SetupItemOut>;
   "ready": boolean;
+};
+
+export type SkipIn = {
+  "confirmed"?: boolean;
+  "version": number;
 };
 
 export type StartIn = {

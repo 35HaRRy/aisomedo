@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type Area = "dashboard" | "package" | "activity" | "settings" | "onboarding";
-function readNavigation(): { area: Area; reviewId: number | null } {
+function readNavigation(): { area: Area; reviewId: number | null; occurrenceId: number | null; packageFolder: string | null } {
   const [path, query] = window.location.hash.replace(/^#\/?/, "").split("?");
   const area = ["dashboard", "package", "activity", "settings", "onboarding"].includes(path) ? path as Area : "dashboard";
-  const value = Number(new URLSearchParams(query).get("review"));
-  return { area, reviewId: Number.isSafeInteger(value) && value > 0 ? value : null };
+  const params = new URLSearchParams(query);
+  const value = Number(params.get("review")), occurrence = Number(params.get("occurrence"));
+  return { area, reviewId: Number.isSafeInteger(value) && value > 0 ? value : null,
+    occurrenceId: Number.isSafeInteger(occurrence) && occurrence > 0 ? occurrence : null, packageFolder: params.get("folder") };
 }
 export function useNavigation(canLeave?: () => Promise<boolean>) {
   const [route, setRoute] = useState(readNavigation);

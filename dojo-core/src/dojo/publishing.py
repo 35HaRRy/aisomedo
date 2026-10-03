@@ -6,7 +6,7 @@ import logging
 import shutil
 import uuid
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import date, datetime, time, timedelta
 from functools import wraps
 from math import isfinite
@@ -1378,6 +1378,24 @@ class DojoPublishing:
     def list_pending_reviews(self) -> list[YayinIncelemesi]:
         return self._reviews.list_pending()
 
+    @_package_operation
+    def get_review_detail(self, review_id: int) -> dict:
+        """Observe one review; never substitute another package or render revision."""
+        review = self._reviews.get(review_id)
+        if review is None:
+            raise ReviewNotFound(f"review {review_id} not found")
+        ready = False
+        if review.status == "pending":
+            try:
+                self.get_render_preview(expected_folder_name=review.package_folder,
+                                        expected_revision=review.revision_digest)
+                ready = True
+            except (NoActivePackage, PackageChanged, MediaNotFound):
+                pass
+        regular = self._schedule.next_regular_after(self._clock.now())
+        return {"review": asdict(review), "render_ready": ready,
+                "next_regular_at": regular.due_at if regular else None}
+
     def list_audit(self, limit: int = 50) -> list[AuditEvent]:
         return self._audit.list_recent(limit=limit)
 
@@ -2497,13 +2515,22 @@ class DojoPublishing:
         review = self._reviews.get(review_id)
         if review is None:
             raise ReviewNotFound(f"review {review_id} not found")
+        if review.status != "pending" or review.version != version:
+            raise ReviewAlreadyHandled(
+                f"review {review_id} was already handled by another device", review=review,
+            )
         package = self._packages.get_active()
         manifest = self._load_manifest(package) if package is not None else None
         current_revision = (
             manifest.get("render_revision") if manifest is not None else None
         )
         if (
-            current_revision is not None and current_revision != review.revision_digest
+            package is None or package.folder_name != review.package_folder
+            or current_revision is not None and current_revision != review.revision_digest
+            or to_status == "approved" and (
+                current_revision != review.revision_digest
+                or self._render_digest(package, manifest or {}) != review.revision_digest
+            )
         ):
             raise ReviewStale(
                 f"review {review_id} is stale; content changed since it was created"

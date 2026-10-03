@@ -1785,6 +1785,104 @@
         "title": "ResolveConflictIn",
         "type": "object"
       },
+      "ReviewDetailOut": {
+        "properties": {
+          "next_regular_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Regular At"
+          },
+          "preview_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Url"
+          },
+          "render_ready": {
+            "title": "Render Ready",
+            "type": "boolean"
+          },
+          "review": {
+            "$ref": "#/components/schemas/ReviewOut"
+          }
+        },
+        "required": [
+          "review",
+          "render_ready",
+          "preview_url",
+          "next_regular_at"
+        ],
+        "title": "ReviewDetailOut",
+        "type": "object"
+      },
+      "ReviewOut": {
+        "properties": {
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          },
+          "package_folder": {
+            "title": "Package Folder",
+            "type": "string"
+          },
+          "revision_digest": {
+            "title": "Revision Digest",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "occurrence_id",
+          "package_folder",
+          "revision_digest",
+          "caption",
+          "status",
+          "created_at",
+          "version"
+        ],
+        "title": "ReviewOut",
+        "type": "object"
+      },
       "SelectIn": {
         "properties": {
           "ig_user_id": {
@@ -4341,6 +4439,48 @@
           }
         },
         "summary": "List Pending",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/reviews/{review_id}": {
+      "get": {
+        "operationId": "review_detail_api_reviews__review_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "title": "Review Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Detail",
         "tags": [
           "reviews"
         ]

@@ -23,7 +23,7 @@ function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
 function PairedShell() {
   const { client } = useSession();
   const editor = usePackageEditorContext();
-  const { area, reviewId, navigate } = useNavigation(editor.requestLeave);
+  const { area, reviewId, occurrenceId, packageFolder, navigate } = useNavigation(editor.requestLeave);
   const onboarding = useOnboarding();
   const opened = useRef(false);
   useEffect(() => {
@@ -50,7 +50,7 @@ function PairedShell() {
         {activity.data ? <ActivitySummary data={activity.data} /> : !activity.error && <p role="status">{tr.loading}</p>}
       </> : snapshot.data && <>
         {area === "dashboard" && <Dashboard data={snapshot.data} />}
-        {area === "package" && <PackageSummary data={snapshot.data} reviewId={reviewId} />}
+        {area === "package" && <PackageSummary data={snapshot.data} reviewId={reviewId} occurrenceId={occurrenceId} packageFolder={packageFolder} onRefresh={snapshot.retry} stale={snapshot.error} />}
         {area === "settings" && client && <SettingsSummary data={snapshot.data} client={client} />}
       </>}
     </main>

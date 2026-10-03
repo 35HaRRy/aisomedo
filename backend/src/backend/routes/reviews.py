@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
+from urllib.parse import urlencode
 
 from dojo import (
     Client,
@@ -44,6 +45,41 @@ def list_pending(
 
 class ApproveIn(BaseModel):
     version: int
+
+
+class ReviewOut(BaseModel):
+    id: int
+    occurrence_id: int
+    package_folder: str
+    revision_digest: str
+    caption: str | None
+    status: str
+    created_at: datetime
+    version: int
+
+
+class ReviewDetailOut(BaseModel):
+    review: ReviewOut
+    render_ready: bool
+    preview_url: str | None
+    next_regular_at: datetime | None
+
+
+@router.get("/{review_id}", response_model=ReviewDetailOut)
+def review_detail(
+    review_id: int,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict:
+    try:
+        detail = publishing.get_review_detail(review_id)
+    except ReviewNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    review = detail["review"]
+    detail["preview_url"] = ("/api/packages/active/render/preview?" + urlencode({
+        "expected_folder_name": review["package_folder"], "revision": review["revision_digest"],
+    })) if detail["render_ready"] else None
+    return detail
 
 
 @router.post("/{review_id}/approve", response_model=dict[str, object])
