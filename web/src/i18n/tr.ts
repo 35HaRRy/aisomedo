@@ -1,4 +1,9 @@
 export const tr = {
+  editor: {
+    leaveTitle: "Kaydedilmemiş bölümler var", leaveHelp: "Bölümleri kaydedin, değişiklikleri atın veya düzenlemeye devam edin.",
+    removeDraft: "Bu videonun bölümleri kaydedilmedi. At seçeneği yalnızca bu videonun taslağını siler; diğer taslaklar korunur.",
+    cancel: "Vazgeç", discard: "Değişiklikleri at", saveContinue: "Kaydet ve devam et",
+  },
   conflict: {
     title: "Dosya adı çakışmasını çöz", intro: "Bu adla mevcut medya var. Karar verene kadar yeni dosya gönderilmez.",
     target: "Değiştirilecek mevcut dosya", targetId: "Mevcut medya kimliği", preview: "Mevcut dosya önizlemesi",

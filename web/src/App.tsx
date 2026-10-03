@@ -13,6 +13,7 @@ import { useLiveData } from "./useLiveData";
 import { OnboardingProvider, useOnboarding } from "./onboarding/useOnboarding";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
 import { UploadProvider } from "./uploads/UploadProvider";
+import { PackageEditorProvider, usePackageEditorContext } from "./packages/PackageEditorProvider";
 
 function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
   return <div role="alert" className="notice"><p>{stale ? tr.stale : tr.loadError}</p>
@@ -21,7 +22,8 @@ function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
 
 function PairedShell() {
   const { client } = useSession();
-  const { area, reviewId } = useNavigation();
+  const editor = usePackageEditorContext();
+  const { area, reviewId, navigate } = useNavigation(editor.requestLeave);
   const onboarding = useOnboarding();
   const opened = useRef(false);
   useEffect(() => {
@@ -34,8 +36,8 @@ function PairedShell() {
   const areas: Exclude<Area, "onboarding">[] = ["dashboard", "package", "activity", "settings"];
   useEffect(() => { document.title = `${area === "onboarding" ? "Kurulum" : tr[area]} · ${tr.app}`; }, [area]);
   return <UploadProvider onPackageChanged={snapshot.retry}><div className="app-shell">
-    <aside className="sidebar"><a className="brand" href="#/dashboard">{tr.app}</a>
-      <nav aria-label={tr.navigation}>{areas.map(item => <a key={item} href={`#/${item}`} aria-current={area === item ? "page" : undefined}>{tr[item]}</a>)}</nav>
+    <aside className="sidebar"><a className="brand" href="#/dashboard" onClick={event => { event.preventDefault(); void navigate("#/dashboard"); }}>{tr.app}</a>
+      <nav aria-label={tr.navigation}>{areas.map(item => <a key={item} href={`#/${item}`} onClick={event => { event.preventDefault(); void navigate(`#/${item}`); }} aria-current={area === item ? "page" : undefined}>{tr[item]}</a>)}</nav>
       <div className="sidebar-foot"><span>{tr.client}</span><strong>{client?.name}</strong></div>
     </aside>
     <main id="content" className="main-content" tabIndex={-1}>
@@ -57,7 +59,7 @@ function PairedShell() {
 
 function SessionGate() {
   const session = useSession();
-  if (session.status === "paired") return <OnboardingProvider key={session.generation}><PairedShell /></OnboardingProvider>;
+  if (session.status === "paired") return <OnboardingProvider key={session.generation}><PackageEditorProvider><PairedShell /></PackageEditorProvider></OnboardingProvider>;
   if (session.status === "unpaired") return <PairingForm />;
   return <main className="session-loading" id="content" tabIndex={-1}><h1>{tr.app}</h1>
     {session.status === "error" ? <ErrorNotice stale={false} retry={() => void session.restore()} /> : <p role="status">{tr.loading}</p>}
