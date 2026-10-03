@@ -85,6 +85,10 @@ before integration is offered.
 
 ## Independent review and correction pass
 
+Detailed future investigation notes for the 11 execution decisions and deferred
+Minor: [issue #29 follow-up notes](issue-29-follow-up-notes.md). These are pending
+investigations, not completed fixes or an approved new implementation plan.
+
 Read-only reviewer inspected `1fc600d..31fbd38` and reported four Important
 findings, no Critical, and one Minor. All four Important findings were reproduced
 as failing tests before production changes, then corrected in one pass:

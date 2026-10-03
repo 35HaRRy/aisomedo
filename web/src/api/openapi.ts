@@ -41,6 +41,7 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/active",
   "/api/packages/active/branding",
   "/api/packages/active/caption",
+  "/api/packages/active/clear",
   "/api/packages/active/complete",
   "/api/packages/active/editor",
   "/api/packages/active/media/{media_id}/preview",
@@ -53,6 +54,8 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/active/publication/recover",
   "/api/packages/active/publication/retry",
   "/api/packages/active/publish",
+  "/api/packages/active/render",
+  "/api/packages/active/render/preview",
   "/api/packages/active/selections",
   "/api/packages/active/trims",
   "/api/packages/recovered",
@@ -99,7 +102,10 @@ export type ActiveEditorOut = {
   "media": Array<EditorMediaOut>;
   "montage": MontageOut;
   "package": PackageOut;
+  "render_preview_url"?: string | null;
+  "render_revision"?: string | null;
   "render_stale": boolean;
+  "render_status"?: "missing" | "stale" | "queued" | "processing" | "ready" | "failed";
 };
 
 export type ActivityEventOut = {
@@ -142,6 +148,17 @@ export type BrandingPatchIn = {
   "logo_asset"?: string | null;
   "outro_asset"?: string | null;
   "outro_duration"?: number | null;
+};
+
+export type ClearPackageIn = {
+  "confirmed": boolean;
+  "expected_folder_name": string;
+  "expected_package_id": number;
+};
+
+export type ClearPackageOut = {
+  "folder_name": string;
+  "upload_ids": Array<string>;
 };
 
 export type ClientOut = {
@@ -305,6 +322,16 @@ export type ProcessedMetadataOut = {
   "size_bytes"?: number | null;
 };
 
+export type RenderIn = {
+  "expected_folder_name": string;
+  "retry"?: boolean;
+};
+
+export type RenderOut = {
+  "render_revision": string;
+  "stale": boolean;
+};
+
 export type ResolveConflictIn = {
   "apply_to_all"?: boolean;
   "confirmed_overwrite"?: boolean;
@@ -318,6 +345,7 @@ export type SelectIn = {
 
 export type SelectionIn = {
   "expected_folder_name": string;
+  "photo_durations"?: Record<string, number> | null;
   "selections": Record<string, Array<VideoRangeOut>>;
 };
 
@@ -358,10 +386,12 @@ export type StatusOut = {
 export type UploadInitIn = {
   "content_type": string;
   "declared_size_bytes": number;
+  "expected_package_id"?: number | null;
   "filename": string;
 };
 
 export type UploadLimitsOut = {
+  "active_package_id"?: number | null;
   "max_file_bytes": number;
   "max_package_bytes": number;
 };
@@ -370,6 +400,7 @@ export type UploadOut = {
   "conflicts"?: Array<Record<string, unknown>>;
   "declared_size_bytes": number;
   "error_reason"?: string | null;
+  "package_id"?: number | null;
   "received_bytes": number;
   "received_ranges": Array<Array<number>>;
   "status": string;

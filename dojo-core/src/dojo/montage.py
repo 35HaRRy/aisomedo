@@ -48,7 +48,7 @@ def validate_ranges(ranges: list[VideoRange], duration: float) -> list[VideoRang
 
 def effective_duration(entry: dict, ranges: list[VideoRange] | None, photo_seconds: float) -> float:
     if not str(entry.get("content_type", "")).startswith("video/"):
-        return photo_seconds
+        return float(entry.get("photo_duration_seconds", photo_seconds))
     duration = source_duration(entry)
     if duration is None:
         return 0.0

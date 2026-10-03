@@ -33,9 +33,13 @@ from pydantic import BaseModel
 from backend.deps import get_current_client
 from backend.routes.package_models import (
     ActiveEditorOut,
+    ClearPackageIn,
+    ClearPackageOut,
     CompletedPackageOut,
     MontageOut,
     PackageOut,
+    RenderIn,
+    RenderOut,
     SelectionIn,
 )
 
@@ -165,6 +169,11 @@ def get_editor(
     except (NoActivePackage, MediaNotFound) as exc:
         _map_mutation_error(exc)
     folder = snapshot["package"]["folder_name"]
+    snapshot["render_preview_url"] = (
+        "/api/packages/active/render/preview?" + urlencode({
+            "expected_folder_name": folder, "revision": snapshot["render_revision"],
+        }) if snapshot["render_status"] == "ready" else None
+    )
     for media in snapshot["media"]:
         url = (f"/api/packages/active/media/{quote(media['media_id'], safe='')}/preview?"
                + urlencode({"expected_folder_name": folder})) if media["preview_ref"] else None
@@ -186,10 +195,62 @@ def set_selections(
         return publishing.set_selections(
             body.model_dump()["selections"], requester=str(client.id),
             expected_folder_name=body.expected_folder_name,
+            photo_durations=body.photo_durations,
         ).to_dict()
     except (NoActivePackage, MediaNotFound, PackageCompleted, PackageChanged,
             MontageTrimInvalid, MontageDurationExceeded) as exc:
         _map_mutation_error(exc)
+
+
+@router.post("/active/render", response_model=RenderOut)
+def render_active(
+    body: RenderIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict:
+    try:
+        return publishing.render_preview(
+            expected_folder_name=body.expected_folder_name, retry=body.retry,
+        )
+    except LogoNotConfigured as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (NoActivePackage, PackageChanged, MontageDurationExceeded, MontageTrimInvalid) as exc:
+        _map_mutation_error(exc)
+
+
+@router.get("/active/render/preview")
+def render_file(
+    expected_folder_name: str,
+    revision: str | None = None,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> FileResponse:
+    try:
+        artifact = publishing.get_render_preview(
+            expected_folder_name=expected_folder_name, expected_revision=revision,
+        )
+        return _file(artifact, download=False)
+    except (NoActivePackage, MediaNotFound, PackageChanged, ValueError) as exc:
+        _map_mutation_error(exc)
+
+
+@router.post("/active/clear", response_model=ClearPackageOut)
+def clear_package(
+    body: ClearPackageIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict:
+    if not body.confirmed:
+        raise HTTPException(status_code=409, detail="explicit confirmation required")
+    try:
+        return publishing.clear_active_package(expected_folder_name=body.expected_folder_name,
+                                               expected_package_id=body.expected_package_id)
+    except (NoActivePackage, PackageChanged, ValueError) as exc:
+        _map_mutation_error(exc)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail="package cleanup failed; refresh before retrying",
+        ) from exc
 
 
 @router.get("/active/media/{media_id}/preview")

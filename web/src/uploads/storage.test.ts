@@ -40,6 +40,15 @@ it("deduplicates row and upload IDs", () => {
   expect(readUploads({ getItem: () => raw }, 1).records).toEqual([first]);
 });
 
+it("does not restore or persist finalized uploads while keeping unfinished metadata", () => {
+  const finalized = { ...saved(), status: { ...saved().status, status: "finalized" } };
+  const unfinished = { ...saved(), id: "row-2", status: { ...saved().status, upload_id: "upload-2" } };
+  const raw = JSON.stringify({ version: 1, records: [finalized, unfinished] });
+  expect(readUploads({ getItem: () => raw }, 1).records).toEqual([unfinished]);
+  expect(writeUploads(localStorage, 1, [finalized, unfinished])).toBe(true);
+  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records).toEqual([unfinished]);
+});
+
 it("handles unavailable storage without throwing", () => {
   expect(readUploads({ getItem: () => { throw Error("blocked"); } }, 1)).toEqual({ available: false, records: [] });
   expect(writeUploads({ setItem: () => { throw Error("quota"); } }, 1, [saved()])).toBe(false);

@@ -6,6 +6,7 @@ from dojo import (
     Client,
     DojoPublishing,
     MediaNotFound,
+    PackageChanged,
     PackageLimitExceeded,
     UploadChecksumMismatch,
     UploadConflict,
@@ -19,6 +20,7 @@ from dojo import (
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from backend.deps import get_current_client
 
@@ -34,6 +36,7 @@ limits_router = APIRouter(prefix="/api/media", tags=["media"])
 class UploadLimitsOut(BaseModel):
     max_file_bytes: int
     max_package_bytes: int
+    active_package_id: int | None = None
 
 
 @limits_router.get("/upload-limits", response_model=UploadLimitsOut)
@@ -42,8 +45,10 @@ def upload_limits(
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> UploadLimitsOut:
     limits = publishing.get_upload_limits()
+    package = publishing.get_active_package()
     return UploadLimitsOut(
-        max_file_bytes=limits.max_file_bytes, max_package_bytes=limits.max_package_bytes
+        max_file_bytes=limits.max_file_bytes, max_package_bytes=limits.max_package_bytes,
+        active_package_id=package.id if package else 0,
     )
 
 
@@ -51,6 +56,7 @@ class UploadInitIn(BaseModel):
     filename: str
     content_type: str
     declared_size_bytes: int
+    expected_package_id: int | None = None
 
 
 class UploadOut(BaseModel):
@@ -61,6 +67,7 @@ class UploadOut(BaseModel):
     received_ranges: list[list[int]]
     error_reason: str | None = None
     conflicts: list[dict[str, object]] = []
+    package_id: int | None = None
 
 
 def _out(status: Any) -> UploadOut:
@@ -75,13 +82,14 @@ def init_upload(
 ) -> UploadOut:
     try:
         status = publishing.start_upload(
-            body.filename, body.content_type, body.declared_size_bytes, requester=str(client.id)
+            body.filename, body.content_type, body.declared_size_bytes, requester=str(client.id),
+            expected_package_id=body.expected_package_id,
         )
     except UploadInvalidFilename as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UploadTooLarge as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
-    except PackageLimitExceeded as exc:
+    except (PackageLimitExceeded, PackageChanged) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _out(status)
 
@@ -100,8 +108,8 @@ async def append_range(
     if length > 8 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="chunk exceeds 8 MiB limit")
     try:
-        status = publishing.append_upload_range(
-            upload_id, offset, length, checksum_sha256, body
+        status = await run_in_threadpool(
+            publishing.append_upload_range, upload_id, offset, length, checksum_sha256, body,
         )
     except UploadNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

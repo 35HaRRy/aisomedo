@@ -17,6 +17,42 @@ async function fixture(storage: Storage | null = localStorage, conflicts = false
 }
 const file = (content = "abc", time = 1) => new File([content], "dojo.jpg", { type: "image/jpeg", lastModified: time });
 
+it("package clearing pauses in-flight and queued files; reset cannot resume deleted uploads", async () => {
+  const f = await fixture(), pending = deferred<UploadOut>();
+  f.transport.range.mockImplementationOnce(() => pending.promise);
+  const work = f.controller.add([file(), new File(["next"], "second.jpg")]);
+  await vi.waitFor(() => expect(f.controller.getSnapshot().rows[0].phase).toBe("uploading"));
+  f.controller.pauseAll();
+  await work;
+  expect(f.controller.getSnapshot().rows.map(row => row.phase)).toEqual(["paused", "paused"]);
+  const old = f.controller.getSnapshot().rows[0];
+  f.controller.reset();
+  pending.resolve({ ...f.records.get(old.status!.upload_id)!, status: "queued" });
+  await Promise.resolve();
+  expect(f.controller.getSnapshot().rows).toEqual([]);
+  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records).toEqual([]);
+  await f.controller.resume(old.id);
+  expect(f.controller.getSnapshot().rows).toEqual([]);
+  await f.controller.add([file()]);
+  expect(f.controller.getSnapshot().rows[0].status?.upload_id).toBe("upload-2");
+});
+
+it("upload initialization carries server package identity; reset drops stale identity", async () => {
+  const f = await fixture();
+  f.transport.limits.mockResolvedValueOnce({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30, active_package_id: 0 });
+  await f.controller.initialize(new AbortController().signal);
+  f.transport.start.mockImplementationOnce(async body => ({ upload_id: "new", received_bytes: 0,
+    received_ranges: [], declared_size_bytes: body.declared_size_bytes, status: "receiving", package_id: 5 }));
+  f.transport.range.mockRejectedValueOnce(new ApiError(409));
+  await f.controller.add([file()]);
+  expect(f.transport.start.mock.calls[0][0].expected_package_id).toBe(0);
+  await f.controller.add([new File(["next"], "next.jpg")]);
+  expect(f.transport.start.mock.calls[1][0].expected_package_id).toBe(5);
+  f.controller.reset();
+  await f.controller.add([file()]);
+  expect(f.transport.start.mock.calls[2][0].expected_package_id).toBe(0);
+});
+
 it("oversize or empty has no start or hash", async () => {
   const digest = installCrypto();
   const f = await fixture();
@@ -94,7 +130,7 @@ it("reload requires matching content and resumes same ID", async () => {
   expect(f.transport.range.mock.calls.map(call => call[0])).toEqual(["upload-1", "upload-1"]);
 });
 
-it("queued reload polls without file and terminal state cannot regress", async () => {
+it("finalized polling removes local and persisted rows without changing server media", async () => {
   const f = await fixture();
   await f.controller.add([file()]);
   f.controller.dispose();
@@ -103,13 +139,54 @@ it("queued reload polls without file and terminal state cannot regress", async (
   const status = f.records.get("upload-1")!;
   f.records.set("upload-1", { ...status, status: "finalized" });
   await next.refresh(new AbortController().signal);
-  expect(next.getSnapshot().rows[0].phase).toBe("finalized");
+  expect(next.getSnapshot().rows).toEqual([]);
+  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records).toEqual([]);
+  expect(f.records.get("upload-1")?.status).toBe("finalized");
+  const calls = f.transport.status.mock.calls.length;
   f.records.set("upload-1", { ...status, status: "receiving" });
   await next.refresh(new AbortController().signal);
-  expect(next.getSnapshot().rows[0].phase).toBe("finalized");
+  expect(next.getSnapshot().rows).toEqual([]);
+  expect(f.transport.status).toHaveBeenCalledTimes(calls);
   expect(f.onPackageChanged).toHaveBeenCalledTimes(2);
-  next.dismiss(next.getSnapshot().rows[0].id);
-  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records).toEqual([]);
+});
+
+it("restore prunes legacy finalized rows before a limits failure and retains unfinished rows", async () => {
+  const f = await fixture();
+  await f.controller.add([file(), new File(["next"], "second.jpg")]);
+  f.controller.dispose();
+  const saved = JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!);
+  saved.records[0].status.status = "finalized";
+  localStorage.setItem("aisomedo.uploads.v1:1", JSON.stringify(saved));
+  f.transport.limits.mockRejectedValueOnce(new ApiError(0));
+  const next = createUploadController(f.options);
+  await next.initialize(new AbortController().signal);
+  expect(next.getSnapshot().rows.map(row => row.status?.upload_id)).toEqual(["upload-2"]);
+  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records.map((row: { status: UploadOut }) => row.status.upload_id)).toEqual(["upload-2"]);
+  expect(next.getSnapshot().limitsError).toBe(true);
+});
+
+it("restore reconciliation removes finalized rows without skipping following uploads", async () => {
+  const f = await fixture();
+  await f.controller.add([file(), new File(["next"], "second.jpg")]);
+  f.controller.dispose();
+  f.records.set("upload-1", { ...f.records.get("upload-1")!, status: "finalized" });
+  const next = createUploadController(f.options);
+  await next.initialize(new AbortController().signal);
+  expect(next.getSnapshot().rows.map(row => row.status?.upload_id)).toEqual(["upload-2"]);
+  expect(next.getSnapshot().rows[0].phase).toBe("queued");
+  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records).toHaveLength(1);
+});
+
+it("finalized transfer response releases queue slot and retained file before next upload", async () => {
+  const f = await fixture();
+  f.transport.complete.mockImplementationOnce(async id => {
+    const value = { ...f.records.get(id)!, status: "finalized" };
+    f.records.set(id, value); return value;
+  });
+  await f.controller.add([file(), new File(["next"], "second.jpg")]);
+  expect(f.controller.getSnapshot().rows.map(row => row.status?.upload_id)).toEqual(["upload-2"]);
+  expect(f.controller.getSnapshot().rows[0].phase).toBe("queued");
+  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records).toHaveLength(1);
 });
 
 it("worker failure retains diagnostic and new attempt is explicit", async () => {
@@ -418,7 +495,7 @@ it("finalized state cannot regress during limits reinitialization", async () => 
   await f.controller.refresh(new AbortController().signal);
   f.records.set("upload-1", { ...status, status: "receiving" });
   await f.controller.initialize(new AbortController().signal);
-  expect(f.controller.getSnapshot().rows[0].phase).toBe("finalized");
+  expect(f.controller.getSnapshot().rows).toEqual([]);
 });
 
 it("explicit failed retry without retained file accepts new media reselection", async () => {

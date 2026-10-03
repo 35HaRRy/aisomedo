@@ -52,9 +52,44 @@
           "package": {
             "$ref": "#/components/schemas/PackageOut"
           },
+          "render_preview_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Preview Url"
+          },
+          "render_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Revision"
+          },
           "render_stale": {
             "title": "Render Stale",
             "type": "boolean"
+          },
+          "render_status": {
+            "default": "missing",
+            "enum": [
+              "missing",
+              "stale",
+              "queued",
+              "processing",
+              "ready",
+              "failed"
+            ],
+            "title": "Render Status",
+            "type": "string"
           }
         },
         "required": [
@@ -443,6 +478,50 @@
           "caption"
         ],
         "title": "CaptionIn",
+        "type": "object"
+      },
+      "ClearPackageIn": {
+        "properties": {
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "expected_package_id": {
+            "title": "Expected Package Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_folder_name",
+          "expected_package_id",
+          "confirmed"
+        ],
+        "title": "ClearPackageIn",
+        "type": "object"
+      },
+      "ClearPackageOut": {
+        "properties": {
+          "folder_name": {
+            "title": "Folder Name",
+            "type": "string"
+          },
+          "upload_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Upload Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "folder_name",
+          "upload_ids"
+        ],
+        "title": "ClearPackageOut",
         "type": "object"
       },
       "ClientOut": {
@@ -1617,6 +1696,42 @@
         "title": "ReminderPolicyOut",
         "type": "object"
       },
+      "RenderIn": {
+        "properties": {
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "retry": {
+            "default": false,
+            "title": "Retry",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected_folder_name"
+        ],
+        "title": "RenderIn",
+        "type": "object"
+      },
+      "RenderOut": {
+        "properties": {
+          "render_revision": {
+            "title": "Render Revision",
+            "type": "string"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stale",
+          "render_revision"
+        ],
+        "title": "RenderOut",
+        "type": "object"
+      },
       "RescheduleIn": {
         "properties": {
           "new_due_at": {
@@ -1688,6 +1803,21 @@
           "expected_folder_name": {
             "title": "Expected Folder Name",
             "type": "string"
+          },
+          "photo_durations": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "minimum": 0.04,
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Photo Durations"
           },
           "selections": {
             "additionalProperties": {
@@ -1944,6 +2074,17 @@
             "title": "Declared Size Bytes",
             "type": "integer"
           },
+          "expected_package_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Package Id"
+          },
           "filename": {
             "title": "Filename",
             "type": "string"
@@ -1959,6 +2100,17 @@
       },
       "UploadLimitsOut": {
         "properties": {
+          "active_package_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Package Id"
+          },
           "max_file_bytes": {
             "title": "Max File Bytes",
             "type": "integer"
@@ -2000,6 +2152,17 @@
               }
             ],
             "title": "Error Reason"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
           },
           "received_bytes": {
             "title": "Received Bytes",
@@ -3044,6 +3207,47 @@
         ]
       }
     },
+    "/api/packages/active/clear": {
+      "post": {
+        "operationId": "clear_package_api_packages_active_clear_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClearPackageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClearPackageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Package",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/packages/active/complete": {
       "post": {
         "operationId": "complete_active_api_packages_active_complete_post",
@@ -3451,6 +3655,103 @@
           }
         },
         "summary": "Publish Active",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/render": {
+      "post": {
+        "operationId": "render_active_api_packages_active_render_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Render Active",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/render/preview": {
+      "get": {
+        "operationId": "render_file_api_packages_active_render_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Render File",
         "tags": [
           "packages"
         ]

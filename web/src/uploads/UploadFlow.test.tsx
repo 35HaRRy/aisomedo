@@ -113,7 +113,7 @@ it("actual API oversize rejects before initiation and session loss returns pairi
   expect(screen.queryByText("dojo.jpg")).not.toBeInTheDocument();
 });
 
-it("actual API explicit retry reconciles lost response then waits for finalized", async () => {
+it("actual API explicit retry reconciles lost response then automatically removes finalized upload", async () => {
   const f = fixture({ loseFirst: true });
   render(<App />);
   await select(new File([new Uint8Array(2097155)], "dojo.mp4", { type: "video/mp4" }));
@@ -127,7 +127,8 @@ it("actual API explicit retry reconciles lost response then waits for finalized"
   expect(screen.queryByText("Pakete eklendi")).not.toBeInTheDocument();
   f.set({ ...f.current(), status: "finalized" });
   await act(async () => window.dispatchEvent(new Event("focus")));
-  await screen.findByText("Pakete eklendi");
+  await waitFor(() => expect(screen.queryByRole("progressbar", { name: "dojo.mp4" })).not.toBeInTheDocument());
+  expect(JSON.parse(localStorage.getItem("aisomedo.uploads.v1:1")!).records).toEqual([]);
 });
 
 it("completed browsing leaves active upload File and accepted offsets intact", async () => {

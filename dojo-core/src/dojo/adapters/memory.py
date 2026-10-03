@@ -45,6 +45,7 @@ from dojo.monitoring_models import (
     retry_delay_seconds,
     token_fingerprint,
 )
+from dojo.package_cleanup import owns_record
 
 
 @dataclass
@@ -103,7 +104,43 @@ class InMemoryStore:
         self._failure_generations: dict[int, int] = {}
         self._monitoring_lock = RLock()
         self._creation_lock = RLock()
+        self._package_lock = RLock()
         self._emission_active: ContextVar[bool] = ContextVar("emission_active", default=False)
+
+    @contextmanager
+    def package_lock(self, *, wait: bool = True) -> Iterator[bool]:
+        acquired = self._package_lock.acquire(blocking=wait)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                self._package_lock.release()
+
+    def package_work(self, package: Package) -> tuple[list[Upload], list[Job]]:
+        uploads = [u for u in self._uploads if u.package_id == package.id]
+        pks = {u.id for u in uploads}
+        jobs = [j for j in self._jobs if j.upload_id in pks
+                or j.payload.get("package") == package.folder_name]
+        return uploads, jobs
+
+    def delete_package_records(self, package: Package, media_ids: set[str]) -> None:
+        uploads, jobs = self.package_work(package)
+        upload_ids, job_ids = {u.upload_id for u in uploads}, {j.job_id for j in jobs}
+        review_ids = {r.id for r in self._reviews if r.package_folder == package.folder_name}
+        self._events = [e for e in self._events if not owns_record(
+            e.details, package.folder_name, upload_ids, job_ids, media_ids, review_ids,
+        )]
+        self._reviews = [r for r in self._reviews if r.id not in review_ids]
+        alert_ids = {a.alert_id for a in self._alerts if a.data.get("job_id") in job_ids}
+        self._alerts = [a for a in self._alerts if a.alert_id not in alert_ids]
+        self._deliveries = [d for d in self._deliveries if d.alert_id not in alert_ids]
+        for alert_id in alert_ids:
+            self._alert_recipients_at.pop(alert_id, None)
+        for job in jobs:
+            self._failure_generations.pop(job.id, None)
+        self._jobs = [j for j in self._jobs if j.job_id not in job_ids]
+        self._uploads = [u for u in self._uploads if u.upload_id not in upload_ids]
+        self._packages = [p for p in self._packages if p.id != package.id]
 
     @contextmanager
     def emission_transaction(self) -> Iterator[None]:

@@ -24,10 +24,10 @@ export function addRangeAtPlayhead(ranges: VideoRange[], playhead: number, durat
   if (end - playhead + 1e-9 < FRAME_SECONDS) return null;
   return [...ranges, { start: playhead, end }].sort((a, b) => a.start - b.start);
 }
-export function proposedDuration(snapshot: ActiveEditorOut, draft: SelectionMap): number | null {
+export function proposedDuration(snapshot: ActiveEditorOut, draft: SelectionMap, photos: Record<string, number> = {}): number | null {
   let total = snapshot.montage.card_duration;
   for (const media of snapshot.media.filter(item => item.status === "finalized")) {
-    if (!media.is_video) { if (media.effective_duration === null) return null; total += media.effective_duration; continue; }
+    if (!media.is_video) { const seconds = photos[media.media_id] ?? media.effective_duration; if (seconds === null || !Number.isFinite(seconds) || seconds < FRAME_SECONDS) return null; total += seconds; continue; }
     const duration = media.source_duration;
     const ranges = draft[media.media_id] ?? [];
     if (duration === null || validateRanges(ranges, duration)) return null;

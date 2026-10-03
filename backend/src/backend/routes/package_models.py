@@ -30,6 +30,38 @@ class VideoRangeOut(BaseModel):
 class SelectionIn(BaseModel):
     expected_folder_name: str
     selections: dict[str, list[VideoRangeOut]]
+    photo_durations: (
+        dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False, ge=0.04)]] | None
+    ) = None
+
+    @field_validator("photo_durations", mode="before")
+    @classmethod
+    def finite_photo_durations(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return {key: None if isinstance(seconds, float) and not isfinite(seconds) else seconds
+                    for key, seconds in value.items()}
+        return value
+
+
+class RenderIn(BaseModel):
+    expected_folder_name: str
+    retry: bool = False
+
+
+class RenderOut(BaseModel):
+    stale: bool
+    render_revision: str
+
+
+class ClearPackageIn(BaseModel):
+    expected_folder_name: str
+    expected_package_id: int
+    confirmed: Annotated[bool, Field(strict=True)]
+
+
+class ClearPackageOut(BaseModel):
+    folder_name: str
+    upload_ids: list[str]
 
 
 class MontageClipOut(BaseModel):
@@ -99,6 +131,11 @@ class ActiveEditorOut(BaseModel):
     render_stale: bool
     media: list[EditorMediaOut]
     montage: MontageOut
+    render_status: Literal[
+        "missing", "stale", "queued", "processing", "ready", "failed",
+    ] = "missing"
+    render_revision: str | None = None
+    render_preview_url: str | None = None
 
 
 class CompletedPackageOut(BaseModel):

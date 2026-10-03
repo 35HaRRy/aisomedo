@@ -113,6 +113,7 @@ def main() -> None:
         "PlanIn", "PlanOut", "StatusOut", "StartIn", "StartOut", "AttemptOut", "SelectIn",
         "UploadLimitsOut", "UploadInitIn", "UploadOut", "ResolveConflictIn",
         "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "MontageOut",
+        "ClearPackageIn", "ClearPackageOut", "RenderIn", "RenderOut",
     ]))
     WEB_TARGET.parent.mkdir(parents=True, exist_ok=True)
     WEB_TARGET.write_text("\n".join(ts_lines), encoding="utf-8")

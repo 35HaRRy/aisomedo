@@ -12,7 +12,7 @@ function valid(value: unknown): value is SavedUpload {
     && typeof row.lastModified === "number" && Number.isFinite(row.lastModified)
     && !!row.identity && row.identity.chunkBytes === CHUNK_BYTES && digest(row.identity.fingerprint)
     && Array.isArray(row.identity.chunkHashes) && row.identity.chunkHashes.length === Math.ceil(row.size! / CHUNK_BYTES)
-    && row.identity.chunkHashes.every(digest) && (row.status === null || isUploadStatus(row.status, row.size!))
+    && row.identity.chunkHashes.every(digest) && (row.status === null || (isUploadStatus(row.status, row.size!) && row.status.status !== "finalized"))
     && (row.skipped === undefined || typeof row.skipped === "boolean")
     && (row.pendingDecision === undefined || ["keep_both", "keep_selected", "keep_target"].includes(row.pendingDecision));
 }

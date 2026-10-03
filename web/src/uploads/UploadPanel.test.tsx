@@ -72,7 +72,7 @@ it("reload offers original-file reselection and rejects wrong content inline", a
   expect(server.transport.range).toHaveBeenCalledTimes(1);
 });
 
-it("failed diagnostics render as text, new attempt is explicit, terminal dismiss works", async () => {
+it("failed diagnostics render as text and retain explicit retry without manual dismiss", async () => {
   const server = setup();
   server.transport.complete.mockImplementation(async id => {
     const value = { ...server.records.get(id)!, status: "failed", error_reason: "<script>bad</script>" };
@@ -84,8 +84,8 @@ it("failed diagnostics render as text, new attempt is explicit, terminal dismiss
   await screen.findByText("<script>bad</script>");
   expect(document.querySelector("script")).toBeNull();
   expect(screen.getByRole("button", { name: "Yeni yükleme başlat" })).toBeEnabled();
-  fireEvent.click(screen.getByRole("button", { name: "Listeden kaldır" }));
-  expect(screen.queryByText("dojo.jpg")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Listeden kaldır" })).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "dojo.jpg" })).toBeInTheDocument();
 });
 
 it("conflict blocks transfer without overwrite or automatic rename", async () => {
@@ -95,6 +95,7 @@ it("conflict blocks transfer without overwrite or automatic rename", async () =>
   await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
   select();
   await screen.findByText("Dosya adı çakışıyor");
+  expect(screen.queryByRole("button", { name: "Listeden kaldır" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /üzerine yaz/i })).not.toBeInTheDocument();
   expect(server.transport.range).not.toHaveBeenCalled();
 });
@@ -156,8 +157,8 @@ it("preview failure blocks replacement, offers retry, but allows keeping existin
   fireEvent.click(screen.getByRole("button", { name: "Kararı uygula" }));
   await screen.findByText("Mevcut dosya korundu; yükleme atlandı");
   expect(server.transport.range).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Listeden kaldır" }));
-  expect(screen.queryByText("dojo.jpg")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Listeden kaldır" })).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "dojo.jpg" })).toBeInTheDocument();
 });
 
 it("shows processed MP4 player without autoplay for video conflict", async () => {

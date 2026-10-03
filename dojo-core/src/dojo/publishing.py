@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
+from functools import wraps
 from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -118,6 +119,15 @@ STALE_TTL = timedelta(hours=24)
 
 DEFAULT_MAX_MONTAGE_SECONDS = 90.0
 DEFAULT_PHOTO_SECONDS = 3.0
+
+def _package_operation[**P, T](method: Callable[P, T]) -> Callable[P, T]:
+    """Serialize file/record lifecycle writes across API and worker processes."""
+    @wraps(method)
+    def locked(*args: P.args, **kwargs: P.kwargs) -> T:
+        seam = cast("DojoPublishing", args[0])
+        with seam._packages.package_lock():
+            return method(*args, **kwargs)
+    return locked
 
 REMINDER_INTERVAL_KEY = "reminders.interval_minutes"
 REMINDER_START_KEY = "reminders.delivery_start"
@@ -232,6 +242,7 @@ class DojoPublishing:
         self._media = media
         self._renderer = renderer
 
+    @_package_operation
     def ensure_active_package(self, *, requester: str | None = None) -> Package:
         """Create an active Dojo Paylaşım Paketi; raise if one already exists."""
         existing = self._packages.get_active()
@@ -239,6 +250,7 @@ class DojoPublishing:
             raise ActivePackageExists(f"active package {existing.folder_name} already exists")
         return self._create_active_package(requester=requester)
 
+    @_package_operation
     def get_or_create_active_package(self, *, requester: str | None = None) -> Package:
         """Return the active package, creating it when none exists."""
         existing = self._packages.get_active()
@@ -277,6 +289,7 @@ class DojoPublishing:
         )
         return package
 
+    @_package_operation
     def complete_active_package(self, *, requester: str | None = None) -> Package:
         """Complete the active package and create the next empty active package."""
         existing = self._packages.get_active()
@@ -310,6 +323,82 @@ class DojoPublishing:
     def get_active_package(self) -> Package | None:
         """Return the current active package, if any."""
         return self._packages.get_active()
+
+    @_package_operation
+    def clear_active_package(
+        self, *, expected_folder_name: str, expected_package_id: int | None = None,
+    ) -> dict:
+        """Delete this active package only, including staged work and owned records."""
+        root = self.media_root.resolve()
+        if expected_package_id is not None:
+            journal = self.media_root / f".clearing-{expected_package_id}.json"
+            trash = self.media_root / f".clearing-{expected_package_id}"
+            if journal.is_symlink() or trash.is_symlink():
+                raise ValueError("cleanup storage escapes media root")
+            if journal.is_file():
+                pending = _read_json(journal)
+                if pending["result"]["folder_name"] != expected_folder_name:
+                    raise PackageChanged("cleanup package identity changed")
+                stored = self._packages.get_by_folder(expected_folder_name)
+                if stored is None or stored.id != expected_package_id:
+                    # DB deletion succeeded. A retry must purge only the old staged files.
+                    if trash.exists():
+                        shutil.rmtree(trash)
+                    journal.unlink()
+                    return pending["result"]
+                # Process stopped before committing deletion. Restore staged directories first.
+                for index, relative in enumerate(pending["sources"]):
+                    source = self.media_root / relative
+                    if source.is_symlink() or not source.resolve().is_relative_to(root):
+                        raise ValueError("cleanup storage escapes media root")
+                    target = trash / str(index)
+                    if target.exists():
+                        target.rename(source)
+                if trash.exists():
+                    trash.rmdir()
+                journal.unlink()
+        package = self._require_editor_package(expected_folder_name)
+        if expected_package_id is not None and package.id != expected_package_id:
+            raise PackageChanged("active package changed; refresh before clearing")
+        uploads, jobs = self._packages.package_work(package)
+        manifest = self._load_manifest(package)
+        sources = [self.media_root / package.folder_name]
+        sources.extend(self.media_root / "tmp" / u.upload_id for u in uploads)
+        sources.extend(self.media_root / "tmp" / f"render-{j.job_id}" for j in jobs)
+        for source in sources:
+            resolved = source.resolve()
+            if source.is_symlink() or not resolved.is_relative_to(root) or resolved == root:
+                raise ValueError("package storage escapes media root")
+        # Stage first: a database failure restores every directory intact.
+        result = {"folder_name": package.folder_name, "upload_ids": [u.upload_id for u in uploads]}
+        trash = self.media_root / f".clearing-{package.id}"
+        journal = self.media_root / f".clearing-{package.id}.json"
+        if trash.exists():
+            trash.rmdir()  # Only an empty pre-journal directory can be safely reused.
+        trash.mkdir()
+        moved: list[tuple[Path, Path]] = []
+        try:
+            journal.write_text(json.dumps({"result": result, "sources": [
+                str(source.relative_to(self.media_root)) for source in sources
+            ]}), encoding="utf-8")
+            for index, source in enumerate(sources):
+                if source.exists():
+                    target = trash / str(index)
+                    source.rename(target)
+                    moved.append((source, target))
+            self._packages.delete_package_records(
+                package, {e["media_id"] for e in manifest.get("media", [])},
+            )
+        except Exception:
+            for source, target in reversed(moved):
+                target.rename(source)
+            trash.rmdir()
+            journal.unlink(missing_ok=True)
+            raise
+        # Never hide filesystem errors or claim that a partial purge succeeded.
+        shutil.rmtree(trash)
+        journal.unlink()
+        return result
 
     def get_dashboard_summary(self) -> PublishingDashboard:
         """Observe publishing state without creating work or package folders."""
@@ -381,7 +470,7 @@ class DojoPublishing:
         for entry in self.media_root.iterdir():
             if not entry.is_dir():
                 continue
-            if entry.name == "tmp":
+            if entry.name in ("tmp", "branding") or entry.name.startswith(".clearing-"):
                 continue
             if self._is_settled(entry.name):
                 continue
@@ -454,6 +543,7 @@ class DojoPublishing:
             except Exception:  # noqa: BLE001
                 pass
 
+    @_package_operation
     def repair_open_folders(self, *, requester: str | None = None) -> dict:
         """Reconcile multiple unsuffixed folders: newest wins, older → -recovered.
 
@@ -587,6 +677,7 @@ class DojoPublishing:
             return filename, content_type, flat.read_bytes()
         raise MediaNotFound(f"recovered media {filename!r} missing")
 
+    @_package_operation
     def import_recovered_media(
         self, folder_name: str, *, requester: str | None = None
     ) -> dict:
@@ -643,6 +734,7 @@ class DojoPublishing:
             "failed": failed,
         }
 
+    @_package_operation
     def mark_recovered_resolved(
         self, folder_name: str, *, requester: str | None = None
     ) -> str:
@@ -695,6 +787,21 @@ class DojoPublishing:
         content_type: str,
         declared_size_bytes: int,
         requester: str | None = None,
+        *, expected_package_id: int | None = None,
+    ) -> UploadStatus:
+        observed = self._packages.get_active()
+        expected = expected_package_id
+        if expected is None:
+            expected = observed.id if observed else 0
+        with self._packages.package_lock():
+            current = self._packages.get_active()
+            if (current.id if current else 0) != expected:
+                raise PackageChanged("active package changed; refresh before uploading")
+            return self._start_upload(filename, content_type, declared_size_bytes, requester)
+
+    def _start_upload(
+        self, filename: str, content_type: str, declared_size_bytes: int,
+        requester: str | None,
     ) -> UploadStatus:
         if not filename or any(c in filename for c in ("/", "\\")) or any(
             ord(c) < 32 for c in filename
@@ -774,6 +881,7 @@ class DojoPublishing:
         )
         return self._status(upload)
 
+    @_package_operation
     def append_upload_range(
         self,
         upload_id: str,
@@ -824,6 +932,7 @@ class DojoPublishing:
             )
         return statuses
 
+    @_package_operation
     def complete_upload(
         self, upload_id: str, requester: str | None = None
     ) -> UploadStatus:
@@ -862,6 +971,7 @@ class DojoPublishing:
         )
         return self._status(queued)
 
+    @_package_operation
     def abort_upload(self, upload_id: str, requester: str | None = None) -> None:
         upload = self._uploads.get(upload_id)
         if upload is None:
@@ -927,6 +1037,7 @@ class DojoPublishing:
             if package is not None:
                 conflicts = self._manifest_collisions(package, upload.filename)
         return UploadStatus(
+            package_id=upload.package_id,
             upload_id=upload.upload_id,
             received_bytes=upload.received_bytes,
             declared_size_bytes=upload.declared_size_bytes,
@@ -939,6 +1050,7 @@ class DojoPublishing:
     def claim_next_job(self) -> Job | None:
         return self._jobs.claim_next(self._clock.now())
 
+    @_package_operation
     def process_job(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is None:
@@ -972,6 +1084,7 @@ class DojoPublishing:
             return
         self.finalize_media(job.job_id, processed)
 
+    @_package_operation
     def finalize_media(self, job_id: str, processed: ProcessedMedia) -> None:
         job = self._jobs.get(job_id)
         if job is None:
@@ -1087,6 +1200,7 @@ class DojoPublishing:
                 )
             )
 
+    @_package_operation
     def sweep_stale_uploads(self, ttl: timedelta = STALE_TTL) -> int:
         cutoff = self._clock.now() - ttl
         stale = self._uploads.list_stale(cutoff)
@@ -1181,10 +1295,11 @@ class DojoPublishing:
         and HTTP work stays outside: ``process_job`` is called separately,
         after the scope closes.
         """
-        if self._setup is not None and not self._setup.is_ready():
-            return
-        self.ensure_schedule_upto()
-        self._ensure_reviews_for_due()
+        with self._packages.package_lock(wait=False) as acquired:
+            if not acquired or self._setup is not None and not self._setup.is_ready():
+                return
+            self.ensure_schedule_upto()
+            self._ensure_reviews_for_due()
 
     def _ensure_reviews_for_due(self) -> None:
         """Create at most one durable review per due occurrence for the active revision.
@@ -1355,6 +1470,7 @@ class DojoPublishing:
         # crosses midnight
         return now_t >= start or now_t < end
 
+    @_package_operation
     def send_due_reminders(self) -> None:
         logger = logging.getLogger(__name__)
         policy = self.get_reminder_policy()
@@ -1472,6 +1588,7 @@ class DojoPublishing:
             raise MediaNotFound("conflict preview unavailable")
         return path, str(content_type)
 
+    @_package_operation
     def resolve_conflict(
         self,
         upload_id: str,
@@ -1628,6 +1745,7 @@ class DojoPublishing:
             if _normalize(candidate.filename) == key
         ]
 
+    @_package_operation
     def remove_media(
         self, media_id: str, requester: str | None = None, *,
         expected_folder_name: str | None = None,
@@ -1647,6 +1765,7 @@ class DojoPublishing:
             expected_folder_name=expected_folder_name,
         )
 
+    @_package_operation
     def restore_media(
         self, media_id: str, requester: str | None = None, *,
         expected_folder_name: str | None = None,
@@ -1758,13 +1877,37 @@ class DojoPublishing:
                 ) if not is_video or source is not None else None,
                 "preview_ref": preview, "artifacts": items,
             })
+        digest = self._render_digest(package, manifest)
+        stale = manifest.get("render_revision") != digest
+        render_artifact = next(a for a in artifacts if a["kind"] == "render")
+        _, jobs = self._packages.package_work(package)
+        render_jobs = sorted(
+            (j for j in jobs if j.kind == "render" and j.payload.get("digest") == digest),
+            key=lambda j: j.id, reverse=True,
+        )
+        render_status = "stale" if stale and render_artifact["available"] else "missing"
+        if not stale and render_artifact["available"]:
+            render_status = "ready"
+        elif render_jobs and render_jobs[0].status in ("queued", "processing", "failed"):
+            render_status = render_jobs[0].status
         return {
             "package": dict(package.__dict__),
-            "render_stale": (
-                manifest.get("render_revision") != self._render_digest(package, manifest)
-            ),
+            "render_stale": stale,
+            "render_status": render_status,
+            "render_revision": manifest.get("render_revision"),
             "media": media, "montage": self._montage_status(manifest).to_dict(),
         }
+
+    def get_render_preview(
+        self, *, expected_folder_name: str, expected_revision: str | None = None,
+    ) -> PackageArtifact:
+        package = self._require_editor_package(expected_folder_name)
+        manifest = self._load_manifest(package)
+        revision = manifest.get("render_revision")
+        if (revision != self._render_digest(package, manifest)
+                or expected_revision is not None and expected_revision != revision):
+            raise MediaNotFound("saved montage render is not current")
+        return resolve_artifact(self.media_root / package.folder_name, manifest, "render/reel.mp4")
 
     def get_media_preview(self, media_id: str, *, expected_folder_name: str) -> PackageArtifact:
         package = self._require_editor_package(expected_folder_name)
@@ -2020,6 +2163,7 @@ class DojoPublishing:
         package = self._require_active_package()
         return self._load_manifest(package).get("caption")
 
+    @_package_operation
     def set_branding(self, branding: dict, requester: str | None = None) -> dict:
         """Override intro/outro (and logo) for one draft without touching globals."""
         package = self._require_active_package()
@@ -2039,6 +2183,7 @@ class DojoPublishing:
         )
         return current
 
+    @_package_operation
     def set_caption(self, caption: str, requester: str | None = None) -> str:
         """Edit the draft caption copy without changing the global template."""
         package = self._require_active_package()
@@ -2149,6 +2294,7 @@ class DojoPublishing:
                 f"{status.max_duration_seconds:.1f}s limit; trim or remove {excess:.1f}s"
             )
 
+    @_package_operation
     def set_order(
         self, order: list[str], requester: str | None = None, *,
         expected_folder_name: str | None = None,
@@ -2180,6 +2326,7 @@ class DojoPublishing:
         )
         return self.get_montage_status()
 
+    @_package_operation
     def set_trims(
         self, trims: dict, requester: str | None = None, *,
         expected_folder_name: str | None = None,
@@ -2196,19 +2343,23 @@ class DojoPublishing:
             requester=requester, action="montage.trim_changed",
         )
 
+    @_package_operation
     def set_selections(
         self, selections: VideoSelections, requester: str | None = None, *,
         expected_folder_name: str,
+        photo_durations: dict[str, float] | None = None,
     ) -> MontageStatus:
         package = self._require_editor_package(expected_folder_name)
         return self._save_selections(
             package, self._load_manifest(package), selections,
             requester=requester, action="montage.selections_changed",
+            photo_durations=photo_durations,
         )
 
     def _save_selections(
         self, package: Package, manifest: dict, selections: VideoSelections, *,
         requester: str | None, action: str,
+        photo_durations: dict[str, float] | None = None,
     ) -> MontageStatus:
         if any(self._media_in_completed(mid) for mid in selections):
             raise PackageCompleted("media belongs to a completed package")
@@ -2218,6 +2369,16 @@ class DojoPublishing:
             if e.get("status") == "finalized"
         }
         cleaned: VideoSelections = {}
+        for media_id, seconds in (photo_durations or {}).items():
+            entry = by_id.get(media_id)
+            if entry is None:
+                raise MediaNotFound(f"media {media_id} not found in active package")
+            if str(entry.get("content_type", "")).startswith("video/"):
+                raise MontageTrimInvalid("photo duration applies to photos only")
+            if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                    or not isfinite(seconds) or seconds < 1 / 25):
+                raise MontageTrimInvalid("photo duration must be finite and at least one frame")
+            entry["photo_duration_seconds"] = float(seconds)
         for media_id, ranges in selections.items():
             entry = by_id.get(media_id)
             if entry is None:
@@ -2252,6 +2413,7 @@ class DojoPublishing:
     def create_review(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
+    @_package_operation
     def approve(
         self,
         review_id: int,
@@ -2269,6 +2431,7 @@ class DojoPublishing:
         self._start_publication_for_review(resolved, requester=requester)
         return resolved
 
+    @_package_operation
     def skip(
         self,
         review_id: int,
@@ -2291,6 +2454,7 @@ class DojoPublishing:
             next_regular_at=next_regular.due_at if next_regular is not None else None,
         )
 
+    @_package_operation
     def reschedule(
         self,
         review_id: int,
@@ -2454,9 +2618,12 @@ class DojoPublishing:
         )
         return resolved_review
 
-    def render_preview(self, *, retry: bool = False) -> dict:
+    @_package_operation
+    def render_preview(
+        self, *, retry: bool = False, expected_folder_name: str | None = None,
+    ) -> dict:
         """Render when stale; explicit retry also allows failed/completed revisions."""
-        package = self._require_active_package()
+        package = self._require_editor_package(expected_folder_name)
         self._assert_logo_configured()
         manifest = self._load_manifest(package)
         self._validate_montage(manifest)
@@ -2494,6 +2661,8 @@ class DojoPublishing:
                     "content_type": entry.get("content_type"),
                     "duration": entry.get("processed", {}).get("duration"),
                     "is_video": str(entry.get("content_type", "")).startswith("video/"),
+                    **({"photo_duration": entry["photo_duration_seconds"]}
+                       if "photo_duration_seconds" in entry else {}),
                 }
             )
         inputs = {
@@ -2548,7 +2717,10 @@ class DojoPublishing:
             renderer = FfmpegReelRenderer()
         out = self.media_root / package.folder_name / "render" / "reel.mp4"
         work = self.media_root / "tmp" / f"render-{job.job_id}"
-        renderer.render(build, work, out)
+        staged = work / "reel.mp4"
+        renderer.render(build, work, staged)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        staged.replace(out)
         manifest["render_revision"] = digest
         self._write_manifest(package, manifest)
         self._create_review_if_due(package, digest)
@@ -3025,6 +3197,7 @@ class DojoPublishing:
         )
         return path
 
+    @_package_operation
     def recover_publication(
         self, action: str, *, confirmed: bool = False,
         new_due_at: datetime | None = None, requester: str | None = None,
@@ -3102,6 +3275,7 @@ class DojoPublishing:
                 }
         return None
 
+    @_package_operation
     def retry_publication(self, *, requester: str | None = None) -> dict:
         if self._get_publishing_package() is not None:
             raise PublicationInProgress("another publication is already in progress")
@@ -3133,6 +3307,7 @@ class DojoPublishing:
             raise PublicationNotReady("publication finished without a status record")
         return status
 
+    @_package_operation
     def reconcile_publication(self, *, requester: str | None = None) -> dict | None:
         """Poll saved Meta identifiers for a ``-publishing`` package.
 

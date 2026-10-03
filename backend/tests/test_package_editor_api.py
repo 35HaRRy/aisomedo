@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from threading import Event
 from urllib.parse import quote
 
 import pytest
 from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
 from dojo.adapters.signed_urls import HmacSignedUrlStore
-from dojo.adapters.stubs import StubMediaProcessor
+from dojo.adapters.stubs import StubMediaProcessor, StubReelRenderer
+from dojo.model import BrandingConfig
 from dojo.testing import FIXED_AT, FakeClock, complete_confirmed_package
 from fastapi.testclient import TestClient
 
@@ -218,3 +221,113 @@ def test_nonfinite_json_endpoint_is_rejected_without_server_error(tmp_path, valu
     response = client.put("/api/packages/active/selections", content=content,
                           headers={"Content-Type": "application/json"})
     assert response.status_code == 422
+
+
+def test_saved_render_queue_ready_delivery_and_stale_preview(tmp_path):
+    client, publishing, _, _, mid = app(tmp_path)
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"logo")
+    publishing.set_branding_defaults(BrandingConfig(logo_asset=str(logo)))
+    publishing._renderer = StubReelRenderer()
+    folder = publishing.get_active_package().folder_name
+    response = client.post("/api/packages/active/render", json={"expected_folder_name": folder})
+    assert response.status_code == 200
+    queued = client.get("/api/packages/active/editor").json()
+    assert queued["render_status"] == "queued" and queued["render_preview_url"] is None
+    publishing.process_job(publishing.claim_next_job().job_id)
+    ready = client.get("/api/packages/active/editor").json()
+    assert ready["render_status"] == "ready"
+    response = client.get(ready["render_preview_url"], headers={"Range": "bytes=0-3"})
+    assert response.status_code == 206 and response.content == b"fake"
+    assert response.headers["cache-control"] == "private, no-store"
+    client.put("/api/packages/active/selections", json=body(publishing, mid))
+    stale = client.get("/api/packages/active/editor").json()
+    assert stale["render_status"] == "stale" and stale["render_preview_url"] is None
+    assert client.get(ready["render_preview_url"]).status_code == 404
+    client.cookies.clear()
+    assert client.get(ready["render_preview_url"]).status_code == 401
+
+
+def test_clear_requires_confirmation_and_package_id_and_never_recreates(tmp_path):
+    client, publishing, _, _, mid = app(tmp_path)
+    package = publishing.get_active_package()
+    data = {"expected_folder_name": package.folder_name, "expected_package_id": package.id,
+            "confirmed": False}
+    assert client.post("/api/packages/active/clear", json=data).status_code == 409
+    assert publishing.get_active_package() == package
+    data["confirmed"] = True
+    data["expected_package_id"] = package.id + 1
+    assert client.post("/api/packages/active/clear", json=data).status_code == 409
+    data["expected_package_id"] = package.id
+    response = client.post("/api/packages/active/clear", json=data)
+    assert response.status_code == 200 and response.json()["folder_name"] == package.folder_name
+    assert client.get("/api/packages/active/editor").status_code == 404
+    assert not (tmp_path / package.folder_name).exists()
+    publishing.ensure_active_package()
+    # A retried destructive request cannot erase a replacement created in the same minute.
+    assert client.post("/api/packages/active/clear", json=data).status_code == 409
+    client.cookies.clear()
+    assert client.post("/api/packages/active/clear", json=data).status_code == 401
+
+
+def test_photo_duration_api_counts_saved_value_and_rejects_video_target(tmp_path):
+    client, publishing, _, _, mid = app(tmp_path)
+    publishing._media = StubMediaProcessor()
+    upload = publishing.start_upload("photo.jpg", "image/jpeg", 4)
+    publishing.append_upload_range(
+        upload.upload_id, 0, 4, hashlib.sha256(b"1234").hexdigest(), b"1234",
+    )
+    publishing.complete_upload(upload.upload_id)
+    publishing.process_job(publishing.claim_next_job().job_id)
+    photo = publishing.get_montage_status().order[1]
+    data = body(publishing, mid)
+    data["photo_durations"] = {photo: 4.5}
+    result = client.put("/api/packages/active/selections", json=data)
+    assert result.status_code == 200 and result.json()["combined_duration"] == 14.5
+    data["photo_durations"] = {mid: 4.5}
+    assert client.put("/api/packages/active/selections", json=data).status_code == 422
+    data["photo_durations"] = {photo: True}
+    assert client.put("/api/packages/active/selections", json=data).status_code == 422
+
+
+def test_chunk_lock_wait_does_not_block_event_loop(tmp_path, monkeypatch):
+    from starlette.requests import Request
+
+    from backend.routes.media import append_range
+    _, publishing, _, _, _ = app(tmp_path)
+    upload = publishing.start_upload("new.jpg", "image/jpeg", 4)
+    original = publishing.append_upload_range
+    released = Event()
+
+    def delayed(*args):
+        assert released.wait(0.5), "chunk processing blocked event-loop timer"
+        return original(*args)
+
+    monkeypatch.setattr(publishing, "append_upload_range", delayed)
+
+    async def receive():
+        return {"type": "http.request", "body": b"1234"}
+
+    async def run():
+        asyncio.get_running_loop().call_later(0.05, released.set)
+        return await append_range(upload.upload_id, 0, hashlib.sha256(b"1234").hexdigest(),
+                                  Request({"type": "http"}, receive), None, publishing)
+
+    assert asyncio.run(run()).received_bytes == 4
+
+
+def test_upload_init_rejects_cleared_package_identity(tmp_path):
+    client, publishing, _, _, _ = app(tmp_path)
+    old_id = publishing.get_active_package().id
+    limits = client.get("/api/media/upload-limits").json()
+    assert limits["active_package_id"] == old_id
+    package = publishing.get_active_package()
+    publishing.clear_active_package(expected_folder_name=package.folder_name,
+                                    expected_package_id=old_id)
+    data = {"filename": "late.jpg", "content_type": "image/jpeg", "declared_size_bytes": 4,
+            "expected_package_id": old_id}
+    assert client.post("/api/media/uploads", json=data).status_code == 409
+    assert publishing.get_active_package() is None
+    data["expected_package_id"] = 0
+    response = client.post("/api/media/uploads", json=data)
+    assert response.status_code == 201 and response.json()["package_id"] != old_id

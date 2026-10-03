@@ -175,3 +175,59 @@ it("discard after lost committed save still requires explicit authoritative refr
   await act(async () => expect(await result.current.save()).toBe(true));
   expect(server.snapshot.montage.selections).toEqual({ a: [{ start: 0, end: 5 }], b: [{ start: 10, end: 15 }] });
 });
+
+it("photo drafts count, validate, save and discard without editing source files", async () => {
+  const { server, result } = await setup();
+  server.snapshot.media[1] = { ...server.snapshot.media[1], filename: "photo.jpg", is_video: false, source_duration: null, effective_duration: 3 };
+  await act(async () => { await result.current.refresh(); });
+  act(() => result.current.setPhotoDuration("b", "4.5"));
+  expect(result.current.proposedTotal).toBe(34.5);
+  expect(result.current.canSave).toBe(true);
+  await act(async () => expect(await result.current.save()).toBe(true));
+  expect(server.writes[0].body).toEqual({ expected_folder_name: "02-10-2026 13-00", selections: {}, photo_durations: { b: 4.5 } });
+  expect(result.current.dirty).toBe(false);
+  act(() => result.current.setPhotoDuration("b", ""));
+  expect(result.current.canSave).toBe(false); expect(result.current.saveBlockedReason).toBe("invalid");
+  act(() => result.current.discard());
+  expect(result.current.draftInputs.b[0].end).toBe("4.5");
+});
+
+it("render-stale message never blocks valid draft save; discard leaves saved server state untouched", async () => {
+  const { server, result } = await setup();
+  server.snapshot.render_stale = true;
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.saveBlockedReason).toBe("unchanged");
+  act(() => result.current.setRanges("a", [{ start: 0, end: 5 }]));
+  expect(result.current.canSave).toBe(true); expect(result.current.saveBlockedReason).toBeNull();
+  act(() => result.current.discard());
+  expect(result.current.dirty).toBe(false); expect(server.writes).toHaveLength(0);
+});
+
+it("renders saved montage while retaining unsaved drafts and clears only confirmed package identity", async () => {
+  const { server, result } = await setup();
+  act(() => result.current.setRanges("a", [{ start: 0, end: 5 }]));
+  await act(async () => expect(await result.current.renderPreview()).toBe(true));
+  expect(server.writes[0].url).toBe("/api/packages/active/render");
+  expect(result.current.dirty).toBe(true); expect(result.current.stale).toBe(false);
+  await act(async () => expect(await result.current.clearPackage()).toEqual({ folder_name: "02-10-2026 13-00", upload_ids: ["upload-a"] }));
+  expect(server.writes[1].body).toEqual({ expected_folder_name: "02-10-2026 13-00", expected_package_id: 1, confirmed: true });
+  expect(result.current.snapshot).toBeNull(); expect(result.current.dirty).toBe(false);
+});
+
+it("failed cleanup retains exact retry identity across remount; never substitutes replacement package", async () => {
+  localStorage.clear();
+  const { server, result, unmount } = await setup();
+  server.writeStatus = 503;
+  await act(async () => expect(await result.current.clearPackage()).toBeNull());
+  expect(result.current.pendingClear).toEqual({ id: 1, folder_name: "02-10-2026 13-00" });
+  unmount();
+  server.snapshot.package = { ...server.snapshot.package, id: 2 };
+  const replacement = renderHook(() => usePackageEditor(), { wrapper });
+  await waitFor(() => expect(replacement.result.current.pendingClear?.id).toBe(1));
+  expect(replacement.result.current.snapshot).toBeNull();
+  server.writeStatus = 200;
+  await act(async () => expect(await replacement.result.current.clearPackage()).not.toBeNull());
+  expect(server.writes[1].body).toMatchObject({ expected_package_id: 1 });
+  expect(replacement.result.current.pendingClear).toBeNull();
+  localStorage.clear();
+});

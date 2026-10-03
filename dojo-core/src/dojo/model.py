@@ -194,6 +194,7 @@ class UploadStatus:
     received_ranges: list[list[int]]
     error_reason: str | None = None
     conflicts: list[dict] = field(default_factory=list)
+    package_id: int | None = None
 
 
 @dataclass(frozen=True)
