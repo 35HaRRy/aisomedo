@@ -202,7 +202,11 @@ expect(screen.getByRole("link", { name: /orijinali indir/i })).toHaveAttribute("
 - [ ] **Observe GREEN/regressions:** from `web/`, run focused tests, `npm test`, `npm run typecheck`, and `npm run build` — new package flows and existing pairing/onboarding/uploads pass.
 - [ ] **Commit named files:** `feat(web): manage active and completed media`.
 
-### Task 8: Real-browser regression checks, CI, and verification evidence
+### Task 8: Real-browser regression checks, CI, and verification evidence — complete
+
+Verified: Chromium desktop/mobile 4 passed; web 228 passed before final review; core 640 passed/4 environment skips, backend 155 passed, worker 140 passed. Commit: `31fbd38`. Unrelated baseline Python static checks remain red, as documented in the execution rulings.
+
+Final independent review found four Important issues and one Minor. All Important issues reproduced RED→GREEN in one correction pass; final core 646 passed/4 skips, web 233 passed (default and capped workers), backend 155 passed, browser 4 passed; build/typecheck clean. Minor fractional timeline rounding deferred because validation prevents persistence. Full evidence and execution rulings: `docs/verification/issue-29-web-media-management.md`.
 
 **Files:** Create `web/playwright.config.ts`, `web/e2e/package-management.spec.ts`, `web/e2e/fixtures/timeline.mp4`, `docs/verification/issue-29-web-media-management.md`; modify `web/package.json`, `web/package-lock.json`, `web/vitest.config.ts`, `.github/workflows/ci.yml`, `.gitignore`, `README.md`.
 

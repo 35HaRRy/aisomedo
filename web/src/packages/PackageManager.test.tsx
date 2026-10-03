@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
 import { UploadProvider } from "../uploads/UploadProvider";
@@ -13,7 +13,8 @@ it("completed view uses draft decision and cancel keeps editor mounted", async (
   fireEvent.click(await screen.findByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   fireEvent.click(screen.getByRole("button", { name: "Bölüm ekle" }));
   fireEvent.click(screen.getByRole("button", { name: "Tamamlanmış paketler" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Vazgeç" }));
+  const cancel = await screen.findByRole("button", { name: "Vazgeç" });
+  await act(async () => { fireEvent.click(cancel); });
   expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Tamamlanmış paketler" }));
   fireEvent.click(await screen.findByRole("button", { name: "Değişiklikleri at" }));

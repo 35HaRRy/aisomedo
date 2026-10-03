@@ -26,7 +26,12 @@ export function VideoSectionEditor({ media, ranges, inputs, validationError, dis
         {(["start", "end"] as const).map(bound => <label key={bound} htmlFor={`${id}-${index}-${bound}`}>{index + 1}. bölüm {bound === "start" ? "başlangıcı" : "bitişi"} (saniye)
           <input id={`${id}-${index}-${bound}`} inputMode="decimal" type="text" disabled={disabled} value={input[bound]} aria-invalid={!!validationError} aria-describedby={validationError ? `${id}-error` : undefined}
             onChange={event => onInputChange(index, bound, event.target.value)} /></label>)}
-        <button disabled={editingBlocked} aria-label={`${index + 1}. bölümü kaldır`} onClick={() => { onChange(ranges.filter((_, i) => i !== index)); add.current?.focus(); }}>{tr.editor.removeSection}</button>
+        <button disabled={editingBlocked} aria-label={`${index + 1}. bölümü kaldır`} onClick={() => {
+          // Field rows retain their identity while partial text is edited;
+          // timeline ranges are independently sorted into source-time order.
+          onChange(inputs.filter((_, i) => i !== index).map(r => ({ start: Number(r.start), end: Number(r.end) })));
+          add.current?.focus();
+        }}>{tr.editor.removeSection}</button>
       </li>)}</ol>
       <div className="upload-actions"><button ref={add} disabled={editingBlocked} onClick={() => { const next = addRangeAtPlayhead(ranges, playhead, duration); setNoGap(!next); if (next) onChange(next); }}>{tr.editor.addSection}</button>
         <span className="time-readout">{tr.editor.retained}: {validationError ? "—" : retainedDuration(ranges, duration).toFixed(2)} s</span></div>

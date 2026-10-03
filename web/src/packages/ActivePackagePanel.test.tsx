@@ -96,3 +96,15 @@ it("known over-limit total differs from unknown source duration", async () => {
   expect(screen.getByText("Süre hesaplanamıyor")).toBeInTheDocument();
   expect(screen.queryByText(/Sınırı aşan süreyi azaltın/)).not.toBeInTheDocument();
 });
+
+it("removing a numerically moved row removes displayed section, not its sorted neighbor", async () => {
+  const { server } = await setup(server => { server.snapshot.montage.selections.a = [{ start: 0, end: 5 }, { start: 10, end: 15 }]; });
+  fireEvent.click(screen.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
+  fireEvent.change(screen.getByLabelText("1. bölüm bitişi (saniye)"), { target: { value: "25" } });
+  fireEvent.change(screen.getByLabelText("1. bölüm başlangıcı (saniye)"), { target: { value: "20" } });
+  fireEvent.click(screen.getByRole("button", { name: "1. bölümü kaldır" }));
+  expect(screen.getByLabelText("1. bölüm başlangıcı (saniye)")).toHaveValue("10");
+  expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("15");
+  fireEvent.click(screen.getByRole("button", { name: "Bölümleri kaydet" }));
+  await waitFor(() => expect(server.snapshot.montage.selections.a).toEqual([{ start: 10, end: 15 }]));
+});

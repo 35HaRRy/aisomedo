@@ -1108,7 +1108,7 @@ class DojoPublishing:
         payload = job.payload or {}
         try:
             self._render_job(job, str(payload.get("package", "")))
-        except RenderFailed as exc:
+        except (RenderFailed, MontageDurationExceeded, MontageTrimInvalid) as exc:
             now = self._clock.now()
             self._fail_job(job, str(exc))
             self._audit.append(
@@ -1199,6 +1199,11 @@ class DojoPublishing:
             return
         manifest = self._load_manifest(package)
         if not self._finalized_in_order(manifest):
+            return
+        try:
+            self._validate_montage(manifest)
+        except (MontageDurationExceeded, MontageTrimInvalid):
+            # Keep due occurrences pending until the editor makes inputs eligible.
             return
         digest = self._render_digest(package, manifest)
         if manifest.get("render_revision") == digest:

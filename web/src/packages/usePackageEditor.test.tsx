@@ -133,3 +133,45 @@ it("unmount aborts in-flight reads and writes without accepting later responses"
   unmount(); expect(signal?.aborted).toBe(true);
   pending.resolve(server.json({})); expect(await save).toBe(false);
 });
+
+it.each(["reorder", "remove", "restore"] as const)("%s acknowledgement cannot rebase unrelated saved sections over dirty drafts", async operation => {
+  const { server, result } = await setup();
+  if (operation === "restore") {
+    await act(async () => { await result.current.remove("b"); });
+  }
+  act(() => result.current.setRanges("a", [{ start: 0, end: 5 }]));
+  server.snapshot.montage.selections.a = [{ start: 10, end: 15 }];
+  await act(async () => {
+    if (operation === "reorder") await result.current.reorder(["b", "a"]);
+    else await result.current[operation]("b");
+  });
+  expect(result.current.draft.a).toEqual([{ start: 0, end: 5 }]);
+  expect(result.current.stale).toBe(true); expect(result.current.canSave).toBe(false);
+  await act(async () => expect(await result.current.save()).toBe(false));
+  expect(server.snapshot.montage.selections.a).toEqual([{ start: 10, end: 15 }]);
+});
+
+it("discard after lost committed save still requires explicit authoritative refresh", async () => {
+  const { server, result } = await setup();
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    const response = await server.fetcher(url, init);
+    if (url.endsWith("/selections")) throw new TypeError("acknowledgement lost after commit");
+    return response;
+  });
+  act(() => result.current.setRanges("a", [{ start: 0, end: 5 }]));
+  await act(async () => expect(await result.current.save()).toBe(false));
+  expect(server.snapshot.montage.selections.a).toEqual([{ start: 0, end: 5 }]);
+  act(() => result.current.discard());
+  expect(result.current.dirty).toBe(false); expect(result.current.stale).toBe(true);
+  expect(result.current.error).toBe("uncertain");
+  await act(async () => expect(await result.current.reorder(["b", "a"])).toBe(false));
+  act(() => window.dispatchEvent(new Event("focus")));
+  await waitFor(() => expect(result.current.snapshot?.montage.selections.a).toHaveLength(1));
+  expect(result.current.stale).toBe(true);
+  vi.stubGlobal("fetch", server.fetcher);
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.stale).toBe(false);
+  act(() => result.current.setRanges("b", [{ start: 10, end: 15 }]));
+  await act(async () => expect(await result.current.save()).toBe(true));
+  expect(server.snapshot.montage.selections).toEqual({ a: [{ start: 0, end: 5 }], b: [{ start: 10, end: 15 }] });
+});

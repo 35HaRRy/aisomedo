@@ -12,6 +12,7 @@ interface Data {
   base: Record<string, RangeInput[]>;
   baseFolder: string | null;
   stale: boolean;
+  readRequired: boolean;
   loading: boolean;
   busy: boolean;
   error: EditorError;
@@ -39,7 +40,7 @@ export interface PackageEditorState {
   remove(id: string): Promise<boolean>;
   restore(id: string): Promise<boolean>;
 }
-const empty = (): Data => ({ snapshot: null, draftInputs: {}, base: {}, baseFolder: null, stale: false, loading: false, busy: false, error: null });
+const empty = (): Data => ({ snapshot: null, draftInputs: {}, base: {}, baseFolder: null, stale: false, readRequired: false, loading: false, busy: false, error: null });
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function inputs(snapshot: ActiveEditorOut): Record<string, RangeInput[]> {
   return Object.fromEntries(snapshot.media.filter(m => m.is_video).map(m => [m.media_id,
@@ -54,6 +55,26 @@ function fingerprint(snapshot: ActiveEditorOut | null): string {
     cards: snapshot.montage.card_duration, limit: snapshot.montage.max_duration_seconds,
     media: snapshot.media.map(m => [m.media_id, m.status, m.processed, m.effective_duration]),
   });
+}
+type WriteChange = { kind: "selections"; selections: SelectionMap } | { kind: "order"; order: string[] } | { kind: "remove" | "restore"; id: string };
+function expectedWrite(snapshot: ActiveEditorOut, change: WriteChange): ActiveEditorOut {
+  const next = { ...snapshot, montage: { ...snapshot.montage }, media: snapshot.media.map(m => ({ ...m })) };
+  if (change.kind === "selections") {
+    const removed = Object.fromEntries(Object.entries(snapshot.montage.selections).filter(([id]) => snapshot.media.some(m => m.media_id === id && m.status === "removed")));
+    next.montage.selections = { ...removed, ...change.selections };
+  } else if (change.kind === "order") next.montage.order = change.order;
+  else {
+    const media = next.media.find(m => m.media_id === change.id);
+    if (media) media.status = change.kind === "remove" ? "removed" : "finalized";
+    next.montage.order = snapshot.montage.order.filter(id => id !== change.id);
+    if (change.kind === "restore") next.montage.order.splice(media?.removed_position ?? next.montage.order.length, 0, change.id);
+  }
+  return next;
+}
+function writeFingerprint(snapshot: ActiveEditorOut): string {
+  // Duration is derived from selections/source metadata, not an independent
+  // change. Compare the inputs, allowing only this acknowledged operation.
+  return fingerprint({ ...snapshot, media: snapshot.media.map(m => ({ ...m, effective_duration: null })) });
 }
 function numeric(data: Data): { draft: SelectionMap; validationErrors: Record<string, string> } {
   const draft: SelectionMap = {}, validationErrors: Record<string, string> = {};
@@ -77,22 +98,23 @@ export function usePackageEditor(): PackageEditorState {
   const alive = useRef(false);
   const read = useRef<AbortController | null>(null), write = useRef<AbortController | null>(null);
   const update = useCallback((next: Data) => { current.current = next; setData(next); }, []);
-  const accept = useCallback((snapshot: ActiveEditorOut, explicit: boolean, ownWrite = false) => {
+  const accept = useCallback((snapshot: ActiveEditorOut, explicit: boolean, ownWrite?: ActiveEditorOut) => {
     const old = current.current, fresh = inputs(snapshot), hadDraft = dirty(old);
     const otherPackage = old.baseFolder !== null && old.baseFolder !== snapshot.package.folder_name;
     const nextInputs = { ...fresh };
     if (hadDraft) for (const id of Object.keys(old.draftInputs)) {
       if (changed(old, id)) nextInputs[id] = old.draftInputs[id];
     }
-    const conflict = hadDraft && !ownWrite && fingerprint(old.snapshot) !== fingerprint(snapshot);
+    const conflict = hadDraft && (ownWrite ? writeFingerprint(ownWrite) !== writeFingerprint(snapshot) : fingerprint(old.snapshot) !== fingerprint(snapshot));
+    const readRequired = explicit ? false : old.readRequired;
     update({ ...old, snapshot, draftInputs: nextInputs,
-      base: hadDraft && !explicit && !ownWrite ? old.base : fresh,
+      base: hadDraft && !explicit && (!ownWrite || conflict) ? old.base : fresh,
       baseFolder: hadDraft && otherPackage ? old.baseFolder : snapshot.package.folder_name,
-      stale: otherPackage && hadDraft ? true : explicit || ownWrite ? false : old.stale || conflict,
-      loading: false, error: explicit || ownWrite ? null : old.error,
+      stale: readRequired || otherPackage && hadDraft || !explicit && (conflict || old.stale),
+      readRequired, loading: false, error: readRequired ? old.error : explicit || ownWrite ? null : old.error,
     });
   }, [update]);
-  const load = useCallback(async (explicit = false, signal?: AbortSignal, ownWrite = false) => {
+  const load = useCallback(async (explicit = false, signal?: AbortSignal, ownWrite?: ActiveEditorOut) => {
     if (!alive.current || !navigator.onLine || current.current.busy && !ownWrite) return;
     read.current?.abort();
     const controller = new AbortController(); read.current = controller;
@@ -120,20 +142,21 @@ export function usePackageEditor(): PackageEditorState {
     return () => { alive.current = false; stop(); read.current?.abort(); write.current?.abort();
       window.removeEventListener("online", connectivity); window.removeEventListener("offline", connectivity); };
   }, [status, generation, load, update]);
-  const mutate = useCallback(async (operation: (folder: string, signal: AbortSignal) => Promise<unknown>, saving = false): Promise<boolean> => {
+  const mutate = useCallback(async (operation: (folder: string, signal: AbortSignal) => Promise<unknown>, change: WriteChange): Promise<boolean> => {
     const old = current.current;
-    if (!alive.current || !navigator.onLine || old.busy || old.stale || !old.snapshot) return false;
+    if (!alive.current || !navigator.onLine || old.busy || old.stale || old.readRequired || !old.snapshot) return false;
+    const expected = expectedWrite(old.snapshot, change);
     read.current?.abort();
     const controller = new AbortController(); write.current = controller;
     update({ ...old, busy: true, loading: false, error: null });
     try {
       await operation(old.snapshot.package.folder_name, controller.signal);
       if (!alive.current || controller.signal.aborted) return false;
-      if (saving) update({ ...current.current, base: current.current.draftInputs });
-      await load(false, undefined, true);
+      if (change.kind === "selections") update({ ...current.current, base: current.current.draftInputs });
+      await load(false, undefined, expected);
       // Acknowledged writes may succeed even if the follow-up read fails, but
       // further mutations wait for an explicit successful read in that case.
-      if (current.current.error === "read") update({ ...current.current, stale: true });
+      if (current.current.error === "read") update({ ...current.current, stale: true, readRequired: true });
       return true;
     } catch (error) {
       if (!alive.current || controller.signal.aborted) return false;
@@ -141,6 +164,7 @@ export function usePackageEditor(): PackageEditorState {
       else {
         const definite = error instanceof ApiError && [404, 409, 422].includes(error.status);
         update({ ...current.current, stale: !definite || error instanceof ApiError && error.status === 409,
+          readRequired: !definite,
           error: definite ? error.status === 422 ? "invalid" : "conflict" : "uncertain" });
       }
       return false;
@@ -164,22 +188,22 @@ export function usePackageEditor(): PackageEditorState {
     update({ ...old, draftInputs: id ? { ...old.draftInputs, [id]: fresh[id] ?? [] } : fresh,
       base: id ? { ...old.base, [id]: fresh[id] ?? [] } : fresh,
       baseFolder: id ? old.baseFolder : old.snapshot?.package.folder_name ?? null,
-      stale: id ? old.stale : false, error: null });
+      stale: old.readRequired || (id ? old.stale : false), error: old.readRequired ? old.error : null });
   }, [update]);
   const save = useCallback(async () => {
     const old = current.current, values = numeric(old);
     if (!old.snapshot || !dirty(old) || Object.keys(values.validationErrors).length) return false;
     const total = proposedDuration(old.snapshot, values.draft);
     if (total === null || total > old.snapshot.montage.max_duration_seconds) return false;
-    return mutate((folder, signal) => api.saveSelections({ expected_folder_name: folder, selections: values.draft }, signal), true);
+    return mutate((folder, signal) => api.saveSelections({ expected_folder_name: folder, selections: values.draft }, signal), { kind: "selections", selections: values.draft });
   }, [mutate]);
   const values = numeric(data), total = data.snapshot && !Object.keys(values.validationErrors).length ? proposedDuration(data.snapshot, values.draft) : null;
   return { ...data, ...values, offline, dirty: dirty(data), proposedTotal: total,
     canSave: dirty(data) && !data.busy && !data.stale && !offline && total !== null && !!data.snapshot && total <= data.snapshot.montage.max_duration_seconds,
     isDirty: id => changed(current.current, id), setRanges, setInput, save, discard,
     refresh: () => load(true),
-    reorder: order => mutate((folder, signal) => api.saveOrder(order, folder, signal)),
-    remove: id => changed(current.current, id) ? Promise.resolve(false) : mutate((folder, signal) => api.removeMedia(id, folder, signal)),
-    restore: id => mutate((folder, signal) => api.restoreMedia(id, folder, signal)),
+    reorder: order => mutate((folder, signal) => api.saveOrder(order, folder, signal), { kind: "order", order }),
+    remove: id => changed(current.current, id) ? Promise.resolve(false) : mutate((folder, signal) => api.removeMedia(id, folder, signal), { kind: "remove", id }),
+    restore: id => mutate((folder, signal) => api.restoreMedia(id, folder, signal), { kind: "restore", id }),
   };
 }

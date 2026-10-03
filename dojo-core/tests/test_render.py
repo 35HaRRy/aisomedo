@@ -274,3 +274,45 @@ def test_build_reel_requires_watermark(tmp_path):
 
     with pytest.raises(RenderFailed):
         seam._build_reel(package, manifest)
+
+
+def invalidate_render_inputs(tmp_path, seam, store, media_id, reason):
+    manifest = load_manifest(tmp_path, seam)
+    if reason == "limit":
+        store.set("montage.max_duration_seconds", 2.0, updated_at=FIXED_AT)
+    elif reason == "duration":
+        manifest["media"][0]["processed"]["duration"] = None
+    else:
+        manifest["selections"] = {media_id: [{"start": 0, "end": 40}]}
+    seam._write_manifest(seam.get_active_package(), manifest)
+
+
+@pytest.mark.parametrize("reason", ["limit", "duration", "ranges"])
+def test_changed_inputs_fail_queued_render_durably(tmp_path, reason):
+    store, seam, renderer = make_seam(tmp_path)
+    set_logo(store, "logo.png")
+    mid = finalize_media(tmp_path, seam, filename="clip.mp4",
+                         content_type="video/mp4", duration=30)
+    seam.render_preview()
+    invalidate_render_inputs(tmp_path, seam, store, mid, reason)
+    job = seam.claim_next_job()
+    assert job is not None and job.kind == "render"
+    seam.process_job(job.job_id)
+    failed = store.get(job.job_id)
+    assert failed is not None and failed.status == "failed"
+    assert failed.error_reason and failed.finished_at is not None
+    assert not (tmp_path / seam.get_active_package().folder_name / "render/reel.mp4").exists()
+    assert "render.rejected" in [event.action for event in seam.list_audit()]
+    assert seam.claim_next_job() is None
+
+
+@pytest.mark.parametrize("reason", ["limit", "duration", "ranges"])
+def test_scheduler_leaves_ineligible_package_pending_without_render(tmp_path, reason):
+    store, seam, renderer = make_seam(tmp_path)
+    set_logo(store, "logo.png")
+    mid = finalize_media(tmp_path, seam, filename="clip.mp4",
+                         content_type="video/mp4", duration=30)
+    invalidate_render_inputs(tmp_path, seam, store, mid, reason)
+    seam.evaluate_due_work()
+    assert seam.claim_next_job() is None
+    assert "render.queued" not in [event.action for event in seam.list_audit()]
