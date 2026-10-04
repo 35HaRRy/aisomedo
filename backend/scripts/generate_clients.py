@@ -111,6 +111,7 @@ def main() -> None:
         "SetupOut", "ConsentOut", "AcceptanceIn", "AcceptanceOut",
         "BrandingDefaultsOut", "BrandingPatchIn", "BrandingAssetOut",
         "PlanIn", "PlanOut", "StatusOut", "StartIn", "StartOut", "AttemptOut", "SelectIn",
+        "ReminderPolicyIn", "ReminderPolicyOut",
         "UploadLimitsOut", "UploadInitIn", "UploadOut", "ResolveConflictIn",
         "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "MontageOut",
         "ClearPackageIn", "ClearPackageOut", "RenderIn", "RenderOut",

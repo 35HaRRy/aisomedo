@@ -6,7 +6,7 @@ import { useLiveData } from "../useLiveData";
 import { AssetPreview, imageError, ReloadDraft, useDraft, useFormSave } from "./forms";
 
 type CardKind = "intro" | "outro";
-export function CardsStep({ onSaved }: { onSaved: () => void }) {
+export function CardsStep({ onSaved, onboarding = true }: { onSaved: () => void; onboarding?: boolean }) {
   const snapshot = useLiveData(api.branding);
   const form = useFormSave(onSaved);
   const state = useDraft(snapshot.data ? { intro: snapshot.data.intro_duration?.toString() ?? "", outro: snapshot.data.outro_duration?.toString() ?? "", introAsset: snapshot.data.intro_asset ?? null, outroAsset: snapshot.data.outro_asset ?? null } : null, { intro: "", outro: "", introAsset: null as string | null, outroAsset: null as string | null });
@@ -35,7 +35,7 @@ export function CardsStep({ onSaved }: { onSaved: () => void }) {
       }
       if (Object.keys(changes).length) await api.patchBranding(changes, signal);
       if (signal.aborted) throw new DOMException("", "AbortError");
-      return api.skipCards(signal);
+      if (onboarding) return api.skipCards(signal);
     });
   }
   return <div className="onboarding-form"><p>Giriş ve çıkış kartları isteğe bağlı. Süre boş bırakılırsa varsayılan fotoğraf süresi kullanılır.</p>
@@ -56,7 +56,7 @@ export function CardsStep({ onSaved }: { onSaved: () => void }) {
         </fieldset>;
       })}
       <button className="primary" disabled={form.busy || !snapshot.data || snapshot.error}>{form.busy ? "Kaydediliyor…" : "Kartları kaydet"}</button>
-    </form><button disabled={form.busy} onClick={() => void form.run(signal => api.skipCards(signal))}>Kartları değiştirmeden devam et</button>
+    </form>{onboarding && <button disabled={form.busy} onClick={() => void form.run(signal => api.skipCards(signal))}>Kartları değiştirmeden devam et</button>}
     {form.error && <p role="alert">{form.error}</p>}
   </div>;
 }

@@ -4,7 +4,7 @@ import { formatDate, tr } from "../i18n";
 import { useLiveData } from "../useLiveData";
 import { useOnboarding } from "./useOnboarding";
 
-export function ConsentStep({ onSaved }: { onSaved: () => void }) {
+export function ConsentStep({ onSaved, readOnly = false }: { onSaved: () => void; readOnly?: boolean }) {
   const { save } = useOnboarding();
   const load = useCallback(async (signal: AbortSignal) => {
     try { return { policy: await api.consent(signal) }; }
@@ -48,7 +48,7 @@ export function ConsentStep({ onSaved }: { onSaved: () => void }) {
     {!snapshot.data && !snapshot.error && <p role="status">{tr.loading}</p>}
     {snapshot.data && !policy && <><p>{tr.consentMissing}</p><button onClick={snapshot.retry}>{tr.retry}</button></>}
     {policy && <><p>Rıza metni · Sürüm {policy.version}</p><div className="consent-text">{policy.text}</div>
-      {acceptedAt ? <p role="status">Rıza kaydedildi · {formatDate(acceptedAt)}</p> : <form onSubmit={event => { event.preventDefault(); void accept(); }}>
+      {acceptedAt ? <p role="status">Rıza kaydedildi · {formatDate(acceptedAt)}</p> : readOnly ? <p role="status">{tr.settingsPage.consentPending}</p> : <form onSubmit={event => { event.preventDefault(); void accept(); }}>
         <label className="checkbox-label"><input type="checkbox" checked={acknowledgedVersion === policy.version} disabled={busy || snapshot.error} onChange={event => setAcknowledgedVersion(event.target.checked ? policy.version : null)} />Metni okudum ve medya kullanımına rıza veriyorum.</label>
         <button className="primary" disabled={busy || snapshot.error || acknowledgedVersion !== policy.version}>{busy ? "Kaydediliyor…" : "Rızayı kaydet"}</button>
       </form>}</>}

@@ -91,6 +91,8 @@ export function InstagramStep({ onSaved }: { onSaved: () => void }) {
   return <div className="onboarding-form">
     <p>Instagram’dan kendi aldığınız erişim tokenını tanımlayın veya yeni pencerede yetkilendirin. Mevcut hesap yeni bağlantı doğrulanana kadar korunur.</p>
     {status?.ig_username && <p>@{status.ig_username} · {status.health === "healthy" ? "Bağlantı doğrulandı" : "Yeniden bağlantı gerekli"}</p>}
+    {status && !status.ig_username && <p>{tr.noAccount}</p>}
+    {!status && !snapshot.error && <p role="status">{tr.loading}</p>}
     {snapshot.error && <div role="alert">{tr.instagramUnavailable}<button onClick={snapshot.retry}>{tr.retry}</button></div>}
     {error && <p role="alert">{error}</p>}
     <form onSubmit={event => { event.preventDefault(); void connect(); }}>

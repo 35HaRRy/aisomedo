@@ -39,7 +39,10 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
     try {
       const result = await operation(controller.signal);
       if (!alive.current || controller.signal.aborted) throw new DOMException("", "AbortError");
-      await refresh(); return result;
+      try { await refresh(); }
+      catch (failure) { if (failure instanceof ApiError && failure.status === 401) throw failure; }
+      if (!alive.current || controller.signal.aborted) throw new DOMException("", "AbortError");
+      return result;
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 401 && alive.current) invalidate();
       throw failure;

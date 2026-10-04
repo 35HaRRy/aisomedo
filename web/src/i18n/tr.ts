@@ -1,4 +1,16 @@
 export const tr = {
+  settingsPage: {
+    intro: "Yayın planını, marka görsellerini ve hatırlatmaları düzenleyin. Instagram bağlantısını ve medya rızasını kontrol edin.",
+    openSetup: "Kurulumu aç", saved: "Ayarlar kaydedildi.",
+    consentPending: "Bu sürüm için medya rızası henüz kaydedilmedi. Rızayı kaydetmek için kurulumu açın.",
+    logo: "Dojo logosu", caption: "Açıklama şablonu", cards: "Giriş ve çıkış kartları", consent: "Medya rızası",
+    reminders: "Hatırlatmalar", reminderHelp: "Bekleyen Yayın İncelemesi için bildirim aralığını ve bildirim gönderilebilecek saatleri seçin. Bu pencere dışındaki saatler sessizdir. Gece yarısını geçen bir pencere seçebilirsiniz.",
+    interval: "Hatırlatma aralığı (dakika)", deliveryStart: "Bildirim başlangıcı", deliveryEnd: "Bildirim bitişi",
+    saveReminders: "Hatırlatmaları kaydet", saving: "Kaydediliyor…",
+    invalidInterval: "Hatırlatma aralığı pozitif bir tam sayı olmalı.",
+    invalidWindow: "Geçerli ve birbirinden farklı başlangıç ve bitiş saatleri seçin.",
+    reminderRejected: "Hatırlatmalar kaydedilemedi. Aralığı ve bildirim saatlerini kontrol edip tekrar deneyin.",
+  },
   review: {
     title: "Yayın İncelemesi", intro: "Bu Reel ve açıklama aynı yayın sürümüne bağlıdır. Açmak veya izlemek yayınlamaz.",
     video: "İncelenen Reel", caption: "Yayın açıklaması", noCaption: "Bu yayın için açıklama yok.",
@@ -156,6 +168,8 @@ export const tr = {
     "review.created": "Yayın İncelemesi oluşturuldu", "review.approved": "Yayın onaylandı",
     "review.skipped": "Yayın atlandı", "review.rescheduled": "Yayın yeniden planlandı",
     "plan.updated": "Yayın planı güncellendi", "media.finalized": "Medya eklendi",
+    "reminders.policy_updated": "Hatırlatma ayarları güncellendi", "branding.defaults_updated": "Marka ayarları güncellendi",
+    "consent.accepted": "Medya rızası kaydedildi", "meta.connected": "Instagram bağlantısı doğrulandı",
     "conflict.resolved": "Dosya adı çakışması çözüldü", "media.overwritten": "Mevcut medyanın üzerine yazıldı",
   } as Record<string, string>,
 };

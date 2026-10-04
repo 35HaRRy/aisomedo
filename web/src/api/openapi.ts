@@ -327,6 +327,20 @@ export type ProcessedMetadataOut = {
   "size_bytes"?: number | null;
 };
 
+export type ReminderPolicyIn = {
+  "delivery_end": string;
+  "delivery_start": string;
+  "interval_minutes": number;
+  "timezone"?: string;
+};
+
+export type ReminderPolicyOut = {
+  "delivery_end": string;
+  "delivery_start": string;
+  "interval_minutes": number;
+  "timezone": string;
+};
+
 export type RenderIn = {
   "expected_folder_name": string;
   "retry"?: boolean;

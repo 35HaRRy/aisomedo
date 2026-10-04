@@ -23,6 +23,11 @@ beforeEach(() => {
     if (url.endsWith("/validate")) { if (pairingStatus === 200) paired = true; return json({}, pairingStatus); }
     if (url.includes("/activity")) return json({ events: [{ id: 1, action: "future.event", actor: "system", details: {}, occurred_at: snapshot.generated_at }], next_cursor: null }, activityStatus);
     if (url === "/api/setup") return json(setup, setupStatus);
+    if (url === "/api/settings/plan") return json(snapshot.plan);
+    if (url === "/api/settings/branding") return json({ logo_asset: null, caption_template: "Dojo", intro_asset: null, intro_duration: null, outro_asset: null, outro_duration: null });
+    if (url === "/api/settings/reminders") return json({ interval_minutes: 360, delivery_start: "08:00:00", delivery_end: "22:00:00", timezone: "Europe/Istanbul" });
+    if (url === "/api/meta/status") return json({ health: snapshot.instagram.health, ig_username: snapshot.instagram.username });
+    if (url === "/api/setup/consent") return json({ version: 1, text: "Medya politikası", accepted_at: snapshot.generated_at });
     if (url === "/api/media/upload-limits") return json({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 });
     if (url === "/api/packages/active/editor") return snapshot.package ? json({ ...emptyEditor(), package: snapshot.package }) : json({}, 404);
     if (url === "/api/packages") return json([]);

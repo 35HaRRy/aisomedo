@@ -1,5 +1,6 @@
 import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn, ActiveEditorOut, CompletedPackageOut, SelectionIn, MontageOut, PackageOut, ClearPackageIn, ClearPackageOut, RenderOut } from "./openapi";
 import type { ApproveIn, SkipIn, RescheduleIn, ReviewDetailOut } from "./openapi";
+import type { ReminderPolicyIn, ReminderPolicyOut } from "./openapi";
 
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly detail?: string) { super(`api:${status}`); }
@@ -70,6 +71,8 @@ export const api = {
   patchBranding: (body: BrandingPatchIn, signal?: AbortSignal) => request<BrandingDefaultsOut>("/api/settings/branding", { method: "PATCH", body: JSON.stringify(body), signal }),
   plan: (signal?: AbortSignal) => request<PlanOut>("/api/settings/plan", { signal }),
   savePlan: (body: PlanIn, signal?: AbortSignal) => request<PlanOut>("/api/settings/plan", { method: "PUT", body: JSON.stringify(body), signal }),
+  reminders: (signal?: AbortSignal) => request<ReminderPolicyOut>("/api/settings/reminders", { signal }),
+  saveReminders: (body: ReminderPolicyIn, signal?: AbortSignal) => request<ReminderPolicyOut>("/api/settings/reminders", { method: "PUT", body: JSON.stringify(body), signal }),
   instagram: (signal?: AbortSignal) => request<StatusOut>("/api/meta/status", { signal }),
   connectInstagramToken: (token: string, signal?: AbortSignal) => request<StatusOut>("/api/meta/instagram/token", { method: "POST", body: JSON.stringify({ access_token: token }), signal }),
   startOAuth: (signal?: AbortSignal) => request<StartOut>("/api/meta/oauth/start", { method: "POST", body: JSON.stringify({}), signal }),

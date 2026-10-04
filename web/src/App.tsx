@@ -48,10 +48,9 @@ function PairedShell() {
       {area === "onboarding" ? <OnboardingWizard /> : area === "activity" ? <><header className="page-heading"><h1>{tr.activity}</h1><p>{tr.activityIntro}</p></header>
         {activity.error && <ErrorNotice stale={!!activity.data} retry={activity.retry} />}
         {activity.data ? <ActivitySummary data={activity.data} /> : !activity.error && <p role="status">{tr.loading}</p>}
-      </> : snapshot.data && <>
+      </> : area === "settings" && client ? <SettingsSummary client={client} onRefresh={snapshot.retry} /> : snapshot.data && <>
         {area === "dashboard" && <Dashboard data={snapshot.data} />}
         {area === "package" && <PackageSummary data={snapshot.data} reviewId={reviewId} occurrenceId={occurrenceId} packageFolder={packageFolder} onRefresh={snapshot.retry} stale={snapshot.error} />}
-        {area === "settings" && client && <SettingsSummary data={snapshot.data} client={client} />}
       </>}
     </main>
   </div></UploadProvider>;
