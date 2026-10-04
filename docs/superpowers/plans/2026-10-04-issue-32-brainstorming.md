@@ -9,8 +9,9 @@ navigation, pairing, dashboard, or onboarding flow.
 - [x] Compare approaches and obtain approval of design sections.
 - [x] Write the approved design specification.
 - [x] Review specification for gaps, ambiguity, contradictions, and scope.
-- [ ] Obtain user review of the written specification.
-- [ ] Invoke writing-plans; obtain plan review and execution selection.
+- [x] Obtain user review of the written specification (approved 2026-10-05).
+- [x] Invoke writing-plans and write implementation plan.
+- [ ] Obtain implementation-plan review and execution selection.
 
 ## Requirements and findings
 
@@ -33,4 +34,6 @@ dependency-injection framework, custom navigation framework, or offline database
 
 User approved this direction on 2026-10-04. Written specification:
 docs/superpowers/specs/2026-10-04-android-shell-pairing-onboarding-design.md.
-Written-spec approval is still required before implementation planning.
+Written specification approved 2026-10-05. Implementation plan:
+docs/superpowers/plans/2026-10-05-android-shell-pairing-onboarding.md.
+Plan review and execution-method selection remain required before implementation.

@@ -3,7 +3,7 @@
 Date: 2026-10-04
 Parent: #1, Dojo Reel Publishing MVP
 Prerequisites: #3 and #24 are closed.
-Status: conversational direction approved; written-spec review pending.
+Status: written specification approved by user on 2026-10-05; implementation-plan review pending.
 
 ## Intent and scope
 
