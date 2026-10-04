@@ -631,6 +631,34 @@
         "title": "CodeOut",
         "type": "object"
       },
+      "CompatInfo": {
+        "properties": {
+          "android_current_version_code": {
+            "title": "Android Current Version Code",
+            "type": "integer"
+          },
+          "android_min_version_code": {
+            "title": "Android Min Version Code",
+            "type": "integer"
+          },
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "update_url": {
+            "title": "Update Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_version",
+          "android_min_version_code",
+          "android_current_version_code",
+          "update_url"
+        ],
+        "title": "CompatInfo",
+        "type": "object"
+      },
       "CompletedMediaOut": {
         "properties": {
           "artifacts": {
@@ -1447,6 +1475,39 @@
           "status"
         ],
         "title": "PackageOut",
+        "type": "object"
+      },
+      "PairingOut": {
+        "properties": {
+          "client_id": {
+            "title": "Client Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "device",
+              "browser"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          }
+        },
+        "required": [
+          "client_id",
+          "kind"
+        ],
+        "title": "PairingOut",
         "type": "object"
       },
       "PlanIn": {
@@ -2458,9 +2519,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Compat Api Compat Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/CompatInfo"
                 }
               }
             },
@@ -2872,10 +2931,22 @@
           "content": {
             "application/json": {
               "schema": {
-                "title": "Body"
+                "properties": {
+                  "access_token": {
+                    "maxLength": 16384,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "access_token"
+                ],
+                "title": "Body",
+                "type": "object"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -4399,7 +4470,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PairingOut"
+                }
               }
             },
             "description": "Successful Response"

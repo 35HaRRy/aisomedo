@@ -10,6 +10,7 @@ grows with the schema without changing this script's shape.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +75,71 @@ def typescript_models(schema: dict, roots: list[str]) -> str:
     return "\n\n".join(emitted[name] for name in sorted(emitted)) + "\n"
 
 
+def kotlin_models(schema: dict, roots: list[str]) -> str:
+    """Emit the consumed DTO closure; required nullable fields have no default."""
+    components = schema["components"]["schemas"]
+    pending = set(roots)
+    emitted: dict[str, str] = {}
+
+    def convert(node: dict) -> str:
+        if "$ref" in node:
+            ref = node["$ref"]
+            prefix = "#/components/schemas/"
+            if not ref.startswith(prefix):
+                raise ValueError(f"Unsupported reference: {ref}")
+            name = ref[len(prefix):]
+            pending.add(name)
+            return name
+        if "anyOf" in node:
+            parts = node["anyOf"]
+            values = [part for part in parts if part.get("type") != "null"]
+            if len(parts) != 2 or len(values) != 1:
+                raise ValueError(f"Unsupported union: {node}")
+            return convert(values[0]) + "?"
+        if "allOf" in node or "oneOf" in node or "not" in node:
+            raise ValueError(f"Unsupported schema: {node}")
+        kind = node.get("type")
+        scalars = {"string": "String", "integer": "Int", "number": "Double", "boolean": "Boolean"}
+        if kind in scalars:
+            return scalars[kind]
+        if kind == "array":
+            return f"List<{convert(node['items'])}>"
+        if kind == "object" and isinstance(node.get("additionalProperties"), dict):
+            return f"Map<String, {convert(node['additionalProperties'])}>"
+        raise ValueError(f"Unsupported schema: {node}")
+
+    while pending - emitted.keys():
+        name = min(pending - emitted.keys())
+        node = components[name]
+        if node.get("type") != "object" or "properties" not in node:
+            raise ValueError(f"Unsupported model: {node}")
+        required = node.get("required", [])
+        lines = ["@Serializable", f"data class {name}("]
+        properties = node["properties"]
+        # Preserve the existing compatibility constructor's positional arguments.
+        names = list(properties) if name == "CompatInfo" else sorted(properties)
+        for key in names:
+            value = properties[key]
+            kind = convert(value)
+            default = ""
+            if key not in required:
+                if value.get("default") is not None:
+                    literal = json.dumps(value["default"], ensure_ascii=False).replace("$", r"\$")
+                    default = f" = {literal}"
+                else:
+                    kind = kind if kind.endswith("?") else kind + "?"
+                    default = " = null"
+            prop = re.sub(r"_([a-z])", lambda m: m[1].upper(), key)
+            if prop in {
+                "package", "object", "class", "when", "is", "in", "fun", "val", "var", "as",
+            }:
+                prop = f"`{prop}`"
+            lines.append(f'    @SerialName("{key}") val {prop}: {kind}{default},')
+        lines.append(")")
+        emitted[name] = "\n".join(lines)
+    return "\n\n".join(emitted[name] for name in sorted(emitted)) + "\n"
+
+
 def main() -> None:
     schema = json.loads((ROOT / "openapi.json").read_text(encoding="utf-8"))
     version = schema["info"]["version"]
@@ -125,17 +191,13 @@ def main() -> None:
         "// Regenerate: uv run --project backend python backend/scripts/generate_clients.py",
         "package com.dojo.aisomedo.api",
         "",
+        "import kotlinx.serialization.SerialName",
+        "import kotlinx.serialization.Serializable",
+        "",
         "object ApiContract {",
         f'    const val CONTRACT_VERSION = "{version}"',
         '    const val VERSION_HEADER = "X-Android-Version-Code"',
         "}",
-        "",
-        "data class CompatInfo(",
-        "    val apiVersion: String,",
-        "    val androidMinVersionCode: Int,",
-        "    val androidCurrentVersionCode: Int,",
-        "    val updateUrl: String,",
-        ")",
         "",
         "object UpdatePolicy {",
         "    fun isOutdated(installedVersionCode: Int, minVersionCode: Int): Boolean =",
@@ -143,6 +205,12 @@ def main() -> None:
         "}",
         "",
     ]
+    kt_lines.append(kotlin_models(schema, [
+        "CompatInfo", "PairingOut", "ValidateIn", "ClientOut", "DashboardOut", "SetupOut",
+        "ConsentOut", "AcceptanceIn", "AcceptanceOut", "PlanIn", "PlanOut",
+        "BrandingDefaultsOut", "BrandingAssetOut", "StatusOut", "StartIn", "StartOut",
+        "AttemptOut", "SelectIn",
+    ]))
     ANDROID_TARGET.parent.mkdir(parents=True, exist_ok=True)
     ANDROID_TARGET.write_text("\n".join(kt_lines), encoding="utf-8")
     print(f"wrote {WEB_TARGET} and {ANDROID_TARGET} (contract {version})")

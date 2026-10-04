@@ -72,3 +72,33 @@ def test_upload_generation_emits_wire_types(tmp_path):
     assert 'export type UploadInitIn =' in output
     assert 'export type UploadOut =' in output
     assert '"received_ranges": Array<Array<number>>;' in output
+
+
+def test_kotlin_preserves_required_null_and_defaults():
+    schema = {"components": {"schemas": {"Root": {
+        "type": "object", "required": ["value", "children"], "properties": {
+            "value": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "required": {"type": "boolean", "default": True},
+            "children": {"type": "array", "items": {"$ref": "#/components/schemas/Child"}},
+        },
+    }, "Child": {"type": "object", "required": ["created_at"], "properties": {
+        "created_at": {"type": "string", "format": "date-time"},
+    }}}}}
+    module = generator()
+    output = module.kotlin_models(schema, ["Root"])
+    assert "val value: String?" in output
+    assert "val value: String? = null" not in output
+    assert "val required: Boolean = true" in output
+    assert "val children: List<Child>" in output
+    assert '@SerialName("created_at") val createdAt: String' in output
+    assert output == module.kotlin_models(schema, ["Root"])
+    assert output.index("class Child") < output.index("class Root")
+
+
+@pytest.mark.parametrize("bad", [
+    {"allOf": [{"type": "string"}, {"type": "integer"}]},
+    {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+])
+def test_kotlin_rejects_unsupported_shapes(bad):
+    with pytest.raises(ValueError):
+        generator().kotlin_models({"components": {"schemas": {"Root": bad}}}, ["Root"])

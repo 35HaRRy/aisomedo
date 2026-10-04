@@ -82,6 +82,12 @@ class ClientOut(BaseModel):
     revoked_at: datetime | None
 
 
+class PairingOut(BaseModel):
+    client_id: int
+    kind: Literal["device", "browser"]
+    token: str | None = None
+
+
 @router.post("/codes", response_model=CodeOut)
 def create_code(
     requester: Client = Depends(get_current_client),
@@ -91,7 +97,7 @@ def create_code(
     return CodeOut(code=issued.raw_code, expires_at=issued.expires_at, ttl_seconds=TTL_SECONDS)
 
 
-@router.post("/validate", dependencies=[Depends(enforce_throttle)])
+@router.post("/validate", response_model=PairingOut, dependencies=[Depends(enforce_throttle)])
 def validate(
     body: ValidateIn, request: Request, pairing: DojoPairing = Depends(get_pairing)
 ) -> Response:
