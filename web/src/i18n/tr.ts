@@ -20,6 +20,8 @@ export const tr = {
     rescheduleWarning: "Bu inceleme kapanır. Aynı paket, seçtiğiniz zamanda yeniden incelemeye açılır; önceki tek seferlik zaman değiştirilir.",
     confirm: { approve: "Yayınlamayı onayla", skip: "Atlamayı onayla", reschedule: "Yeni zamanı onayla" },
     done: { approve: "Yayınlama onayı alındı.", skip: "Bu Yayın Zamanı atlandı. Paket korunuyor.", reschedule: "Yeni Yayın Zamanı kaydedildi. Paket korunuyor." },
+    publicationFailed: "Instagram'a yayın yapılamadı. Video korunuyor. Instagram bağlantısını ve sunucunun herkese açık HTTPS adresini kontrol edin.",
+    publicationPending: "Yayın henüz doğrulanmadı. Sonucu kontrol panelinden takip edin; tekrar onay göndermeyin.",
     nextRegular: "Sonraki düzenli Yayın Zamanı", noRegular: "Sonraki düzenli zaman belirlenmedi.",
     newTime: "Yeni Yayın Zamanı (İstanbul)", futureTime: "İstanbul saatine göre gelecekte bir tarih ve saat seçin.",
     previewHelp: "Yayınlamadan önce Reel önizlemesinin yüklenmesini bekleyin ve içeriği kontrol edin.",

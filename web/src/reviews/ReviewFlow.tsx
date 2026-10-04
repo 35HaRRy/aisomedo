@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../api/client";
+import { api, ApiError, type PublicationOutcome } from "../api/client";
 import type { DashboardOut } from "../api/openapi";
 import { formatDate, tr } from "../i18n";
 import { useSession } from "../session";
@@ -22,6 +22,7 @@ function ReviewPanel({ id, onRefresh, stale }: { id: number; onRefresh: () => vo
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [done, setDone] = useState<Decision | null>(null);
+  const [publication, setPublication] = useState<PublicationOutcome | null>(null);
   const [nextRegular, setNextRegular] = useState<string | null>(null);
   const [previewReady, setPreviewReady] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -43,7 +44,10 @@ function ReviewPanel({ id, onRefresh, stale }: { id: number; onRefresh: () => vo
     if (!review || !decision || blocked || decision === "approve" && !previewReady || decision === "reschedule" && !future || request.current) return;
     const current = new AbortController(); request.current = current; setBusy(true);
     try {
-      if (decision === "approve") await api.approveReview(id, { version: review.version }, current.signal);
+      if (decision === "approve") {
+        const result = await api.approveReview(id, { version: review.version }, current.signal);
+        if (!current.signal.aborted) setPublication(result.publication);
+      }
       else if (decision === "skip") {
         const result = await api.skipReview(id, { version: review.version, confirmed: true }, current.signal);
         setNextRegular(result.next_regular_at);
@@ -59,11 +63,17 @@ function ReviewPanel({ id, onRefresh, stale }: { id: number; onRefresh: () => vo
       }
     } finally { request.current = null; if (!current.signal.aborted) setBusy(false); }
   };
+  const publicationFailed = done === "approve" && publication?.status === "failed";
+  const publicationPending = done === "approve" && (publication?.status === "publishing" || publication?.status === "uncertain");
   return <>
     <header className="page-heading"><h1>{copy.title}</h1><p>{copy.intro}</p></header>
     {!snapshot.updatedAt && !snapshot.error && <p role="status">{tr.loading}</p>}
     {snapshot.error && <p role="alert" className="notice">{copy.readError}</p>}
-    {done ? <div role="status" className="notice"><p>{copy.done[done]}</p>{done === "skip" && <p>{copy.nextRegular}: {nextRegular ? formatDate(nextRegular) : copy.noRegular}</p>}</div>
+    {done ? <div role={publicationFailed ? "alert" : "status"} className="notice">
+      <p>{publicationFailed ? copy.publicationFailed : publicationPending ? copy.publicationPending : copy.done[done]}</p>
+      {publicationFailed && publication?.error && <p>{publication.error}</p>}
+      {done === "skip" && <p>{copy.nextRegular}: {nextRegular ? formatDate(nextRegular) : copy.noRegular}</p>}
+    </div>
       : gone ? <p role="status" className="notice">{tr.reviewGone}</p> : <>
         {message && <p role="alert" className="notice">{message}</p>}
         {review && <section className="summary-sheet review-sheet" aria-label={copy.title}>
@@ -103,13 +113,15 @@ function DueContinuation({ data, occurrenceId, packageFolder, onRefresh, stale }
   if (!boundFolder.current && action?.package_folder) boundFolder.current = action.package_folder;
   const editor = snapshot.data, folder = boundFolder.current;
   const changed = !!folder && (data.package?.folder_name !== folder || !!editor && editor.package.folder_name !== folder);
+  const boundReview = useRef<number | null>(null);
+  if (!changed && action?.state === "review_ready" && action.review_id !== null) boundReview.current = action.review_id;
   const [busy, setBusy] = useState(false), [error, setError] = useState(false);
   const { invalidate } = useSession();
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => request.current?.abort(), []);
+  if (boundReview.current !== null) return <ReviewPanel key={boundReview.current} id={boundReview.current} onRefresh={onRefresh} stale={stale || changed} />;
   if (changed) return <p role="status" className="notice">{copy.changedPackage} <a href="#/dashboard">{copy.back}</a></p>;
   if (!action) return <p role="status" className="notice">{tr.reviewGone} <a href="#/dashboard">{copy.back}</a></p>;
-  if (action.review_id !== null && action.state === "review_ready") return <ReviewPanel key={action.review_id} id={action.review_id} onRefresh={onRefresh} stale={stale} />;
   const rendering = editor?.render_status === "queued" || editor?.render_status === "processing";
   const blocked = stale || snapshot.error || busy || !navigator.onLine || !editor || !editor.montage.order.length || editor.montage.over_limit || !editor.montage.duration_complete || rendering;
   const render = async () => {

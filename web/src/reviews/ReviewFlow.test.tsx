@@ -10,6 +10,7 @@ let readStatus = 200;
 let editorStatus = 200;
 let pendingRead: Promise<void> | null = null;
 let actionDetail: string | null = null;
+let publication: { status: string; error: string | null } | null = null;
 let writes: { path: string; body: unknown }[] = [];
 function reviewDetail(id = 2) {
   return { review: { id, occurrence_id: 1, version: 3, package_folder: "03-08-2026 10-00", revision_digest: `exact-${id}`,
@@ -19,6 +20,7 @@ function reviewDetail(id = 2) {
 beforeEach(() => {
   localStorage.clear(); state = dashboard(); editor = emptyEditor(); detail = reviewDetail();
   actionStatus = 200; readStatus = 200; editorStatus = 200; pendingRead = null; actionDetail = null; writes = [];
+  publication = null;
   state.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 3, state: "review_ready", package_folder: state.package!.folder_name, due_at: state.generated_at }];
   window.location.hash = "#/package?review=2";
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
@@ -37,7 +39,7 @@ beforeEach(() => {
         detail.review.status = url.endsWith("/approve") ? "approved" : url.endsWith("/skip") ? "skipped" : "rescheduled";
         state.pending_actions = [];
       }
-      return json(actionDetail ? { detail: actionDetail } : { review: detail.review, next_regular_at: detail.next_regular_at }, actionStatus);
+      return json(actionDetail ? { detail: actionDetail } : { review: detail.review, publication, next_regular_at: detail.next_regular_at }, actionStatus);
     }
     if (url.includes("/activity")) return json({ events: [{ id: 1, action: "review.created", actor: "worker", details: { review_id: 2 }, occurred_at: state.generated_at }], next_cursor: null });
     throw new Error(`Unexpected request: ${url}`);
@@ -75,6 +77,44 @@ it("skip shows next regular slot and sends explicit confirmation only after seco
   fireEvent.click(screen.getByRole("button", { name: "Atlamayı onayla" }));
   await screen.findByText("Bu Yayın Zamanı atlandı. Paket korunuyor.");
   expect(writes[0]).toEqual({ path: "/api/reviews/2/skip", body: { version: 3, confirmed: true } });
+});
+
+it("successful approval HTTP response still displays publication failure after review refresh", async () => {
+  publication = { status: "failed", error: "PUBLIC_BASE_URL must use publicly reachable HTTPS" };
+  render(<App />); await loadedPreview();
+  fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
+  fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Instagram'a yayın yapılamadı"));
+  expect(screen.getByRole("alert")).toHaveTextContent(publication.error!);
+  expect(screen.queryByText("Yayınlama onayı alındı.")).not.toBeInTheDocument();
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  expect(screen.getByRole("alert")).toHaveTextContent("Video korunuyor");
+  expect(writes).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "Onayla ve yayınla" })).not.toBeInTheDocument();
+});
+
+it.each(["publishing", "uncertain"])("%s publication is unconfirmed, not a successful publish", async status => {
+  publication = { status, error: null };
+  render(<App />); await loadedPreview();
+  fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
+  fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
+  await screen.findByText(/Yayın henüz doğrulanmadı/);
+  expect(screen.queryByText("Yayınlama onayı alındı.")).not.toBeInTheDocument();
+  expect(writes).toHaveLength(1);
+});
+
+it.each(["failed", "publishing", "uncertain"])("continuation retains %s outcome after occurrence disappears", async status => {
+  publication = { status, error: "PUBLIC_BASE_URL must use publicly reachable HTTPS" };
+  window.location.hash = `#/package?occurrence=1&folder=${encodeURIComponent(state.package!.folder_name)}`;
+  render(<App />); await loadedPreview();
+  fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
+  fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
+  const outcome = status === "failed" ? /Instagram'a yayın yapılamadı/ : /Yayın henüz doğrulanmadı/;
+  await screen.findByText(outcome);
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  expect(screen.getByText(outcome)).toBeInTheDocument();
+  expect(screen.queryByText("Bu inceleme başka bir cihazda tamamlanmış veya artık mevcut değil.")).not.toBeInTheDocument();
+  expect(writes).toHaveLength(1);
 });
 
 it("reschedule validates future Istanbul time independently of browser timezone", async () => {

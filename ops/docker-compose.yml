@@ -1,3 +1,9 @@
+x-bounded-logs: &bounded-logs
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
@@ -14,6 +20,20 @@ services:
       retries: 10
     ports:
       - "5434:5432"
+      
+  init:
+    image: dojo-backend:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dojo}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-dojo}
+    command: [".venv/bin/python", "-m", "dojo.schema"]
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *bounded-logs
+    restart: "no"
 
   backend:
     build:

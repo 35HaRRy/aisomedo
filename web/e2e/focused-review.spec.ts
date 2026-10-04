@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import { client, dashboard, emptyEditor, setupState } from "../src/test/fixtures";
 
 const bytes = readFileSync(fileURLToPath(new URL("./fixtures/timeline.mp4", import.meta.url)));
-async function fixture(page: Page) {
+async function fixture(page: Page, continuation = false) {
   const state = dashboard(), writes: { path: string; body: unknown }[] = [], errors: string[] = [];
   let status = 200;
+  let publication: { status: string; error: string | null } | null = null;
   const review = { id: 2, occurrence_id: 1, version: 3, package_folder: state.package!.folder_name,
     revision_digest: "immutable-revision", caption: "Dojo antrenmanı\n#dojo #birlikte", status: "pending", created_at: state.generated_at };
   state.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 3, package_folder: review.package_folder, state: "review_ready", due_at: state.generated_at }];
@@ -36,15 +37,19 @@ async function fixture(page: Page) {
       writes.push({ path, body: route.request().postDataJSON() });
       review.status = status === 409 ? "skipped" : path.endsWith("/approve") ? "approved" : path.endsWith("/skip") ? "skipped" : "rescheduled";
       state.pending_actions = [];
-      return json({ review, next_regular_at: "2026-08-17T07:00:00Z" }, status);
+      return json({ review, publication, next_regular_at: "2026-08-17T07:00:00Z" }, status);
     }
     errors.push(`Unexpected API request ${path}`); return json({}, 404);
   });
-  await page.goto("/#/dashboard");
-  await page.getByRole("link", { name: "İnceleme özeti" }).click();
+  if (continuation) await page.goto(`/#/package?occurrence=1&folder=${encodeURIComponent(review.package_folder)}`);
+  else {
+    await page.goto("/#/dashboard");
+    await page.getByRole("link", { name: "İnceleme özeti" }).click();
+  }
   await expect(page.getByRole("heading", { name: "Yayın İncelemesi", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled();
-  return { writes, errors, preview, setStatus: (value: number) => { status = value; } };
+  return { writes, errors, preview, setStatus: (value: number) => { status = value; },
+    setPublication: (value: typeof publication) => { publication = value; } };
 }
 
 test("exact playable review, responsive confirmation and explicit publication", async ({ page }, info) => {
@@ -82,5 +87,21 @@ test("Istanbul reschedule and other-device conflict cannot replay action", async
   await expect(page.getByText("Bu inceleme başka bir cihazda tamamlanmış veya artık mevcut değil.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Onayla ve yayınla" })).toHaveCount(0);
   expect(server.writes).toEqual([{ path: "/api/reviews/2/reschedule", body: { version: 3, new_due_at: "2099-08-04T12:30:00+03:00" } }]);
+  expect(server.errors).toEqual([]);
+});
+
+for (const continuation of [false, true]) test(`failed publication stays visible without resending (${continuation ? "continuation" : "direct review"})`, async ({ page }, info) => {
+  const server = await fixture(page, continuation);
+  server.setPublication({ status: "failed", error: "Instagram publishing requires a publicly reachable HTTPS video URL; configure PUBLIC_HTTPS_ORIGIN or PUBLIC_BASE_URL (localhost/private addresses are not supported)" });
+  await page.getByRole("button", { name: "Onayla ve yayınla" }).click();
+  await page.getByRole("button", { name: "Yayınlamayı onayla", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Instagram'a yayın yapılamadı");
+  await expect(page.getByRole("alert")).toContainText("PUBLIC_BASE_URL");
+  await expect(page.getByText("Yayınlama onayı alındı.", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "İncelemeyi yenile" }).click();
+  await expect(page.getByRole("alert")).toContainText("Video korunuyor");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("publication-failed.png"), fullPage: true });
+  expect(server.writes).toEqual([{ path: "/api/reviews/2/approve", body: { version: 3 } }]);
   expect(server.errors).toEqual([]);
 });

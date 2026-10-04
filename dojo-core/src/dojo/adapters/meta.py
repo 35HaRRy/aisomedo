@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode
+from ipaddress import ip_address
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -162,13 +163,13 @@ class HttpMetaPublisher:
         connection_store: object,
         cipher: object,
         graph_version: str = "v26.0",
-        host: str = "https://graph.facebook.com",
+        host: str | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         self._store = connection_store
         self._cipher = cipher
         self._graph_version = graph_version
-        self._host = host.rstrip("/")
+        self._host = host.rstrip("/") if host else None
         self._http = http_client
 
     def _client(self) -> httpx.Client:
@@ -176,7 +177,7 @@ class HttpMetaPublisher:
             return self._http
         return httpx.Client(timeout=30.0)
 
-    def _credentials(self) -> tuple[str, str]:
+    def _credentials(self) -> tuple[str, str, str]:
         from dojo.exceptions import MetaNotConnected
 
         snapshot = self._store.get_active_snapshot()  # type: ignore[attr-defined]
@@ -188,7 +189,11 @@ class HttpMetaPublisher:
             from dojo.exceptions import MetaPublishFailed as Failed
 
             raise Failed("connected account has no Instagram user id")
-        return token, status.ig_user_id
+        host = self._host or (
+            "https://graph.instagram.com" if status.connection_type == "instagram_login"
+            else "https://graph.facebook.com"
+        )
+        return token, status.ig_user_id, host
 
     @staticmethod
     def _error_kind(data: dict) -> str | None:
@@ -199,11 +204,11 @@ class HttpMetaPublisher:
             return "transient"
         return "definitive"
 
-    def _post(self, path: str, payload: dict) -> dict:
+    def _post(self, path: str, payload: dict, *, host: str) -> dict:
         from dojo.exceptions import MetaPublishFailed as Failed
         from dojo.exceptions import MetaPublishUncertain as Uncertain
 
-        url = f"{self._host}/{self._graph_version}/{path.lstrip('/')}"
+        url = f"{host}/{self._graph_version}/{path.lstrip('/')}"
         close = self._http is None
         client = self._client()
         try:
@@ -230,11 +235,11 @@ class HttpMetaPublisher:
             raise Uncertain(f"Meta request failed ({response.status_code}); outcome unknown")
         return data
 
-    def _get(self, path: str, params: dict) -> dict:
+    def _get(self, path: str, params: dict, *, host: str) -> dict:
         from dojo.exceptions import MetaPublishFailed as Failed
         from dojo.exceptions import MetaPublishUncertain as Uncertain
 
-        url = f"{self._host}/{self._graph_version}/{path.lstrip('/')}"
+        url = f"{host}/{self._graph_version}/{path.lstrip('/')}"
         close = self._http is None
         client = self._client()
         try:
@@ -271,9 +276,33 @@ class HttpMetaPublisher:
         self.publish_container(container_id)
 
     def create_container(self, signed_url: str, caption: str) -> str:
+        from dojo.exceptions import MetaPublishFailed as Failed
         from dojo.exceptions import MetaPublishUncertain as Uncertain
 
-        token, ig_user_id = self._credentials()
+        try:
+            url = urlsplit(signed_url)
+            hostname = (url.hostname or "").rstrip(".").lower()
+            valid = (url.scheme == "https" and bool(hostname)
+                     and (url.port is None or url.port > 0)
+                     and url.username is None and url.password is None
+                     and hostname != "localhost"
+                     and not hostname.endswith((".localhost", ".local")))
+            try:
+                valid = valid and ip_address(hostname).is_global
+            except ValueError:
+                # Reject local names and legacy numeric IP spellings, without DNS I/O.
+                valid = valid and "." in hostname and not all(
+                    part.isdecimal() or part.startswith("0x") for part in hostname.split(".")
+                )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise Failed(
+                "Instagram publishing requires a publicly reachable HTTPS video URL; "
+                "configure PUBLIC_HTTPS_ORIGIN or PUBLIC_BASE_URL "
+                "(localhost/private addresses are not supported)"
+            )
+        token, ig_user_id, host = self._credentials()
         data = self._post(
             f"{ig_user_id}/media",
             {
@@ -282,6 +311,7 @@ class HttpMetaPublisher:
                 "caption": caption,
                 "access_token": token,
             },
+            host=host,
         )
         container_id = data.get("id")
         if not isinstance(container_id, str) or not container_id:
@@ -291,8 +321,10 @@ class HttpMetaPublisher:
     def get_container_status(self, container_id: str) -> str:
         from dojo.exceptions import MetaPublishFailed as Failed
 
-        token, _ = self._credentials()
-        data = self._get(f"{container_id}", {"fields": "status_code", "access_token": token})
+        token, _, host = self._credentials()
+        data = self._get(
+            f"{container_id}", {"fields": "status_code", "access_token": token}, host=host
+        )
         status = data.get("status_code")
         if not isinstance(status, str) or not status:
             raise Failed(f"Meta returned no status for container {container_id}")
@@ -301,10 +333,11 @@ class HttpMetaPublisher:
     def publish_container(self, container_id: str) -> str:
         from dojo.exceptions import MetaPublishUncertain as Uncertain
 
-        token, ig_user_id = self._credentials()
+        token, ig_user_id, host = self._credentials()
         data = self._post(
             f"{ig_user_id}/media_publish",
             {"creation_id": container_id, "access_token": token},
+            host=host,
         )
         media_id = data.get("id")
         if not isinstance(media_id, str) or not media_id:

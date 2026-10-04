@@ -2,6 +2,8 @@ import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, Co
 import type { ApproveIn, SkipIn, RescheduleIn, ReviewDetailOut } from "./openapi";
 import type { ReminderPolicyIn, ReminderPolicyOut } from "./openapi";
 
+export type PublicationOutcome = { status: string; error: string | null };
+
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly detail?: string) { super(`api:${status}`); }
 }
@@ -39,7 +41,7 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
 
 export const api = {
   review: (id: number, signal?: AbortSignal) => request<ReviewDetailOut>(`/api/reviews/${id}`, { signal }),
-  approveReview: (id: number, body: ApproveIn, signal?: AbortSignal) => request(`/api/reviews/${id}/approve`, { method: "POST", body: JSON.stringify(body), signal }, 120000),
+  approveReview: (id: number, body: ApproveIn, signal?: AbortSignal) => request<{ publication: PublicationOutcome | null }>(`/api/reviews/${id}/approve`, { method: "POST", body: JSON.stringify(body), signal }, 120000),
   skipReview: (id: number, body: SkipIn, signal?: AbortSignal) => request<{ next_regular_at: string | null }>(`/api/reviews/${id}/skip`, { method: "POST", body: JSON.stringify(body), signal }),
   rescheduleReview: (id: number, body: RescheduleIn, signal?: AbortSignal) => request(`/api/reviews/${id}/reschedule`, { method: "POST", body: JSON.stringify(body), signal }),
   packageEditor: (signal?: AbortSignal) => request<ActiveEditorOut>("/api/packages/active/editor", { signal }),
