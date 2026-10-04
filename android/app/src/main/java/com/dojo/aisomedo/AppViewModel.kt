@@ -9,6 +9,10 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
 import java.net.URI
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.LocalTime
+import kotlinx.serialization.json.*
 
 enum class Phase { ADDRESS, LOADING, PAIRING, READY, UPDATE_REQUIRED, CONNECTION_ERROR }
 enum class Destination { DASHBOARD, PACKAGE, ACTIVITY, SETTINGS }
@@ -27,6 +31,15 @@ data class AppUiState(
     val stale: Boolean = false,
     val issue: UiIssue? = null,
     val updateUrl: String? = null,
+    val plan: PlanOut? = null,
+    val branding: BrandingDefaultsOut? = null,
+    val consent: ConsentOut? = null,
+    val instagram: StatusOut? = null,
+    val attempt: AttemptOut? = null,
+    val dirtySteps: Set<String> = emptySet(),
+    val changedSteps: Set<String> = emptySet(),
+    val drafts: Map<String, String> = emptyMap(),
+    val consentAcknowledged: Boolean = false,
 )
 
 class AppViewModel(
@@ -44,6 +57,10 @@ class AppViewModel(
     private var prompted = false
 
     init {
+        mutable.update { it.copy(
+            drafts = saved.keys().filter { key -> key.startsWith("draft_") }.associate { key -> key.removePrefix("draft_") to saved.get<String>(key).orEmpty() },
+            dirtySteps = saved.get<ArrayList<String>>("dirty_steps")?.toSet().orEmpty(),
+        ) }
         try { mutable.update { it.copy(origin = store.origin.orEmpty()) } }
         catch (_: Exception) { mutable.update { it.copy(issue = UiIssue.STORAGE) } }
         refresh()
@@ -132,9 +149,11 @@ class AppViewModel(
         }
         val destination = Destination.entries.firstOrNull { it.name == saved.get<String>("destination") } ?: state.value.destination
         mutable.update { it.copy(phase = Phase.READY, client = client, setup = setup, dashboard = dashboard, step = step, destination = destination, stale = false) }
+        if (step != null) loadConfiguration(current)
     }
 
     private fun failure(error: Exception, pairing: Boolean = false) {
+        if (error is PolicyChanged) return
         when {
             error is ApiFailure && error.status == 426 -> mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
             error is ApiFailure && error.status == 401 && !pairing -> {
@@ -176,8 +195,123 @@ class AppViewModel(
     fun selectStep(key: String) {
         if (state.value.phase != Phase.READY) return
         saved["step"] = key; mutable.update { it.copy(step = key) }
+        launch { loadConfiguration(it) }
+    }
+
+    fun markDirty(step: String) {
+        mutable.update { it.copy(dirtySteps = it.dirtySteps + step) }
+        saved["dirty_steps"] = ArrayList(state.value.dirtySteps)
+    }
+    fun setDraft(key: String, value: String, step: String) {
+        if (state.value.phase != Phase.READY) return
+        saved["draft_$key"] = value
+        mutable.update { it.copy(drafts = it.drafts + (key to value)) }; markDirty(step)
+    }
+    private fun clean(step: String) {
+        mutable.update { it.copy(dirtySteps = it.dirtySteps - step, changedSteps = it.changedSteps - step) }
+        saved["dirty_steps"] = ArrayList(state.value.dirtySteps)
+    }
+    private fun remoteDrafts(step: String, values: Map<String, String>, changed: Boolean) {
+        if (step in state.value.dirtySteps) {
+            if (changed) mutable.update { it.copy(changedSteps = it.changedSteps + step) }
+        } else {
+            values.forEach { (key, value) -> saved["draft_$key"] = value }
+            mutable.update { it.copy(drafts = it.drafts + values) }
+        }
+    }
+    private suspend fun loadConfiguration(current: Int) {
+        suspend fun load(action: suspend () -> Unit) {
+            try { action() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (generation != current) return
+                if (e is ApiFailure && (e.status == 401 || e.status == 426)) throw e
+                if (e is ApiFailure && e.status == 404) {
+                    mutable.update { it.copy(consent = null, consentAcknowledged = false, issue = UiIssue.POLICY_MISSING) }
+                } else failure(e)
+            }
+        }
+        load {
+            val plan = api().plan()
+            if (generation == current) {
+                remoteDrafts("schedule", mapOf("date" to plan.anchorDate.orEmpty(), "time" to plan.anchorTime.orEmpty(), "enabled" to plan.enabled.toString()), state.value.plan != null && state.value.plan != plan)
+                mutable.update { it.copy(plan = plan) }
+            }
+        }
+        load {
+            val branding = api().branding()
+            if (generation == current) {
+                remoteDrafts("caption_template", mapOf("caption" to branding.captionTemplate.orEmpty()), state.value.branding != null && state.value.branding?.captionTemplate != branding.captionTemplate)
+                remoteDrafts("cards", mapOf("intro_duration" to (branding.introDuration?.toString() ?: "3"), "outro_duration" to (branding.outroDuration?.toString() ?: "3")), state.value.branding != null && state.value.branding != branding)
+                mutable.update { it.copy(branding = branding) }
+            }
+        }
+        load {
+            val policy = api().consent()
+            if (generation == current) mutable.update { it.copy(consent = policy, consentAcknowledged = it.consentAcknowledged && it.consent?.version == policy.version && policy.acceptedAt == null) }
+        }
+    }
+    fun reloadStep(step: String) {
+        if (state.value.phase != Phase.READY || state.value.busy) return
+        clean(step); launch { loadConfiguration(it) }
+    }
+    fun acknowledgeConsent(acknowledged: Boolean) {
+        mutable.update { it.copy(consentAcknowledged = acknowledged && it.consent != null && it.consent.acceptedAt == null) }
+    }
+    private fun mutation(step: String, action: suspend () -> Unit) {
+        if (state.value.phase != Phase.READY) return
+        launch { current ->
+            action()
+            if (generation != current) return@launch
+            clean(step)
+            val setup = api().setup()
+            if (generation != current) return@launch
+            mutable.update { it.copy(setup = setup) }
+            loadConfiguration(current)
+            if (generation == current && setup.checklist.any { it.key == step && it.complete }) nextStep()
+        }
+    }
+    fun savePlan(anchorDate: String, anchorTime: String, enabled: Boolean) {
+        val valid = runCatching { LocalDate.parse(anchorDate).dayOfWeek == DayOfWeek.MONDAY && LocalTime.parse(anchorTime) != null }.getOrDefault(false)
+        if (!valid) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
+        mutation("schedule") { api().savePlan(PlanIn(anchorDate, anchorTime, enabled)) }
+    }
+    fun saveCaption(text: String) {
+        if (text.isBlank()) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
+        mutation("caption_template") { api().patchBranding(buildJsonObject { put("caption_template", text) }) }
+    }
+    fun acceptConsent(displayedVersion: Int) {
+        val policy = state.value.consent ?: return
+        if (policy.acceptedAt != null || !state.value.consentAcknowledged || policy.version != displayedVersion) return
+        mutation("consent") {
+            try { api().acceptConsent(displayedVersion); mutable.update { it.copy(consentAcknowledged = false) } }
+            catch (e: ApiFailure) {
+                if (e.status != 409) throw e
+                mutable.update { it.copy(consentAcknowledged = false) }
+                loadConfiguration(generation)
+                mutable.update { it.copy(issue = UiIssue.POLICY_CHANGED) }
+                throw PolicyChanged()
+            }
+        }
+    }
+    fun nextStep() {
+        val keys = state.value.setup?.checklist?.map { it.key }.orEmpty()
+        val next = keys.getOrNull(keys.indexOf(state.value.step) + 1) ?: "summary"
+        saved["step"] = next; mutable.update { it.copy(step = next) }
+    }
+    fun finishSetup() {
+        if (state.value.phase != Phase.READY) return
+        launch { current ->
+            val setup = api().setup()
+            if (generation != current) return@launch
+            mutable.update { it.copy(setup = setup) }
+            if (setup.ready) { closeSetup(); navigate(Destination.DASHBOARD) }
+            else mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }
+        }
     }
 }
+
+private class PolicyChanged : Exception()
 
 fun safeExternalUrl(raw: String): String? = try {
     val uri = URI(raw)

@@ -40,6 +40,11 @@ class AppViewModelTest {
             bodies["/api/pairing/me"] = """{"id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
             bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
             bodies["/api/dashboard"] = """{"generated_at":"2026-10-05T12:00:00Z","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
+            bodies["/api/settings/plan"] = """{"anchor_date":"2026-10-05","anchor_time":"18:30:00","enabled":false,"timezone":"Europe/Istanbul"}"""
+            bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":null,"intro_duration":null,"logo_asset":"logo.png","outro_asset":null,"outro_duration":null}"""
+            bodies["/api/setup/consent"] = """{"accepted_at":null,"text":"Politika metni","version":1}"""
+            bodies["/api/setup/consent/accept"] = """{"accepted_at":"2026-10-05T12:00:00Z","version":1}"""
+            bodies["/api/meta/status"] = """{"health":"not_connected"}"""
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = MockResponse()
                     .setResponseCode(codes[request.path] ?: 200).setBody(bodies[request.path] ?: "{}")
@@ -67,7 +72,7 @@ class AppViewModelTest {
             f.await { it.phase == Phase.PAIRING }
             assertEquals("/api/compat", f.server.takeRequest().path)
             f.model.pair("12345678", "Telefon")
-            f.await { it.phase == Phase.READY }
+            f.await { it.phase == Phase.READY && !it.busy }
             assertEquals("DEVICE", f.store.readToken(f.origin))
             assertEquals("/api/pairing/validate", f.server.takeRequest().path)
             assertEquals("/api/pairing/me", f.server.takeRequest().path)
@@ -77,7 +82,7 @@ class AppViewModelTest {
     @Test fun readyInstallationOpensDashboardAndDoesNotReopenSetupAfterRefresh() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.bodies["/api/setup"] = """{"checklist":[],"ready":true}"""
-            f.await { it.phase == Phase.READY }
+            f.await { it.phase == Phase.READY && !it.busy }
             assertNull(f.model.state.value.step)
             f.model.refresh(); f.await { !it.busy }
             assertNull(f.model.state.value.step)
@@ -85,7 +90,7 @@ class AppViewModelTest {
     }
     @Test fun incompleteSetupOpensOnlyOnce() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
-            f.await { it.phase == Phase.READY }
+            f.await { it.phase == Phase.READY && !it.busy }
             f.model.closeSetup(); f.model.refresh(); f.await { !it.busy }
             assertNull(f.model.state.value.step)
         }
@@ -99,7 +104,7 @@ class AppViewModelTest {
             assertNull(f.store.readToken(f.origin))
         }
         Fixture(paired = true).use { f ->
-            f.await { it.phase == Phase.READY }
+            f.await { it.phase == Phase.READY && !it.busy }
             f.codes["/api/dashboard"] = 401
             f.model.refresh(); f.await { it.phase == Phase.PAIRING }
             assertNull(f.store.readToken(f.origin)); assertNull(f.model.state.value.client)
@@ -107,7 +112,7 @@ class AppViewModelTest {
     }
     @Test fun updateBlocksButRetainsCredential() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
-            f.await { it.phase == Phase.READY }
+            f.await { it.phase == Phase.READY && !it.busy }
             f.codes["/api/dashboard"] = 426
             f.bodies["/api/dashboard"] = """{"update_url":"https://example.com/update"}"""
             f.model.refresh(); f.await { it.phase == Phase.UPDATE_REQUIRED }
@@ -144,6 +149,84 @@ class AppViewModelTest {
             f.await { it.issue == UiIssue.STORAGE }
             assertEquals(Phase.PAIRING, f.model.state.value.phase)
             assertNull(f.model.state.value.client)
+        }
+    }
+    @Test fun validDisabledMondayPlanSendsLocalTimeAndRejectsTuesday() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.savePlan("2026-10-06", "18:30", false)
+            assertEquals(UiIssue.INVALID_INPUT, f.model.state.value.issue)
+            f.model.savePlan("2026-10-05", "18:30", false)
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val put = requests.single { it.method == "PUT" }
+            assertEquals("/api/settings/plan", put.path)
+            assertEquals("""{"anchor_date":"2026-10-05","anchor_time":"18:30","enabled":false}""", put.body.readUtf8())
+        }
+    }
+    @Test fun captionPatchOnlyChangesCaptionAndFailedSaveRetainsStepAndDraft() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }
+            f.model.setDraft("caption", "Yeni", "caption_template")
+            f.codes["/api/settings/branding"] = 422
+            f.model.saveCaption("Yeni"); f.await { !it.busy }
+            assertEquals("caption_template", f.model.state.value.step)
+            assertEquals("Yeni", f.model.state.value.drafts["caption"])
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"caption_template":"Yeni"}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+    @Test fun changedPolicyAndConflictClearAcknowledgementWithoutAutoAccept() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.consent != null && !it.busy }
+            f.model.acknowledgeConsent(true)
+            f.bodies["/api/setup/consent"] = """{"accepted_at":null,"text":"Yeni politika","version":2}"""
+            f.model.refresh(); f.await { it.consent?.version == 2 && !it.busy }
+            assertFalse(f.model.state.value.consentAcknowledged)
+            f.model.acknowledgeConsent(true)
+            f.codes["/api/setup/consent/accept"] = 409
+            f.model.acceptConsent(2); f.await { !it.busy }
+            assertEquals(UiIssue.POLICY_CHANGED, f.model.state.value.issue)
+            assertFalse(f.model.state.value.consentAcknowledged)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"version":2}""", requests.single { it.method == "POST" }.body.readUtf8())
+        }
+    }
+    @Test fun inheritedAcceptanceAndMissingPolicyDoNotPost() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup/consent"] = """{"accepted_at":"2026-10-05T12:00:00Z","text":"Politika","version":1}"""
+            f.await { it.consent != null && !it.busy }
+            f.model.acceptConsent(1)
+            f.codes["/api/setup/consent"] = 404
+            f.model.reloadStep("consent"); f.await { !it.busy }
+            assertNull(f.model.state.value.consent)
+            assertEquals(UiIssue.POLICY_MISSING, f.model.state.value.issue)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertTrue(requests.none { it.method == "POST" })
+        }
+    }
+    @Test fun dirtyDraftSurvivesRemoteRefreshAndExplicitReloadReplacesIt() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.branding != null && !it.busy }
+            f.model.setDraft("caption", "Taslak", "caption_template")
+            f.bodies["/api/settings/branding"] = f.bodies["/api/settings/branding"]!!.replace("Eski", "Uzak")
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals("Taslak", f.model.state.value.drafts["caption"])
+            assertTrue("caption_template" in f.model.state.value.changedSteps)
+            assertEquals("Taslak", f.model.saved.get<String>("draft_caption"))
+            f.model.reloadStep("caption_template"); f.await { !it.busy }
+            assertEquals("Uzak", f.model.state.value.drafts["caption"])
+        }
+    }
+    @Test fun readinessDoesNotSkipCardsAndFinishChecksServer() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"caption_template","label":"Caption","complete":true},{"key":"cards","label":"Cards","complete":false,"required":false}],"ready":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }; f.model.nextStep()
+            assertEquals("cards", f.model.state.value.step)
+            f.model.finishSetup(); f.await { !it.busy }
+            assertNull(f.model.state.value.step)
         }
     }
 }

@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dojo.aisomedo.*
 import com.dojo.aisomedo.R
+import com.dojo.aisomedo.onboarding.OnboardingScreen
 
 @Composable fun DojoTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(), content = content)
@@ -54,11 +55,8 @@ import com.dojo.aisomedo.R
                         state.issue?.let { Text(stringResource(issueLabel(it)), color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }) }
                         if (!ready) StartupScreen(state, model, openUrl)
-                        else if (state.step != null) {
-                            Heading(R.string.setup)
-                            Text(stringResource(R.string.setup_incomplete))
-                            Button(onClick = model::closeSetup) { Text(stringResource(R.string.leave_setup)) }
-                        } else when (state.destination) {
+                        else if (state.step != null) OnboardingScreen(model, openUrl)
+                        else when (state.destination) {
                             Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup)
                             Destination.PACKAGE -> { Heading(R.string.active_package); PackageSummary(state.dashboard); Text(stringResource(R.string.package_read_only)) }
                             Destination.ACTIVITY -> { Heading(R.string.activity); Text(stringResource(R.string.activity_later)) }
