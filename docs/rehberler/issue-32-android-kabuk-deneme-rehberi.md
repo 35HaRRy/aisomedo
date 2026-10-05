@@ -505,9 +505,20 @@ Testler Python çalışma zamanını araç olarak kullanır; kendiniz Python kod
 SQL yazmazsınız. Bu testler canlı Meta bağlantısını veya gerçek cihaz görünümünü
 doğrulamaz.
 
-OpenAPI metadata'sını tarayıcıda `http://localhost:8000/docs` üzerinden okuyun:
-`CompatInfo`, `PairingOut` ve manuel Instagram token isteğinin şeması görünmeli.
-Gerçek tokenı Swagger denemelerine/HAR kayıtlarına koymayın.
+Backend'de `/docs` ve `/openapi.json` web yolları kapalıdır. Sözleşme metadata'sını
+depodaki kayıttan PowerShell ile okuyun; sunucuya veya gerçek tokena gerek yoktur:
+
+```powershell
+$Contract = Get-Content -Raw -Encoding UTF8 -LiteralPath backend/openapi.json | ConvertFrom-Json
+$Contract.components.schemas.CompatInfo.required
+$Contract.components.schemas.PairingOut.properties.PSObject.Properties.Name
+$Contract.paths.'/api/meta/instagram/token'.post.requestBody.content.'application/json'.schema.properties.access_token
+```
+
+Beklenen: uyumluluk alanları, `client_id/kind/token` eşleştirme alanları ve
+manuel token isteğinde `string`, uzunluk sınırları. Bu, commitli sözleşmeyi
+incelemedir; çalışan sunucuyla drift olmadığını tek başına kanıtlamaz.
+Gerçek token içeren istek/HAR kayıtlarını paylaşmayın.
 
 ## 13. Güvenli kapatma
 

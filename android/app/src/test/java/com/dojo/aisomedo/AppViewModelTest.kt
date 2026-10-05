@@ -31,6 +31,7 @@ class AppViewModelTest {
         val codes = ConcurrentHashMap<String, Int>()
         val bodies = ConcurrentHashMap<String, String>()
         var delayPath: String? = null
+        val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
         val origin: String
         val model: AppViewModel
         private val owner = ViewModelStore()
@@ -46,9 +47,12 @@ class AppViewModelTest {
             bodies["/api/setup/consent/accept"] = """{"accepted_at":"2026-10-05T12:00:00Z","version":1}"""
             bodies["/api/meta/status"] = """{"health":"not_connected"}"""
             server.dispatcher = object : Dispatcher() {
-                override fun dispatch(request: RecordedRequest): MockResponse = MockResponse()
-                    .setResponseCode(codes[request.path] ?: 200).setBody(bodies[request.path] ?: "{}")
-                    .also { if (request.path == delayPath) it.setBodyDelay(1, TimeUnit.SECONDS) }
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    seen.add("${request.method} ${request.path}")
+                    return MockResponse().setResponseCode(codes[request.path] ?: 200)
+                        .setBody(bodies[request.path] ?: "{}")
+                        .also { if (request.path == delayPath) it.setBodyDelay(1, TimeUnit.SECONDS) }
+                }
             }
             server.start()
             origin = server.url("/").toString().trimEnd('/')
@@ -293,6 +297,7 @@ class AppViewModelTest {
     }
     @Test fun cardClearingUsesNullAndInvalidDurationsNeverSend() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/outro.png","outro_duration":2.0}"""
             f.bodies["/api/setup/cards/skip"] = """{"checklist":[],"ready":true}"""
             f.await { it.phase == Phase.READY && !it.busy }
             val before = f.server.requestCount
@@ -334,6 +339,105 @@ class AppViewModelTest {
                 val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
                 assertTrue(requests.none { it.path == "/api/pairing/validate" })
             } finally { owner.clear() }
+        }
+    }
+    private fun settleDelayedResponse() {
+        Thread.sleep(1100)
+        repeat(50) { main.scheduler.runCurrent(); Thread.sleep(10) }
+    }
+    @Test fun preview426CannotBeOverwrittenByDelayedDashboard() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val before = f.seen.count { it == "GET /api/dashboard" }
+            f.delayPath = "/api/dashboard"
+            f.codes["/api/settings/branding/assets/image.png"] = 426
+            f.model.refresh()
+            f.await { f.seen.count { it == "GET /api/dashboard" } > before }
+            runCatching { f.model.preview("/api/settings/branding/assets/image.png") }
+            settleDelayedResponse()
+            assertEquals(Phase.UPDATE_REQUIRED, f.model.state.value.phase)
+            assertFalse(f.model.state.value.busy)
+            assertEquals("DEVICE", f.store.readToken(f.origin))
+        }
+    }
+    @Test fun preview401CancelsUploadBeforeReferenceOrPatchCanReturn() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/settings/branding/assets"] = """{"asset":"branding/assets/old.png","preview_url":"/api/settings/branding/assets/old.png"}"""
+            f.delayPath = "/api/settings/branding/assets"
+            f.codes["/api/settings/branding/assets/image.png"] = 401
+            f.model.uploadAsset("logo_asset", byteArrayOf(1))
+            f.await { "POST /api/settings/branding/assets" in f.seen }
+            runCatching { f.model.preview("/api/settings/branding/assets/image.png") }
+            settleDelayedResponse()
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertTrue(f.model.state.value.pendingAssets.isEmpty())
+            assertTrue(f.model.saved.keys().none { it.startsWith("pending_") })
+            assertFalse("PATCH /api/settings/branding" in f.seen)
+        }
+    }
+    @Test fun captionEditMadeAfterSubmissionRemainsUnsavedAndVisible() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }
+            f.model.setDraft("caption", "Submitted", "caption_template")
+            f.bodies["/api/settings/branding"] = f.bodies["/api/settings/branding"]!!.replace("Eski", "Submitted")
+            f.delayPath = "/api/settings/branding"
+            f.model.saveCaption("Submitted")
+            f.await { "PATCH /api/settings/branding" in f.seen }
+            f.model.setDraft("caption", "New unsaved text", "caption_template")
+            f.await { !it.busy }
+            assertEquals("New unsaved text", f.model.state.value.drafts["caption"])
+            assertTrue("caption_template" in f.model.state.value.dirtySteps)
+        }
+    }
+    @Test fun leavingWizardDuringSaveDoesNotReopenIt() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"caption_template","label":"Caption","complete":true},{"key":"cards","label":"Cards","complete":false,"required":false}],"ready":true}"""
+            f.delayPath = "/api/settings/branding"
+            f.model.saveCaption("Submitted")
+            f.await { "PATCH /api/settings/branding" in f.seen }
+            f.model.navigate(Destination.SETTINGS)
+            f.await { !it.busy }
+            assertNull(f.model.state.value.step)
+            assertEquals(Destination.SETTINGS, f.model.state.value.destination)
+        }
+    }
+    @Test fun clearingOneCardDoesNotSendOtherCardCachedValues() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/old-outro.png","outro_duration":2.0}"""
+            f.await { it.branding?.introAsset != null && !it.busy }
+            f.model.saveCards(null, null, "branding/assets/old-outro.png", 2.0)
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_asset":null,"intro_duration":null}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+    @Test fun changingOneDurationDoesNotResendAssetOrUntouchedDuration() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/old-outro.png","outro_duration":2.0}"""
+            f.await { it.branding?.introAsset != null && !it.busy }
+            f.model.saveCards("branding/assets/intro.png", 5.0, "branding/assets/old-outro.png", 2.0)
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_duration":5.0}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+    @Test fun dirtyIntroDurationDoesNotFreezeOrOverwriteRemoteOutroDuration() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/outro.png","outro_duration":2.0}"""
+            f.await { it.branding?.introAsset != null && !it.busy }
+            f.model.setDraft("intro_duration", "5", "cards")
+            f.bodies["/api/settings/branding"] = f.bodies["/api/settings/branding"]!!.replace("\"outro_duration\":2.0", "\"outro_duration\":7.0")
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals("5", f.model.state.value.drafts["intro_duration"])
+            assertEquals("7.0", f.model.state.value.drafts["outro_duration"])
+            f.model.saveCards("branding/assets/intro.png", 5.0, "branding/assets/outro.png", f.model.state.value.drafts["outro_duration"]!!.toDouble())
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_duration":5.0}""", requests.single { it.method == "PATCH" }.body.readUtf8())
         }
     }
 }

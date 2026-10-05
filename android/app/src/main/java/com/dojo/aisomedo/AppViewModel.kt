@@ -139,11 +139,13 @@ class AppViewModel(
     }
 
     private suspend fun authenticated(current: Int) {
+        checkSession(current)
         val client = api().me()
         if (client.kind != "device" || client.revokedAt != null) throw ApiFailure(401)
         if (generation != current) return
         mutable.update { it.copy(client = client) }
         val setup = api().setup()
+        checkSession(current)
         val dashboard = api().dashboard()
         if (generation != current) return
         var step = state.value.step
@@ -160,9 +162,12 @@ class AppViewModel(
     private fun failure(error: Exception, pairing: Boolean = false) {
         if (error is PolicyChanged) return
         when {
-            error is ApiFailure && error.status == 426 -> mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
+            error is ApiFailure && error.status == 426 -> {
+                cancelWork()
+                mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, busy = false, updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
+            }
             error is ApiFailure && error.status == 401 && !pairing -> {
-                generation++; token = null; prompted = false; clearSaved()
+                cancelWork(); token = null; prompted = false; clearSaved()
                 val issue = try { store.clearToken(); null } catch (_: Exception) { UiIssue.STORAGE }
                 mutable.value = AppUiState(origin = state.value.origin, compat = state.value.compat, phase = Phase.PAIRING, issue = issue)
             }
@@ -182,9 +187,13 @@ class AppViewModel(
     }
 
     fun changeServer() {
-        generation++; job?.cancel(); token = null; prompted = false; clearSaved()
+        cancelWork(); token = null; prompted = false; clearSaved()
         val issue = try { store.setOrigin(""); null } catch (_: Exception) { UiIssue.STORAGE }
         mutable.value = AppUiState(issue = issue)
+    }
+    private fun cancelWork() { generation++; job?.cancel(); job = null }
+    private fun checkSession(current: Int) {
+        if (generation != current) throw CancellationException("Session changed")
     }
     private fun clearSaved() { saved.keys().toList().forEach { saved.remove<Any>(it) } }
     fun navigate(destination: Destination) {
@@ -210,15 +219,26 @@ class AppViewModel(
     fun setDraft(key: String, value: String, step: String) {
         if (state.value.phase != Phase.READY) return
         saved["draft_$key"] = value
+        saved["edited_$key"] = true
         mutable.update { it.copy(drafts = it.drafts + (key to value)) }; markDirty(step)
     }
     private fun clean(step: String) {
         mutable.update { it.copy(dirtySteps = it.dirtySteps - step, changedSteps = it.changedSteps - step) }
         saved["dirty_steps"] = ArrayList(state.value.dirtySteps)
+        val keys = when (step) {
+            "schedule" -> listOf("date", "time", "enabled")
+            "caption_template" -> listOf("caption")
+            "cards" -> listOf("intro_duration", "outro_duration")
+            else -> emptyList()
+        }
+        keys.forEach { saved.remove<Boolean>("edited_$it") }
     }
     private fun remoteDrafts(step: String, values: Map<String, String>, changed: Boolean) {
         if (step in state.value.dirtySteps) {
             if (changed) mutable.update { it.copy(changedSteps = it.changedSteps + step) }
+            val untouched = values.filterKeys { saved.get<Boolean>("edited_$it") != true }
+            untouched.forEach { (key, value) -> saved["draft_$key"] = value }
+            mutable.update { it.copy(drafts = it.drafts + untouched) }
         } else {
             values.forEach { (key, value) -> saved["draft_$key"] = value }
             mutable.update { it.copy(drafts = it.drafts + values) }
@@ -226,6 +246,7 @@ class AppViewModel(
     }
     private suspend fun loadConfiguration(current: Int) {
         suspend fun load(missingPolicy: Boolean = false, action: suspend () -> Unit) {
+            checkSession(current)
             try { action() }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
@@ -267,17 +288,20 @@ class AppViewModel(
     fun acknowledgeConsent(acknowledged: Boolean) {
         mutable.update { it.copy(consentAcknowledged = acknowledged && it.consent != null && it.consent.acceptedAt == null) }
     }
-    private fun mutation(step: String, action: suspend () -> Unit) {
+    private fun mutation(step: String, action: suspend (Int) -> Unit) {
         if (state.value.phase != Phase.READY) return
+        val submittedDrafts = state.value.drafts
+        val submittingStep = state.value.step
         launch { current ->
-            action()
-            if (generation != current) return@launch
-            clean(step)
+            action(current)
+            checkSession(current)
+            if (state.value.drafts == submittedDrafts) clean(step)
             val setup = api().setup()
             if (generation != current) return@launch
             mutable.update { it.copy(setup = setup) }
             loadConfiguration(current)
-            if (generation == current && setup.checklist.any { it.key == step && it.complete }) nextStep()
+            if (generation == current && submittingStep == step && state.value.step == submittingStep &&
+                step !in state.value.dirtySteps && setup.checklist.any { it.key == step && it.complete }) nextStep()
         }
     }
     fun savePlan(anchorDate: String, anchorTime: String, enabled: Boolean) {
@@ -292,12 +316,18 @@ class AppViewModel(
     fun acceptConsent(displayedVersion: Int) {
         val policy = state.value.consent ?: return
         if (policy.acceptedAt != null || !state.value.consentAcknowledged || policy.version != displayedVersion) return
-        mutation("consent") {
-            try { api().acceptConsent(displayedVersion); mutable.update { it.copy(consentAcknowledged = false) } }
+        mutation("consent") { current ->
+            try {
+                api().acceptConsent(displayedVersion)
+                checkSession(current)
+                mutable.update { it.copy(consentAcknowledged = false) }
+            }
             catch (e: ApiFailure) {
+                checkSession(current)
                 if (e.status != 409) throw e
                 mutable.update { it.copy(consentAcknowledged = false) }
-                loadConfiguration(generation)
+                loadConfiguration(current)
+                checkSession(current)
                 mutable.update { it.copy(issue = UiIssue.POLICY_CHANGED) }
                 throw PolicyChanged()
             }
@@ -320,8 +350,9 @@ class AppViewModel(
     }
     fun connectInstagramToken(token: String) {
         if (token.isBlank() || token.length > 16384) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
-        mutation("instagram") {
+        mutation("instagram") { current ->
             val status = api().connectInstagramToken(token.trim())
+            checkSession(current)
             mutable.update { it.copy(instagram = status) }
         }
     }
@@ -350,8 +381,9 @@ class AppViewModel(
     fun selectAccount(igUserId: String) {
         val attempt = state.value.attempt ?: return
         if (attempt.status != "completed" || attempt.candidates.none { it.igUserId == igUserId }) return
-        mutation("instagram") {
+        mutation("instagram") { current ->
             val status = api().selectAccount(attempt.id, igUserId)
+            checkSession(current)
             saved.remove<String>("oauth_attempt")
             mutable.update { it.copy(instagram = status, attempt = AttemptOut(emptyList(), attempt.id, "selected")) }
         }
@@ -362,38 +394,47 @@ class AppViewModel(
         if (bytes.isEmpty() || bytes.size > 10 * 1024 * 1024 || (field != "logo_asset" && cardDuration(field) == null)) {
             mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return
         }
-        mutation(if (field == "logo_asset") "logo" else "cards") {
+        mutation(if (field == "logo_asset") "logo" else "cards") { current ->
             val uploaded = api().uploadBranding(bytes)
+            checkSession(current)
             saved["pending_$field"] = uploaded.asset; saved["preview_$field"] = uploaded.previewUrl
             mutable.update { it.copy(pendingAssets = it.pendingAssets + (field to uploaded)) }
-            installAsset(field, uploaded)
+            installAsset(field, uploaded, current)
         }
     }
     private fun cardDuration(field: String): Double? = state.value.drafts[field.replace("_asset", "_duration")]?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }
-    private suspend fun installAsset(field: String, uploaded: BrandingAssetOut) {
+    private suspend fun installAsset(field: String, uploaded: BrandingAssetOut, current: Int) {
+        checkSession(current)
         val changes = buildJsonObject {
             put(field, uploaded.asset)
             if (field != "logo_asset") put(field.replace("_asset", "_duration"), cardDuration(field) ?: throw IllegalArgumentException("duration"))
         }
         val branding = api().patchBranding(changes)
+        checkSession(current)
         saved.remove<String>("pending_$field"); saved.remove<String>("preview_$field")
         mutable.update { it.copy(branding = branding, pendingAssets = it.pendingAssets - field) }
     }
     fun retryAsset(field: String) {
         val uploaded = state.value.pendingAssets[field] ?: return
-        mutation(if (field == "logo_asset") "logo" else "cards") { installAsset(field, uploaded) }
+        mutation(if (field == "logo_asset") "logo" else "cards") { installAsset(field, uploaded, it) }
     }
     fun saveCards(introAsset: String?, introDuration: Double?, outroAsset: String?, outroDuration: Double?) {
         fun valid(asset: String?, duration: Double?) = if (asset == null) duration == null else duration != null && duration.isFinite() && duration > 0
         if (!valid(introAsset, introDuration) || !valid(outroAsset, outroDuration)) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
-        mutation("cards") {
-            api().patchBranding(buildJsonObject {
-                put("intro_asset", introAsset?.let(::JsonPrimitive) ?: JsonNull)
-                put("intro_duration", introDuration?.let(::JsonPrimitive) ?: JsonNull)
-                put("outro_asset", outroAsset?.let(::JsonPrimitive) ?: JsonNull)
-                put("outro_duration", outroDuration?.let(::JsonPrimitive) ?: JsonNull)
-            })
+        val baseline = state.value.branding ?: return
+        val changes = buildJsonObject {
+            fun card(prefix: String, asset: String?, duration: Double?, oldAsset: String?, oldDuration: Double?) {
+                if (asset != oldAsset) {
+                    put("${prefix}_asset", asset?.let(::JsonPrimitive) ?: JsonNull)
+                    put("${prefix}_duration", duration?.let(::JsonPrimitive) ?: JsonNull)
+                } else if (duration != oldDuration) {
+                    put("${prefix}_duration", duration?.let(::JsonPrimitive) ?: JsonNull)
+                }
+            }
+            card("intro", introAsset, introDuration, baseline.introAsset, baseline.introDuration)
+            card("outro", outroAsset, outroDuration, baseline.outroAsset, baseline.outroDuration)
         }
+        if (changes.isNotEmpty()) mutation("cards") { api().patchBranding(changes) }
     }
     fun skipCards() { mutation("cards") { api().skipCards() } }
     suspend fun preview(path: String): ByteArray {

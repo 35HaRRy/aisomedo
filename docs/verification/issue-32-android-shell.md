@@ -12,7 +12,7 @@ package editor, review actions, notification registration or full activity feed.
 
 User guide: [Turkish step-by-step trials](../rehberler/issue-32-android-kabuk-deneme-rehberi.md).
 The guide uses Android/browser interactions and PowerShell fallbacks, without
-Python or SQL source code. Its 22 PowerShell blocks were parsed successfully;
+Python or SQL source code. Its 23 PowerShell blocks were parsed successfully;
 live infrastructure/provider trial steps were not executed here.
 
 ## Executed checks
@@ -23,7 +23,7 @@ live infrastructure/provider trial steps were not executed here.
 | Full backend suite | `uv run --project backend pytest backend/tests -q`: 171 passed; existing Starlette deprecation warning |
 | Backend typecheck | `uv run --project backend mypy backend/src/backend`: 23 files, no issues |
 | Changed Python lint | Generator, compat/pairing/meta routes, generation and Android-contract tests: Ruff passed |
-| Android | 32 JVM tests passed; Gradle `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest` successful locally |
+| Android | 39 JVM tests passed after review fixes; Gradle `:app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest` successful locally |
 | Web tests | `npm test`: 288 passed in 30 files |
 | Web production build | `npm run build`: TypeScript check and Vite build passed |
 | Generation | Exported OpenAPI and regenerated clients; final drift check compares intended committed outputs |
@@ -82,6 +82,28 @@ integration regressions also failed on concrete behavior assertions before fixes
 These are blocked/unexecuted checks, not silently passing acceptance criteria.
 Issue #32 is not closed solely on compilation evidence.
 
+## Independent final review and fix pass
+
+One read-only fresh-context reviewer inspected `d9e941f..765a2cf`. No critical
+findings. All five important findings were reproduced and fixed in one pass:
+
+| Finding | Regression and fix evidence |
+| --- | --- |
+| Preview 426 overwritten by older dashboard refresh | `preview426CannotBeOverwrittenByDelayedDashboard`: RED READY instead of UPDATE_REQUIRED; generation invalidation plus pending-job cancellation now retains update gate/credential |
+| Preview 401 left upload continuation alive | `preview401CancelsUploadBeforeReferenceOrPatchCanReturn`: RED old reference restored; cancellation and generation checks before post-await state writes/follow-up requests suppress both reference and PATCH |
+| Save erased edits entered after submission | `captionEditMadeAfterSubmissionRemainsUnsavedAndVisible`: RED Submitted replaced new unsaved text; only unchanged submitted draft snapshots are marked clean |
+| Save completion reopened a wizard the user left | `leavingWizardDuringSaveDoesNotReopenIt`: RED caption step reopened; advance only while user remains on submitting step without a dirty replacement draft |
+| Card clear/duration writes replaced untouched sibling settings | `clearingOneCardDoesNotSendOtherCardCachedValues`, `changingOneDurationDoesNotResendAssetOrUntouchedDuration`, `dirtyIntroDurationDoesNotFreezeOrOverwriteRemoteOutroDuration`: RED excessive PATCH keys/old untouched draft; diff-only card PATCH and per-field edited flags preserve untouched server values |
+
+Guide's disabled `/docs` link was graded Important for this user's runnable
+walkthrough: replaced with read-only PowerShell inspection of committed
+`backend/openapi.json`. Failing route-reference assertion preceded fix; all
+23 PowerShell blocks parse and replacement inspection returned expected schemas.
+
+Final Android suite/build/lint: 39/39 JVM tests passed. No re-review dispatched;
+test-first fix pass is the verification. No deferred minor findings remain.
+Native runtime/provider/remote CI checks above remain outstanding, not passed.
+
 ## Implementation rulings
 
 - Track the copied known Gradle wrapper/daemon files; keep SDK-local settings
@@ -97,6 +119,15 @@ Issue #32 is not closed solely on compilation evidence.
 - Keep consent acknowledgement transient and keyed by displayed policy; submit
   validates displayed version and clears checkbox immediately. Wrong choice cost:
   consolidating checkbox state into ViewModel.
+- Final reviewer declined native rendering/accessibility/picker/Keystore runtime
+  judgment. Keep acceptance blocked until device trials; do not close issue on
+  compiled tests. Wrong choice cost: undiscovered native behavior defects.
+- Final reviewer declined live Meta success judgment. Keep synthetic OAuth and
+  live provider evidence separate; stub provider is not upgraded in this ticket.
+  Wrong choice cost: live-provider defects need separate integration work.
+- Final reviewer declined deferred feature-scope judgment. Preserve #33–#38
+  boundaries and truthful placeholders. Wrong choice cost: follow-up tickets are
+  required before those Android workflows are usable.
 
 ## Deferred feature scope
 

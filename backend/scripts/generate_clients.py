@@ -118,7 +118,10 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
         properties = node["properties"]
         # Preserve the existing compatibility constructor's positional arguments.
         names = (
-            ["api_version", "android_min_version_code", "android_current_version_code", "update_url"]
+            [
+                "api_version", "android_min_version_code",
+                "android_current_version_code", "update_url",
+            ]
             if name == "CompatInfo" else sorted(properties)
         )
         for key in names:
