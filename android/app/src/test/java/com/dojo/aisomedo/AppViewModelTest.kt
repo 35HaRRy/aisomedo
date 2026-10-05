@@ -229,4 +229,50 @@ class AppViewModelTest {
             assertNull(f.model.state.value.step)
         }
     }
+    @Test fun oauthUsesExternalHttpsWithoutCredentialAndRequiresExplicitCandidate() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/meta/oauth/start"] = """{"attempt_id":"attempt-1","auth_url":"https://www.facebook.com/oauth?state=synthetic"}"""
+            f.bodies["/api/meta/oauth/attempts/attempt-1"] = """{"id":"attempt-1","status":"completed","candidates":[{"ig_user_id":"one","ig_username":"dojo1"},{"ig_user_id":"two","ig_username":"dojo2"}]}"""
+            f.bodies["/api/meta/oauth/attempts/attempt-1/select"] = """{"health":"healthy","ig_username":"dojo2"}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            val urls = mutableListOf<String>()
+            f.model.startOAuth { urls.add(it) }; f.await { !it.busy }
+            assertEquals(listOf("https://www.facebook.com/oauth?state=synthetic"), urls)
+            assertEquals("attempt-1", f.model.saved.get<String>("oauth_attempt"))
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals(2, f.model.state.value.attempt?.candidates?.size)
+            val before = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("{}", before.single { it.path == "/api/meta/oauth/start" }.body.readUtf8())
+            assertTrue(before.none { it.path?.endsWith("/select") == true })
+            f.model.selectAccount("two"); f.await { !it.busy }
+            val after = (0 until f.server.requestCount - before.size).map { f.server.takeRequest() }
+            assertEquals("""{"ig_user_id":"two"}""", after.single { it.path?.endsWith("/select") == true }.body.readUtf8())
+            assertNull(f.model.saved.get<String>("oauth_attempt"))
+        }
+    }
+    @Test fun rejectedTokenPreservesPriorConnectionAndNoRawSecret() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/meta/status"] = """{"health":"healthy","ig_username":"dojo"}"""
+            f.codes["/api/meta/instagram/token"] = 422
+            f.bodies["/api/meta/instagram/token"] = """{"detail":"MANUAL-SECRET"}"""
+            f.await { it.instagram != null && !it.busy }
+            f.model.connectInstagramToken("MANUAL-SECRET"); f.await { !it.busy }
+            assertEquals("dojo", f.model.state.value.instagram?.igUsername)
+            assertEquals(UiIssue.INVALID_INPUT, f.model.state.value.issue)
+            assertFalse(f.model.state.value.toString().contains("MANUAL-SECRET"))
+            assertTrue(f.model.saved.keys().none { f.model.saved.get<Any>(it).toString().contains("MANUAL-SECRET") })
+        }
+    }
+    @Test fun missingAttemptOffersRestartAndInvalidBrowserUrlNeverLaunches() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/meta/oauth/start"] = """{"attempt_id":"attempt-1","auth_url":"http://evil.example"}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.startOAuth { fail("Unsafe browser URL") }; f.await { !it.busy }
+            assertNull(f.model.saved.get<String>("oauth_attempt"))
+            f.bodies["/api/meta/oauth/start"] = """{"attempt_id":"attempt-1","auth_url":"https://www.facebook.com/oauth"}"""
+            f.codes["/api/meta/oauth/attempts/attempt-1"] = 404
+            f.model.startOAuth {}; f.await { !it.busy }; f.model.checkOAuth(); f.await { !it.busy }
+            assertEquals("unknown", f.model.state.value.attempt?.status)
+        }
+    }
 }

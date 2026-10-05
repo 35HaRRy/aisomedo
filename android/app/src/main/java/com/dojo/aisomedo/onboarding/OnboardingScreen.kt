@@ -33,6 +33,7 @@ import java.util.Locale
             OutlinedButton(onClick = { model.reloadStep(state.step.orEmpty()) }, enabled = !state.busy) { Text(stringResource(R.string.reload_step)) }
         }
         when (state.step) {
+            "instagram" -> InstagramStep(model, openUrl)
             "pairing" -> state.client?.let { Text(stringResource(R.string.device_identity, it.name, it.id)) }
             "schedule" -> ScheduleStep(state, model)
             "consent" -> {

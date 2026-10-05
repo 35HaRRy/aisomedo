@@ -101,4 +101,13 @@
     <string name="cards">Giriş ve çıkış kartları</string>
     <string name="setup_summary">Kurulum özeti</string>
     <string name="unknown_step">Diğer kurulum adımı</string>
+    <string name="instagram_token">Instagram erişim tokenı</string>
+    <string name="instagram_connect">Token ile bağlan</string>
+    <string name="oauth_start">Instagram ile yetkilendir</string>
+    <string name="oauth_pending">Tarayıcıda yetkilendirmeyi tamamlayıp uygulamaya dönün.</string>
+    <string name="oauth_choose">Bağlanacak Instagram hesabını seçin.</string>
+    <string name="oauth_selected">Hesap seçimi kaydedildi.</string>
+    <string name="oauth_failed">Yetkilendirme tamamlanmadı veya süresi doldu. Yeniden başlatın.</string>
+    <string name="oauth_select_account">%1$s hesabını seç</string>
+    <string name="oauth_check">Yetkilendirme sonucunu kontrol et</string>
 </resources>

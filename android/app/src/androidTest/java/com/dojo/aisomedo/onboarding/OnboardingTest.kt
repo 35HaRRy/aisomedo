@@ -27,4 +27,16 @@ class OnboardingTest {
         compose.onNodeWithTag("consent-acknowledgement").assertDoesNotExist()
         compose.onNodeWithText("Bu sürümü kabul et").assertDoesNotExist()
     }
+    @Test fun manualTokenClearsOnSubmissionAndBackground() {
+        val active = mutableStateOf(true)
+        var token = ""
+        compose.setContent { DojoTheme { InstagramTokenForm(false, active.value) { token = it } } }
+        compose.onNodeWithText("Instagram erişim tokenı").performTextInput("SYNTHETIC")
+        compose.onNodeWithText("Token ile bağlan").performClick()
+        Assert.assertEquals("SYNTHETIC", token)
+        compose.onNodeWithTag("instagram-token").assertTextContains("")
+        compose.onNodeWithTag("instagram-token").performTextInput("BACKGROUND")
+        compose.runOnIdle { active.value = false }
+        compose.onNodeWithTag("instagram-token").assert(hasText("BACKGROUND").not())
+    }
 }

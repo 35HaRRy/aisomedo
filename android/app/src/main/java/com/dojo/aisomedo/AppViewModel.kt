@@ -150,6 +150,7 @@ class AppViewModel(
         val destination = Destination.entries.firstOrNull { it.name == saved.get<String>("destination") } ?: state.value.destination
         mutable.update { it.copy(phase = Phase.READY, client = client, setup = setup, dashboard = dashboard, step = step, destination = destination, stale = false) }
         if (step != null) loadConfiguration(current)
+        checkKnownAttempt(current)
     }
 
     private fun failure(error: Exception, pairing: Boolean = false) {
@@ -220,13 +221,13 @@ class AppViewModel(
         }
     }
     private suspend fun loadConfiguration(current: Int) {
-        suspend fun load(action: suspend () -> Unit) {
+        suspend fun load(missingPolicy: Boolean = false, action: suspend () -> Unit) {
             try { action() }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 if (generation != current) return
                 if (e is ApiFailure && (e.status == 401 || e.status == 426)) throw e
-                if (e is ApiFailure && e.status == 404) {
+                if (missingPolicy && e is ApiFailure && e.status == 404) {
                     mutable.update { it.copy(consent = null, consentAcknowledged = false, issue = UiIssue.POLICY_MISSING) }
                 } else failure(e)
             }
@@ -246,9 +247,13 @@ class AppViewModel(
                 mutable.update { it.copy(branding = branding) }
             }
         }
-        load {
+        load(missingPolicy = true) {
             val policy = api().consent()
             if (generation == current) mutable.update { it.copy(consent = policy, consentAcknowledged = it.consentAcknowledged && it.consent?.version == policy.version && policy.acceptedAt == null) }
+        }
+        load {
+            val instagram = api().instagram()
+            if (generation == current) mutable.update { it.copy(instagram = instagram) }
         }
     }
     fun reloadStep(step: String) {
@@ -307,6 +312,44 @@ class AppViewModel(
             mutable.update { it.copy(setup = setup) }
             if (setup.ready) { closeSetup(); navigate(Destination.DASHBOARD) }
             else mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }
+        }
+    }
+    fun connectInstagramToken(token: String) {
+        if (token.isBlank() || token.length > 16384) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
+        mutation("instagram") {
+            val status = api().connectInstagramToken(token.trim())
+            mutable.update { it.copy(instagram = status) }
+        }
+    }
+    fun startOAuth(openUrl: (String) -> Unit) {
+        if (state.value.phase != Phase.READY) return
+        launch { current ->
+            val start = api().startOAuth()
+            val url = safeExternalUrl(start.authUrl) ?: throw IllegalArgumentException("authorization URL")
+            require(start.attemptId.isNotBlank())
+            if (generation != current) return@launch
+            saved["oauth_attempt"] = start.attemptId
+            mutable.update { it.copy(attempt = AttemptOut(emptyList(), start.attemptId, "pending")) }
+            openUrl(url)
+        }
+    }
+    private suspend fun checkKnownAttempt(current: Int) {
+        val id = saved.get<String>("oauth_attempt") ?: return
+        val attempt = try { api().oauthAttempt(id) }
+        catch (e: ApiFailure) { if (e.status == 404) AttemptOut(emptyList(), id, "unknown") else throw e }
+        if (generation == current) mutable.update { it.copy(attempt = attempt) }
+    }
+    fun checkOAuth() {
+        if (state.value.phase != Phase.READY) return
+        launch { checkKnownAttempt(it) }
+    }
+    fun selectAccount(igUserId: String) {
+        val attempt = state.value.attempt ?: return
+        if (attempt.status != "completed" || attempt.candidates.none { it.igUserId == igUserId }) return
+        mutation("instagram") {
+            val status = api().selectAccount(attempt.id, igUserId)
+            saved.remove<String>("oauth_attempt")
+            mutable.update { it.copy(instagram = status, attempt = AttemptOut(emptyList(), attempt.id, "selected")) }
         }
     }
 }
