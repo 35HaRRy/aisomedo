@@ -122,4 +122,6 @@
     <string name="skip_cards">Kartları değiştirmeden devam et</string>
     <string name="image_preview">%1$s önizlemesi</string>
     <string name="preview_failed">Görsel önizlemesi yüklenemedi. Tekrar deneyin.</string>
+    <string name="refresh_due">Bağlantı yenilemesi gerekli</string>
+    <string name="reconnect_required">Yeniden bağlantı gerekli</string>
 </resources>

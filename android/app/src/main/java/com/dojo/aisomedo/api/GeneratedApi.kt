@@ -62,9 +62,9 @@ data class ClientOut(
 
 @Serializable
 data class CompatInfo(
-    @SerialName("android_current_version_code") val androidCurrentVersionCode: Int,
-    @SerialName("android_min_version_code") val androidMinVersionCode: Int,
     @SerialName("api_version") val apiVersion: String,
+    @SerialName("android_min_version_code") val androidMinVersionCode: Int,
+    @SerialName("android_current_version_code") val androidCurrentVersionCode: Int,
     @SerialName("update_url") val updateUrl: String,
 )
 

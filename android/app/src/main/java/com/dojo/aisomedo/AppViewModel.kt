@@ -399,7 +399,11 @@ class AppViewModel(
     suspend fun preview(path: String): ByteArray {
         require(state.value.phase == Phase.READY)
         val current = generation
-        val bytes = api().preview(path)
+        val bytes = try { api().preview(path) }
+        catch (e: ApiFailure) {
+            if (generation == current && (e.status == 401 || e.status == 426)) failure(e)
+            throw e
+        }
         if (generation != current) throw CancellationException("Session changed")
         return bytes
     }

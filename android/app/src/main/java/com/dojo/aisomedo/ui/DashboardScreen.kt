@@ -58,7 +58,8 @@ fun statusLabel(value: String) = when (value) {
     "review_ready" -> R.string.review_ready; "empty_package" -> R.string.empty_package; "preparing" -> R.string.preparing
     "healthy", "connected" -> R.string.healthy; "unhealthy" -> R.string.unhealthy; "not_connected" -> R.string.not_connected
     "expired" -> R.string.expired; "expiring" -> R.string.expiring; "revoked" -> R.string.revoked
+    "refresh_due" -> R.string.refresh_due; "reconnect_required" -> R.string.reconnect_required
     "idle" -> R.string.idle; "busy" -> R.string.busy; "stopped" -> R.string.stopped
-    "active" -> R.string.active; "completed" -> R.string.completed; "regular" -> R.string.regular; "one_off" -> R.string.one_off
+    "active" -> R.string.active; "completed" -> R.string.completed; "regular" -> R.string.regular; "one_off", "oneoff" -> R.string.one_off
     else -> R.string.unknown_status
 }

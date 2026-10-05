@@ -117,7 +117,10 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
         lines = ["@Serializable", f"data class {name}("]
         properties = node["properties"]
         # Preserve the existing compatibility constructor's positional arguments.
-        names = list(properties) if name == "CompatInfo" else sorted(properties)
+        names = (
+            ["api_version", "android_min_version_code", "android_current_version_code", "update_url"]
+            if name == "CompatInfo" else sorted(properties)
+        )
         for key in names:
             value = properties[key]
             kind = convert(value)

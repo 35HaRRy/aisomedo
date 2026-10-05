@@ -6,6 +6,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GeneratedApiTest {
+    @Test fun compatibilityConstructorKeepsItsOriginalArgumentOrder() {
+        val compat = CompatInfo("0.1.0", 1, 2, "https://example.com/update")
+        assertEquals("0.1.0", compat.apiVersion)
+        assertEquals(1, compat.androidMinVersionCode)
+    }
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = true }
 
     @Test fun requiredNullableFieldCannotBeOmitted() {

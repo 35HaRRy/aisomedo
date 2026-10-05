@@ -305,4 +305,35 @@ class AppViewModelTest {
             assertTrue(requests.any { it.path == "/api/setup/cards/skip" })
         }
     }
+    @Test fun previewRevocationClearsSessionAndBlocksWizardWrites() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.codes["/api/settings/branding/assets/image.png"] = 401
+            runCatching { f.model.preview("/api/settings/branding/assets/image.png") }
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertNull(f.store.readToken(f.origin))
+            val before = f.server.requestCount
+            f.model.saveCaption("Blocked"); main.scheduler.runCurrent()
+            assertEquals(before, f.server.requestCount)
+        }
+    }
+    @Test fun reopeningSessionRestoresSafeDraftAndNeverPairsAgain() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.setDraft("caption", "Rotation draft", "caption_template")
+            f.model.navigate(Destination.SETTINGS)
+            val saved = SavedStateHandle(f.model.saved.keys().associateWith { f.model.saved.get<Any>(it) })
+            val owner = ViewModelStore()
+            val reopened = AppViewModel(f.store, OkHttpClient(), 1, true, saved)
+            owner.put("reopened", reopened)
+            try {
+                repeat(500) { main.scheduler.runCurrent(); if (reopened.state.value.phase != Phase.READY || reopened.state.value.busy) Thread.sleep(10) }
+                assertEquals(Phase.READY, reopened.state.value.phase)
+                assertEquals("Rotation draft", reopened.state.value.drafts["caption"])
+                assertEquals(Destination.SETTINGS, reopened.state.value.destination)
+                val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+                assertTrue(requests.none { it.path == "/api/pairing/validate" })
+            } finally { owner.clear() }
+        }
+    }
 }
