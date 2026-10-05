@@ -275,4 +275,34 @@ class AppViewModelTest {
             assertEquals("unknown", f.model.state.value.attempt?.status)
         }
     }
+    @Test fun uploadPatchFailureRetainsReferenceAndRetryDoesNotReupload() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding/assets"] = """{"asset":"branding/assets/image.png","preview_url":"/api/settings/branding/assets/image.png"}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.codes["/api/settings/branding"] = 422
+            f.model.uploadAsset("logo_asset", byteArrayOf(1, 2, 3)); f.await { !it.busy }
+            assertEquals("branding/assets/image.png", f.model.state.value.pendingAssets["logo_asset"]?.asset)
+            f.codes["/api/settings/branding"] = 200
+            f.model.retryAsset("logo_asset"); f.await { !it.busy }
+            assertTrue(f.model.state.value.pendingAssets.isEmpty())
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals(1, requests.count { it.method == "POST" && it.path == "/api/settings/branding/assets" })
+            assertEquals(2, requests.count { it.method == "PATCH" })
+            assertTrue(requests.none { it.path?.startsWith("/api/packages") == true })
+        }
+    }
+    @Test fun cardClearingUsesNullAndInvalidDurationsNeverSend() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup/cards/skip"] = """{"checklist":[],"ready":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            val before = f.server.requestCount
+            listOf(Double.NaN, 0.0, Double.POSITIVE_INFINITY).forEach { f.model.saveCards("branding/assets/a.png", it, null, null) }
+            assertEquals(before, f.server.requestCount)
+            f.model.saveCards(null, null, null, null); f.await { !it.busy }
+            f.model.skipCards(); f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_asset":null,"intro_duration":null,"outro_asset":null,"outro_duration":null}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+            assertTrue(requests.any { it.path == "/api/setup/cards/skip" })
+        }
+    }
 }

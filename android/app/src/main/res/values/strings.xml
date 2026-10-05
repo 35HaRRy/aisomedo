@@ -110,4 +110,16 @@
     <string name="oauth_failed">Yetkilendirme tamamlanmadı veya süresi doldu. Yeniden başlatın.</string>
     <string name="oauth_select_account">%1$s hesabını seç</string>
     <string name="oauth_check">Yetkilendirme sonucunu kontrol et</string>
+    <string name="branding_help">PNG veya JPEG seçin. En fazla 10 MiB; görsel boyutları ve içerik sunucuda doğrulanır. Seçilen görsel yüklenip kaydedilir.</string>
+    <string name="intro_card">Giriş kartı</string>
+    <string name="outro_card">Çıkış kartı</string>
+    <string name="card_duration">Süre (saniye, pozitif sayı)</string>
+    <string name="choose_image">Görsel seç ve kaydet</string>
+    <string name="upload_pending">Görsel yüklendi, ancak ayarlara kaydedilemedi. Yeniden yüklemeden kaydı tekrar deneyin.</string>
+    <string name="retry_asset">Yüklenen görseli kaydetmeyi tekrar dene</string>
+    <string name="clear_card">Bu kartı ve süresini kaldır</string>
+    <string name="save_cards">Kart sürelerini kaydet</string>
+    <string name="skip_cards">Kartları değiştirmeden devam et</string>
+    <string name="image_preview">%1$s önizlemesi</string>
+    <string name="preview_failed">Görsel önizlemesi yüklenemedi. Tekrar deneyin.</string>
 </resources>

@@ -34,6 +34,8 @@ import java.util.Locale
         }
         when (state.step) {
             "instagram" -> InstagramStep(model, openUrl)
+            "logo" -> BrandingSteps(model, false)
+            "cards" -> BrandingSteps(model, true)
             "pairing" -> state.client?.let { Text(stringResource(R.string.device_identity, it.name, it.id)) }
             "schedule" -> ScheduleStep(state, model)
             "consent" -> {

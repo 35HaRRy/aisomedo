@@ -40,6 +40,7 @@ data class AppUiState(
     val changedSteps: Set<String> = emptySet(),
     val drafts: Map<String, String> = emptyMap(),
     val consentAcknowledged: Boolean = false,
+    val pendingAssets: Map<String, BrandingAssetOut> = emptyMap(),
 )
 
 class AppViewModel(
@@ -60,6 +61,9 @@ class AppViewModel(
         mutable.update { it.copy(
             drafts = saved.keys().filter { key -> key.startsWith("draft_") }.associate { key -> key.removePrefix("draft_") to saved.get<String>(key).orEmpty() },
             dirtySteps = saved.get<ArrayList<String>>("dirty_steps")?.toSet().orEmpty(),
+            pendingAssets = listOf("logo_asset", "intro_asset", "outro_asset").mapNotNull { field ->
+                saved.get<String>("pending_$field")?.let { asset -> field to BrandingAssetOut(asset, saved.get<String>("preview_$field").orEmpty()) }
+            }.toMap(),
         ) }
         try { mutable.update { it.copy(origin = store.origin.orEmpty()) } }
         catch (_: Exception) { mutable.update { it.copy(issue = UiIssue.STORAGE) } }
@@ -352,6 +356,54 @@ class AppViewModel(
             mutable.update { it.copy(instagram = status, attempt = AttemptOut(emptyList(), attempt.id, "selected")) }
         }
     }
+    fun uploadAsset(field: String, bytes: ByteArray) {
+        require(field in listOf("logo_asset", "intro_asset", "outro_asset"))
+        if (state.value.phase != Phase.READY || state.value.busy) return
+        if (bytes.isEmpty() || bytes.size > 10 * 1024 * 1024 || (field != "logo_asset" && cardDuration(field) == null)) {
+            mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return
+        }
+        mutation(if (field == "logo_asset") "logo" else "cards") {
+            val uploaded = api().uploadBranding(bytes)
+            saved["pending_$field"] = uploaded.asset; saved["preview_$field"] = uploaded.previewUrl
+            mutable.update { it.copy(pendingAssets = it.pendingAssets + (field to uploaded)) }
+            installAsset(field, uploaded)
+        }
+    }
+    private fun cardDuration(field: String): Double? = state.value.drafts[field.replace("_asset", "_duration")]?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }
+    private suspend fun installAsset(field: String, uploaded: BrandingAssetOut) {
+        val changes = buildJsonObject {
+            put(field, uploaded.asset)
+            if (field != "logo_asset") put(field.replace("_asset", "_duration"), cardDuration(field) ?: throw IllegalArgumentException("duration"))
+        }
+        val branding = api().patchBranding(changes)
+        saved.remove<String>("pending_$field"); saved.remove<String>("preview_$field")
+        mutable.update { it.copy(branding = branding, pendingAssets = it.pendingAssets - field) }
+    }
+    fun retryAsset(field: String) {
+        val uploaded = state.value.pendingAssets[field] ?: return
+        mutation(if (field == "logo_asset") "logo" else "cards") { installAsset(field, uploaded) }
+    }
+    fun saveCards(introAsset: String?, introDuration: Double?, outroAsset: String?, outroDuration: Double?) {
+        fun valid(asset: String?, duration: Double?) = if (asset == null) duration == null else duration != null && duration.isFinite() && duration > 0
+        if (!valid(introAsset, introDuration) || !valid(outroAsset, outroDuration)) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
+        mutation("cards") {
+            api().patchBranding(buildJsonObject {
+                put("intro_asset", introAsset?.let(::JsonPrimitive) ?: JsonNull)
+                put("intro_duration", introDuration?.let(::JsonPrimitive) ?: JsonNull)
+                put("outro_asset", outroAsset?.let(::JsonPrimitive) ?: JsonNull)
+                put("outro_duration", outroDuration?.let(::JsonPrimitive) ?: JsonNull)
+            })
+        }
+    }
+    fun skipCards() { mutation("cards") { api().skipCards() } }
+    suspend fun preview(path: String): ByteArray {
+        require(state.value.phase == Phase.READY)
+        val current = generation
+        val bytes = api().preview(path)
+        if (generation != current) throw CancellationException("Session changed")
+        return bytes
+    }
+    fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
 }
 
 private class PolicyChanged : Exception()
