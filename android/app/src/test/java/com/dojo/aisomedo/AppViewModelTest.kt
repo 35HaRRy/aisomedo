@@ -1,0 +1,443 @@
+package com.dojo.aisomedo
+
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModelStore
+import com.dojo.aisomedo.auth.SessionStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.*
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.*
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.After
+import org.junit.Test
+import java.nio.file.Files
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import javax.crypto.KeyGenerator
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class AppViewModelTest {
+    private val main = StandardTestDispatcher()
+    @Before fun setMain() { Dispatchers.setMain(main) }
+    @After fun resetMain() { Dispatchers.resetMain() }
+
+    private inner class Fixture(paired: Boolean = false, configure: Boolean = true) : AutoCloseable {
+        val dir = Files.createTempDirectory("dojo-vm").toFile()
+        private val key = KeyGenerator.getInstance("AES").generateKey()
+        val store = SessionStore(dir) { key }
+        val server = MockWebServer()
+        val codes = ConcurrentHashMap<String, Int>()
+        val bodies = ConcurrentHashMap<String, String>()
+        var delayPath: String? = null
+        val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val origin: String
+        val model: AppViewModel
+        private val owner = ViewModelStore()
+        init {
+            bodies["/api/compat"] = """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":1,"update_url":"https://example.com/update"}"""
+            bodies["/api/pairing/validate"] = """{"client_id":1,"kind":"device","token":"DEVICE"}"""
+            bodies["/api/pairing/me"] = """{"id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
+            bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
+            bodies["/api/dashboard"] = """{"generated_at":"2026-10-05T12:00:00Z","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
+            bodies["/api/settings/plan"] = """{"anchor_date":"2026-10-05","anchor_time":"18:30:00","enabled":false,"timezone":"Europe/Istanbul"}"""
+            bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":null,"intro_duration":null,"logo_asset":"logo.png","outro_asset":null,"outro_duration":null}"""
+            bodies["/api/setup/consent"] = """{"accepted_at":null,"text":"Politika metni","version":1}"""
+            bodies["/api/setup/consent/accept"] = """{"accepted_at":"2026-10-05T12:00:00Z","version":1}"""
+            bodies["/api/meta/status"] = """{"health":"not_connected"}"""
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    seen.add("${request.method} ${request.path}")
+                    return MockResponse().setResponseCode(codes[request.path] ?: 200)
+                        .setBody(bodies[request.path] ?: "{}")
+                        .also { if (request.path == delayPath) it.setBodyDelay(1, TimeUnit.SECONDS) }
+                }
+            }
+            server.start()
+            origin = server.url("/").toString().trimEnd('/')
+            if (configure) store.setOrigin(origin)
+            if (paired) store.saveToken(origin, "DEVICE")
+            model = AppViewModel(store, OkHttpClient(), 1, true, SavedStateHandle())
+            owner.put("model", model)
+        }
+        fun await(predicate: (AppUiState) -> Boolean) {
+            repeat(500) { main.scheduler.runCurrent(); if (predicate(model.state.value)) return; Thread.sleep(10) }
+            fail("State did not arrive: ${model.state.value}")
+        }
+        override fun close() { owner.clear(); server.shutdown(); dir.deleteRecursively() }
+    }
+
+    @Test fun noOriginRequiresAddressWithoutNetwork() = runTest(main.scheduler) {
+        Fixture(configure = false).use { f -> f.await { it.phase == Phase.ADDRESS }; assertEquals(0, f.server.requestCount) }
+    }
+    @Test fun compatibilityBeforePairingThenTokenSavedAndMeValidated() = runTest(main.scheduler) {
+        Fixture().use { f ->
+            f.await { it.phase == Phase.PAIRING }
+            assertEquals("/api/compat", f.server.takeRequest().path)
+            f.model.pair("12345678", "Telefon")
+            f.await { it.phase == Phase.READY && !it.busy }
+            assertEquals("DEVICE", f.store.readToken(f.origin))
+            assertEquals("/api/pairing/validate", f.server.takeRequest().path)
+            assertEquals("/api/pairing/me", f.server.takeRequest().path)
+            assertEquals("consent", f.model.state.value.step)
+        }
+    }
+    @Test fun readyInstallationOpensDashboardAndDoesNotReopenSetupAfterRefresh() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[],"ready":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            assertNull(f.model.state.value.step)
+            f.model.refresh(); f.await { !it.busy }
+            assertNull(f.model.state.value.step)
+        }
+    }
+    @Test fun incompleteSetupOpensOnlyOnce() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.closeSetup(); f.model.refresh(); f.await { !it.busy }
+            assertNull(f.model.state.value.step)
+        }
+    }
+    @Test fun invalidCodeIsDifferentFromAuthenticated401() = runTest(main.scheduler) {
+        Fixture().use { f ->
+            f.codes["/api/pairing/validate"] = 401
+            f.await { it.phase == Phase.PAIRING }
+            f.model.pair("bad", "Telefon"); f.await { it.issue == UiIssue.INVALID_CODE }
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertNull(f.store.readToken(f.origin))
+        }
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.codes["/api/dashboard"] = 401
+            f.model.refresh(); f.await { it.phase == Phase.PAIRING }
+            assertNull(f.store.readToken(f.origin)); assertNull(f.model.state.value.client)
+        }
+    }
+    @Test fun updateBlocksButRetainsCredential() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.codes["/api/dashboard"] = 426
+            f.bodies["/api/dashboard"] = """{"update_url":"https://example.com/update"}"""
+            f.model.refresh(); f.await { it.phase == Phase.UPDATE_REQUIRED }
+            assertEquals("DEVICE", f.store.readToken(f.origin))
+        }
+    }
+    @Test fun lateOldServerResponseCannotResurrectSession() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.delayPath = "/api/dashboard"
+            f.await { it.client != null }
+            f.model.changeServer()
+            f.await { it.phase == Phase.ADDRESS }
+            Thread.sleep(1100); main.scheduler.runCurrent()
+            assertEquals(Phase.ADDRESS, f.model.state.value.phase)
+            assertNull(f.model.state.value.dashboard)
+            assertNull(f.store.readToken(f.origin))
+        }
+    }
+    @Test fun malformedDeviceTokenDoesNotEnterReady() = runTest(main.scheduler) {
+        Fixture().use { f ->
+            f.bodies["/api/pairing/validate"] = """{"client_id":1,"kind":"device"}"""
+            f.await { it.phase == Phase.PAIRING }; f.model.pair("12345678", "Telefon")
+            f.await { it.issue != null }
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertNull(f.store.readToken(f.origin))
+        }
+    }
+    @Test fun failedCredentialSaveDoesNotEnterReady() = runTest(main.scheduler) {
+        Fixture().use { f ->
+            f.await { it.phase == Phase.PAIRING }
+            f.dir.resolve("credential.bin").mkdir()
+            f.dir.resolve("credential.bin/block").writeText("block")
+            f.model.pair("12345678", "Telefon")
+            f.await { it.issue == UiIssue.STORAGE }
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertNull(f.model.state.value.client)
+        }
+    }
+    @Test fun validDisabledMondayPlanSendsLocalTimeAndRejectsTuesday() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.savePlan("2026-10-06", "18:30", false)
+            assertEquals(UiIssue.INVALID_INPUT, f.model.state.value.issue)
+            f.model.savePlan("2026-10-05", "18:30", false)
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val put = requests.single { it.method == "PUT" }
+            assertEquals("/api/settings/plan", put.path)
+            assertEquals("""{"anchor_date":"2026-10-05","anchor_time":"18:30","enabled":false}""", put.body.readUtf8())
+        }
+    }
+    @Test fun captionPatchOnlyChangesCaptionAndFailedSaveRetainsStepAndDraft() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }
+            f.model.setDraft("caption", "Yeni", "caption_template")
+            f.codes["/api/settings/branding"] = 422
+            f.model.saveCaption("Yeni"); f.await { !it.busy }
+            assertEquals("caption_template", f.model.state.value.step)
+            assertEquals("Yeni", f.model.state.value.drafts["caption"])
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"caption_template":"Yeni"}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+    @Test fun changedPolicyAndConflictClearAcknowledgementWithoutAutoAccept() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.consent != null && !it.busy }
+            f.model.acknowledgeConsent(true)
+            f.bodies["/api/setup/consent"] = """{"accepted_at":null,"text":"Yeni politika","version":2}"""
+            f.model.refresh(); f.await { it.consent?.version == 2 && !it.busy }
+            assertFalse(f.model.state.value.consentAcknowledged)
+            f.model.acknowledgeConsent(true)
+            f.codes["/api/setup/consent/accept"] = 409
+            f.model.acceptConsent(2); f.await { !it.busy }
+            assertEquals(UiIssue.POLICY_CHANGED, f.model.state.value.issue)
+            assertFalse(f.model.state.value.consentAcknowledged)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"version":2}""", requests.single { it.method == "POST" }.body.readUtf8())
+        }
+    }
+    @Test fun inheritedAcceptanceAndMissingPolicyDoNotPost() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup/consent"] = """{"accepted_at":"2026-10-05T12:00:00Z","text":"Politika","version":1}"""
+            f.await { it.consent != null && !it.busy }
+            f.model.acceptConsent(1)
+            f.codes["/api/setup/consent"] = 404
+            f.model.reloadStep("consent"); f.await { !it.busy }
+            assertNull(f.model.state.value.consent)
+            assertEquals(UiIssue.POLICY_MISSING, f.model.state.value.issue)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertTrue(requests.none { it.method == "POST" })
+        }
+    }
+    @Test fun dirtyDraftSurvivesRemoteRefreshAndExplicitReloadReplacesIt() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.branding != null && !it.busy }
+            f.model.setDraft("caption", "Taslak", "caption_template")
+            f.bodies["/api/settings/branding"] = f.bodies["/api/settings/branding"]!!.replace("Eski", "Uzak")
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals("Taslak", f.model.state.value.drafts["caption"])
+            assertTrue("caption_template" in f.model.state.value.changedSteps)
+            assertEquals("Taslak", f.model.saved.get<String>("draft_caption"))
+            f.model.reloadStep("caption_template"); f.await { !it.busy }
+            assertEquals("Uzak", f.model.state.value.drafts["caption"])
+        }
+    }
+    @Test fun readinessDoesNotSkipCardsAndFinishChecksServer() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"caption_template","label":"Caption","complete":true},{"key":"cards","label":"Cards","complete":false,"required":false}],"ready":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }; f.model.nextStep()
+            assertEquals("cards", f.model.state.value.step)
+            f.model.finishSetup(); f.await { !it.busy }
+            assertNull(f.model.state.value.step)
+        }
+    }
+    @Test fun oauthUsesExternalHttpsWithoutCredentialAndRequiresExplicitCandidate() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/meta/oauth/start"] = """{"attempt_id":"attempt-1","auth_url":"https://www.facebook.com/oauth?state=synthetic"}"""
+            f.bodies["/api/meta/oauth/attempts/attempt-1"] = """{"id":"attempt-1","status":"completed","candidates":[{"ig_user_id":"one","ig_username":"dojo1"},{"ig_user_id":"two","ig_username":"dojo2"}]}"""
+            f.bodies["/api/meta/oauth/attempts/attempt-1/select"] = """{"health":"healthy","ig_username":"dojo2"}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            val urls = mutableListOf<String>()
+            f.model.startOAuth { urls.add(it) }; f.await { !it.busy }
+            assertEquals(listOf("https://www.facebook.com/oauth?state=synthetic"), urls)
+            assertEquals("attempt-1", f.model.saved.get<String>("oauth_attempt"))
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals(2, f.model.state.value.attempt?.candidates?.size)
+            val before = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("{}", before.single { it.path == "/api/meta/oauth/start" }.body.readUtf8())
+            assertTrue(before.none { it.path?.endsWith("/select") == true })
+            f.model.selectAccount("two"); f.await { !it.busy }
+            val after = (0 until f.server.requestCount - before.size).map { f.server.takeRequest() }
+            assertEquals("""{"ig_user_id":"two"}""", after.single { it.path?.endsWith("/select") == true }.body.readUtf8())
+            assertNull(f.model.saved.get<String>("oauth_attempt"))
+        }
+    }
+    @Test fun rejectedTokenPreservesPriorConnectionAndNoRawSecret() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/meta/status"] = """{"health":"healthy","ig_username":"dojo"}"""
+            f.codes["/api/meta/instagram/token"] = 422
+            f.bodies["/api/meta/instagram/token"] = """{"detail":"MANUAL-SECRET"}"""
+            f.await { it.instagram != null && !it.busy }
+            f.model.connectInstagramToken("MANUAL-SECRET"); f.await { !it.busy }
+            assertEquals("dojo", f.model.state.value.instagram?.igUsername)
+            assertEquals(UiIssue.INVALID_INPUT, f.model.state.value.issue)
+            assertFalse(f.model.state.value.toString().contains("MANUAL-SECRET"))
+            assertTrue(f.model.saved.keys().none { f.model.saved.get<Any>(it).toString().contains("MANUAL-SECRET") })
+        }
+    }
+    @Test fun missingAttemptOffersRestartAndInvalidBrowserUrlNeverLaunches() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/meta/oauth/start"] = """{"attempt_id":"attempt-1","auth_url":"http://evil.example"}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.startOAuth { fail("Unsafe browser URL") }; f.await { !it.busy }
+            assertNull(f.model.saved.get<String>("oauth_attempt"))
+            f.bodies["/api/meta/oauth/start"] = """{"attempt_id":"attempt-1","auth_url":"https://www.facebook.com/oauth"}"""
+            f.codes["/api/meta/oauth/attempts/attempt-1"] = 404
+            f.model.startOAuth {}; f.await { !it.busy }; f.model.checkOAuth(); f.await { !it.busy }
+            assertEquals("unknown", f.model.state.value.attempt?.status)
+        }
+    }
+    @Test fun uploadPatchFailureRetainsReferenceAndRetryDoesNotReupload() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding/assets"] = """{"asset":"branding/assets/image.png","preview_url":"/api/settings/branding/assets/image.png"}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.codes["/api/settings/branding"] = 422
+            f.model.uploadAsset("logo_asset", byteArrayOf(1, 2, 3)); f.await { !it.busy }
+            assertEquals("branding/assets/image.png", f.model.state.value.pendingAssets["logo_asset"]?.asset)
+            f.codes["/api/settings/branding"] = 200
+            f.model.retryAsset("logo_asset"); f.await { !it.busy }
+            assertTrue(f.model.state.value.pendingAssets.isEmpty())
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals(1, requests.count { it.method == "POST" && it.path == "/api/settings/branding/assets" })
+            assertEquals(2, requests.count { it.method == "PATCH" })
+            assertTrue(requests.none { it.path?.startsWith("/api/packages") == true })
+        }
+    }
+    @Test fun cardClearingUsesNullAndInvalidDurationsNeverSend() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/outro.png","outro_duration":2.0}"""
+            f.bodies["/api/setup/cards/skip"] = """{"checklist":[],"ready":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            val before = f.server.requestCount
+            listOf(Double.NaN, 0.0, Double.POSITIVE_INFINITY).forEach { f.model.saveCards("branding/assets/a.png", it, null, null) }
+            assertEquals(before, f.server.requestCount)
+            f.model.saveCards(null, null, null, null); f.await { !it.busy }
+            f.model.skipCards(); f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_asset":null,"intro_duration":null,"outro_asset":null,"outro_duration":null}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+            assertTrue(requests.any { it.path == "/api/setup/cards/skip" })
+        }
+    }
+    @Test fun previewRevocationClearsSessionAndBlocksWizardWrites() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.codes["/api/settings/branding/assets/image.png"] = 401
+            runCatching { f.model.preview("/api/settings/branding/assets/image.png") }
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertNull(f.store.readToken(f.origin))
+            val before = f.server.requestCount
+            f.model.saveCaption("Blocked"); main.scheduler.runCurrent()
+            assertEquals(before, f.server.requestCount)
+        }
+    }
+    @Test fun reopeningSessionRestoresSafeDraftAndNeverPairsAgain() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.setDraft("caption", "Rotation draft", "caption_template")
+            f.model.navigate(Destination.SETTINGS)
+            val saved = SavedStateHandle(f.model.saved.keys().associateWith { f.model.saved.get<Any>(it) })
+            val owner = ViewModelStore()
+            val reopened = AppViewModel(f.store, OkHttpClient(), 1, true, saved)
+            owner.put("reopened", reopened)
+            try {
+                repeat(500) { main.scheduler.runCurrent(); if (reopened.state.value.phase != Phase.READY || reopened.state.value.busy) Thread.sleep(10) }
+                assertEquals(Phase.READY, reopened.state.value.phase)
+                assertEquals("Rotation draft", reopened.state.value.drafts["caption"])
+                assertEquals(Destination.SETTINGS, reopened.state.value.destination)
+                val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+                assertTrue(requests.none { it.path == "/api/pairing/validate" })
+            } finally { owner.clear() }
+        }
+    }
+    private fun settleDelayedResponse() {
+        Thread.sleep(1100)
+        repeat(50) { main.scheduler.runCurrent(); Thread.sleep(10) }
+    }
+    @Test fun preview426CannotBeOverwrittenByDelayedDashboard() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val before = f.seen.count { it == "GET /api/dashboard" }
+            f.delayPath = "/api/dashboard"
+            f.codes["/api/settings/branding/assets/image.png"] = 426
+            f.model.refresh()
+            f.await { f.seen.count { it == "GET /api/dashboard" } > before }
+            runCatching { f.model.preview("/api/settings/branding/assets/image.png") }
+            settleDelayedResponse()
+            assertEquals(Phase.UPDATE_REQUIRED, f.model.state.value.phase)
+            assertFalse(f.model.state.value.busy)
+            assertEquals("DEVICE", f.store.readToken(f.origin))
+        }
+    }
+    @Test fun preview401CancelsUploadBeforeReferenceOrPatchCanReturn() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/settings/branding/assets"] = """{"asset":"branding/assets/old.png","preview_url":"/api/settings/branding/assets/old.png"}"""
+            f.delayPath = "/api/settings/branding/assets"
+            f.codes["/api/settings/branding/assets/image.png"] = 401
+            f.model.uploadAsset("logo_asset", byteArrayOf(1))
+            f.await { "POST /api/settings/branding/assets" in f.seen }
+            runCatching { f.model.preview("/api/settings/branding/assets/image.png") }
+            settleDelayedResponse()
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertTrue(f.model.state.value.pendingAssets.isEmpty())
+            assertTrue(f.model.saved.keys().none { it.startsWith("pending_") })
+            assertFalse("PATCH /api/settings/branding" in f.seen)
+        }
+    }
+    @Test fun captionEditMadeAfterSubmissionRemainsUnsavedAndVisible() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }
+            f.model.setDraft("caption", "Submitted", "caption_template")
+            f.bodies["/api/settings/branding"] = f.bodies["/api/settings/branding"]!!.replace("Eski", "Submitted")
+            f.delayPath = "/api/settings/branding"
+            f.model.saveCaption("Submitted")
+            f.await { "PATCH /api/settings/branding" in f.seen }
+            f.model.setDraft("caption", "New unsaved text", "caption_template")
+            f.await { !it.busy }
+            assertEquals("New unsaved text", f.model.state.value.drafts["caption"])
+            assertTrue("caption_template" in f.model.state.value.dirtySteps)
+        }
+    }
+    @Test fun leavingWizardDuringSaveDoesNotReopenIt() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("caption_template"); f.await { !it.busy }
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"caption_template","label":"Caption","complete":true},{"key":"cards","label":"Cards","complete":false,"required":false}],"ready":true}"""
+            f.delayPath = "/api/settings/branding"
+            f.model.saveCaption("Submitted")
+            f.await { "PATCH /api/settings/branding" in f.seen }
+            f.model.navigate(Destination.SETTINGS)
+            f.await { !it.busy }
+            assertNull(f.model.state.value.step)
+            assertEquals(Destination.SETTINGS, f.model.state.value.destination)
+        }
+    }
+    @Test fun clearingOneCardDoesNotSendOtherCardCachedValues() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/old-outro.png","outro_duration":2.0}"""
+            f.await { it.branding?.introAsset != null && !it.busy }
+            f.model.saveCards(null, null, "branding/assets/old-outro.png", 2.0)
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_asset":null,"intro_duration":null}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+    @Test fun changingOneDurationDoesNotResendAssetOrUntouchedDuration() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/old-outro.png","outro_duration":2.0}"""
+            f.await { it.branding?.introAsset != null && !it.busy }
+            f.model.saveCards("branding/assets/intro.png", 5.0, "branding/assets/old-outro.png", 2.0)
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_duration":5.0}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+    @Test fun dirtyIntroDurationDoesNotFreezeOrOverwriteRemoteOutroDuration() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":"branding/assets/intro.png","intro_duration":1.0,"logo_asset":"logo.png","outro_asset":"branding/assets/outro.png","outro_duration":2.0}"""
+            f.await { it.branding?.introAsset != null && !it.busy }
+            f.model.setDraft("intro_duration", "5", "cards")
+            f.bodies["/api/settings/branding"] = f.bodies["/api/settings/branding"]!!.replace("\"outro_duration\":2.0", "\"outro_duration\":7.0")
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals("5", f.model.state.value.drafts["intro_duration"])
+            assertEquals("7.0", f.model.state.value.drafts["outro_duration"])
+            f.model.saveCards("branding/assets/intro.png", 5.0, "branding/assets/outro.png", f.model.state.value.drafts["outro_duration"]!!.toDouble())
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_duration":5.0}""", requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+}

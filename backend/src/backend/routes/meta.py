@@ -67,7 +67,12 @@ class SelectIn(BaseModel):
 router = APIRouter(prefix="/api/meta", tags=["meta"])
 
 
-@router.post("/instagram/token", response_model=StatusOut)
+@router.post("/instagram/token", response_model=StatusOut, openapi_extra={
+    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+        "type": "object", "required": ["access_token"],
+        "properties": {"access_token": {"type": "string", "minLength": 1, "maxLength": 16384}},
+    }}}},
+})
 def connect_instagram_token(
     body: Any = Body(default=None),
     client: Client = Depends(get_current_client),
@@ -122,7 +127,9 @@ def oauth_callback(
         return_uri = rec.get("return_uri") if rec else None
         if return_uri:
             sep = "&" if "?" in return_uri else "?"
-            return RedirectResponse(url=f"{return_uri}{sep}attempt_id={attempt_id}", status_code=302)
+            return RedirectResponse(
+                url=f"{return_uri}{sep}attempt_id={attempt_id}", status_code=302,
+            )
     except Exception:
         pass
     return {"attempt_id": attempt_id}
@@ -166,7 +173,9 @@ def select_account(
         page_name=status.page_name,
         expires_at=status.expires_at.isoformat() if status.expires_at else None,
         last_checked_at=status.last_checked_at.isoformat() if status.last_checked_at else None,
-        last_refreshed_at=status.last_refreshed_at.isoformat() if status.last_refreshed_at else None,
+        last_refreshed_at=(
+            status.last_refreshed_at.isoformat() if status.last_refreshed_at else None
+        ),
         last_error=status.last_error,
     )
 
@@ -186,6 +195,8 @@ def get_status(
         page_name=status.page_name,
         expires_at=status.expires_at.isoformat() if status.expires_at else None,
         last_checked_at=status.last_checked_at.isoformat() if status.last_checked_at else None,
-        last_refreshed_at=status.last_refreshed_at.isoformat() if status.last_refreshed_at else None,
+        last_refreshed_at=(
+            status.last_refreshed_at.isoformat() if status.last_refreshed_at else None
+        ),
         last_error=status.last_error,
     )

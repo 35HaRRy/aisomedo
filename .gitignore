@@ -43,6 +43,10 @@ gradle/
 gradlew
 gradlew.bat
 local.properties
+!/android/gradlew
+!/android/gradlew.bat
+!/android/gradle/
+!/android/gradle/**
 
 /ops/db-data
 /ops/media-data
