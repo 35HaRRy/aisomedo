@@ -10,9 +10,9 @@ The user approved CI-built images in GHCR and SSH-based deployment to the
 existing Docker Compose installation. Android distribution remains separate.
 No Kubernetes, self-hosted runner, new deployment platform, or public app store.
 
-This document makes that direction concrete. Written-spec review and the
-implementation-plan review remain outstanding; no product implementation or
-live deployment is authorized by the document itself.
+This document makes that direction concrete. The user approved the written
+spec in conversation. Implementation-plan review and execution choice remain
+outstanding; live deployment requires separate authorization.
 
 ## Existing boundaries
 
