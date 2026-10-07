@@ -84,7 +84,7 @@ def test_ci_gate_covers_all_checks_and_merge_queue():
     assert jobs["deploy"]["needs"] == ["publish"]
     for job in (jobs["publish"], jobs["deploy"]):
         assert "github.event_name == 'push'" in job["if"]
-        assert "github.ref == 'refs/heads/main'" in job["if"]
+        assert "github.ref == 'refs/heads/master'" in job["if"]
     assert jobs["deploy"]["environment"] == "production"
     assert jobs["deploy"]["concurrency"]["cancel-in-progress"] is False
     assert jobs["publish"]["permissions"] == {"contents": "read", "packages": "write"}
@@ -150,7 +150,7 @@ def test_ssh_transport_strict_host_keys_and_cleanup():
 def test_serialized_deploy_skips_superseded_main_commit():
     steps = workflow("ci.yml")["jobs"]["deploy"]["steps"]
     fresh = next(s for s in steps if s.get("id") == "freshness")
-    assert "git/ref/heads/main" in fresh["run"]
+    assert "git/ref/heads/master" in fresh["run"]
     for step in steps:
         if step.get("id") == "transport" or "SSH_KEY" in step.get("env", {}):
             assert step["if"] == "steps.freshness.outputs.deploy == 'true'"
