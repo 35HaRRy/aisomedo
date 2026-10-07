@@ -7,7 +7,7 @@ veya SQL kodu yazmanız gerekmez. `uv` mevcut testleri çalıştırırken gerekl
 yorumlayıcıyı kullanır; Python içermeyen bir çalışma ortamı vaat edilmez.
 
 > **Yerel denemeyi canlı dağıtımdan ayırın.** Testlerde yalnız sentetik medya
-> kullanın. Gerçek Instagram hesabıyla yayın başlatmayın. `main` dalına gönderim
+> kullanın. Gerçek Instagram hesabıyla yayın başlatmayın. `master` dalına gönderim
 > canlı dağıtımı, `android-v*` etiketi APK yayınını tetikleyebilir. Bunları yalnız
 > açık yayın kararı ve operatör hazırlığı sonrasında yapın. Gerçek ortamda servis
 > durdurma, volume silme veya yedek geri yükleme komutu bu rehberde yoktur.
@@ -21,12 +21,12 @@ yorumlayıcıyı kullanır; Python içermeyen bir çalışma ortamı vaat edilme
 | API uyumluluk kapısı | Eski istemcileri bozan sözleşme değişiklikleri ve üretilmiş istemci dosyası sapmaları reddedilir |
 | İmzalı APK yayını | `android-v<versionName>` etiketinden `aisomedo.apk` ve SHA-256 dosyası GitHub Releases'e eklenir |
 | Güvensiz imzaya kapalı davranış | Eksik imza girdileri derlemeyi durdurur; debug sertifikalı APK yayınlanmaz |
-| Değişmez sunucu sürümleri | Kontrolleri geçen `main` gönderimi üç GHCR imajı ve tam digest içeren dağıtım paketi üretir |
+| Değişmez sunucu sürümleri | Kontrolleri geçen `master` gönderimi üç GHCR imajı ve tam digest içeren dağıtım paketi üretir |
 | Güvenli güncelleme | PostgreSQL yedeği, ayrı veritabanında migration provası ve sağlık kontrolü yapılır |
 | Hata sonrası geri dönüş | Başarısız güncellemede önceki uygulama imajları geri getirilir; canlı veritabanı otomatik geri yüklenmez |
 | Kalıcı veri koruması | Volume kimlikleri ve servis bağlantıları korunur; beklenmedik depolama değişikliği reddedilir |
 | Kesinti temizliği | Yarım kalan migration başlatıcısı ve yalnız ona ait veritabanı oturumları temizlenir |
-| Sıralı, doğrulanmış SSH dağıtımı | Çalışan dağıtım iptal edilmez; eski `main` işleri atlanır; sunucu anahtarı uyuşmazlığı reddedilir |
+| Sıralı, doğrulanmış SSH dağıtımı | Çalışan dağıtım iptal edilmez; eski `master` işleri atlanır; sunucu anahtarı uyuşmazlığı reddedilir |
 
 Yeni bir web/Android dağıtım yönetimi ekranı eklenmedi. Uygulamadaki gözlem,
 kurulumun ve kayıtların güncelleme sonrasında çalışmaya devam etmesidir.
@@ -228,7 +228,7 @@ döndürmez; yedek geri yükleme ayrı operatör kararıdır.
 8. En son `required` yeşil olmalı. Alt işlerden biri hata/iptal/atlanma sonucu
    verirse bu kontrol yeşil olmamalı.
 
-PR veya `main` dışı dal koşusunda `publish`/`deploy` atlanması normaldir; bu
+PR veya `master` dışı dal koşusunda `publish`/`deploy` atlanması normaldir; bu
 işler `required` bağımlılıkları değildir. Mevcut bazı diğer testlerin atlanması
 mümkündür; bunu bütün testlerin çalıştığı şeklinde raporlamayın.
 
@@ -237,15 +237,15 @@ mümkündür; bunu bütün testlerin çalıştığı şeklinde raporlamayın.
 Yönetici yetkisi gerekir. **Workflow dosyası tek başına birleşmeyi engellemez.**
 
 1. **Settings → Rules → Rulesets** veya mevcut branch protection ekranını açın.
-2. `main` için kontrol zorunluluğunu etkinleştirin; ilk hosted koşuda görünen
+2. `master` için kontrol zorunluluğunu etkinleştirin; ilk hosted koşuda görünen
    birleşik `required` kontrolünü seçin (arayüzde `ci / required` görünebilir).
    Bypass yetkilerini sınırlayın; merge queue kullanılıyorsa onu da kapsayın.
-3. Yeni workflow henüz `main` üzerinde yoksa önce onun kontrollü entegrasyonunu
+3. Yeni workflow henüz `master` üzerinde yoksa önce onun kontrollü entegrasyonunu
    tamamlayın. Sonraki deneme yalnız hazırlanan korumalı dal üzerinde anlamlıdır.
-4. Tarayıcıdan `main` üzerindeki `backend/openapi.json` dosyasını açıp kalemle
+4. Tarayıcıdan `master` üzerindeki `backend/openapi.json` dosyasını açıp kalemle
    düzenleyin. `"title": "AcceptanceIn"` değerini `"title": "DenemeAcceptanceIn"`
-   yapın. **Yeni bir deneme dalına** kaydedin; doğrudan `main` üzerine kaydetmeyin.
-5. Deneme dalından `main` hedefine PR açın. Bu kasıtlı üretilmiş-dosya sapmasıdır;
+   yapın. **Yeni bir deneme dalına** kaydedin; doğrudan `master` üzerine kaydetmeyin.
+5. Deneme dalından `master` hedefine PR açın. Bu kasıtlı üretilmiş-dosya sapmasıdır;
    `contract` ve ardından `required` başarısız olmalı. İmza/SSH secret gerekmez.
 6. PR'de checks ayrıntılarını ve başarısız kontrol nedeniyle birleşme engelini
    görün. Bypass kullanmayın; bu PR'yi hiçbir zaman birleştirmeyin.
@@ -311,19 +311,19 @@ secret'ları hazırlanmalı. Anahtarın şifreli çevrimdışı yedeği tutulmal
 anahtarı veya base64 içeriğini Git'e/komut geçmişine koymayın.
 
 1. Her yayın için `android/app/build.gradle.kts` içinde `versionCode` artırılmış,
-   `versionName` seçilmiş ve bu değişiklik CI geçerek `main` üzerine alınmış olmalı.
-2. Actions'ta ilgili `main` commit'inin kontrollerinin geçtiğini doğrulayın.
+   `versionName` seçilmiş ve bu değişiklik CI geçerek `master` üzerine alınmış olmalı.
+2. Actions'ta ilgili `master` commit'inin kontrollerinin geçtiğini doğrulayın.
 3. PowerShell'de aşağıdaki komutları yalnız o yayını gerçekten oluşturmak için
    çalıştırın. Etiket adı `versionName` ile aynı olmalı:
 
 ```powershell
-git fetch origin main
-if ($LASTEXITCODE -ne 0) { throw 'main alınamadı.' }
-$MainSha = git rev-parse origin/main
-git show "${MainSha}:android/app/build.gradle.kts" | Select-String 'versionCode|versionName'
+git fetch origin master
+if ($LASTEXITCODE -ne 0) { throw 'master alınamadı.' }
+$masterSha = git rev-parse origin/master
+git show "${masterSha}:android/app/build.gradle.kts" | Select-String 'versionCode|versionName'
 $Surum = Read-Host 'Doğruladığınız versionName (örnek: 0.1.1)'
 $Etiket = "android-v$Surum"
-git tag -a $Etiket $MainSha -m "Android $Surum"
+git tag -a $Etiket $masterSha -m "Android $Surum"
 if ($LASTEXITCODE -ne 0) { throw 'Etiket oluşturulamadı; mevcut etiketi değiştirmeyin.' }
 git push origin $Etiket
 if ($LASTEXITCODE -ne 0) { throw 'Etiket gönderilemedi.' }
@@ -331,7 +331,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Etiket gönderilemedi.' }
 
 4. **Actions → android-release** koşusunu ve sonra §6.1'i takip edin.
 
-Eksik secret, debug anahtarı, yanlış sürüm veya `main` geçmişinde olmayan commit
+Eksik secret, debug anahtarı, yanlış sürüm veya `master` geçmişinde olmayan commit
 yayını durdurmalı. Yarım kalmış draft varsa operatör yalnız ilgili draft'ı
 incelemeli; yayınlanmış Release/etiketi zorla değiştirmeyin.
 
@@ -361,16 +361,16 @@ Hazırlık yoksa bu bölümü atlayıp eksik olarak kaydedin; sahte başarı rap
 4. Sadece okuma yapacağınız sonraki karşılaştırma için ekran görüntüsü alın;
    secret veya eşleştirme kodlarını görüntüye dahil etmeyin.
 
-### 7.3. Onaylı `main` güncellemesini izleyin
+### 7.3. Onaylı `master` güncellemesini izleyin
 
-1. Onaylanmış PR birleştirildiğinde **Actions → ci** içinde o `main` koşusunu açın.
-   Sırf deneme için canlı `main` üzerine değişiklik göndermeyin.
+1. Onaylanmış PR birleştirildiğinde **Actions → ci** içinde o `master` koşusunu açın.
+   Sırf deneme için canlı `master` üzerine değişiklik göndermeyin.
 2. `required` başarılı olduktan sonra `publish` başlamalı. Üç imaj yayımlanır;
    koşunun Artifacts alanında `release-<tam-commit-sha>` bulunmalı.
 3. Artifaktı indirip `release.json`/`images.json` dosyalarını metin olarak açın.
    İmajlar `@sha256:...` ile sabitlenmiş olmalı; gerçek `.env`, APK imza anahtarı
    ve SSH secret içermemeli.
-4. `deploy` işini açın. Sürüm eski bir `main` commit'iyse **Main advanced;
+4. `deploy` işini açın. Sürüm eski bir `master` commit'iyse **master advanced;
    leaving newer release in charge** mesajıyla aktarım atlanabilir; bu eski
    commit'in dağıtıldığı anlamına gelmez. En yeni uygun koşuyu izleyin.
 5. Gerçek dağıtım işi geçmeli. Güncellemede kısa kesinti mümkündür;
