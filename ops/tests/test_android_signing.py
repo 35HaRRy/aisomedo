@@ -12,7 +12,8 @@ pytestmark = pytest.mark.skipif(os.environ.get("RUN_ANDROID_SIGNING_TESTS") != "
 
 def gradle(env, *tasks):
     wrapper = ROOT / "android" / ("gradlew.bat" if os.name == "nt" else "gradlew")
-    return subprocess.run([str(wrapper), "-p", str(ROOT / "android"), *tasks, "--console=plain"],
+    return subprocess.run([str(wrapper), "-p", str(ROOT / "android"), *tasks,
+                           "--console=plain", "--warning-mode=fail"],
                           capture_output=True, text=True, env=env, timeout=300)
 
 
@@ -36,7 +37,7 @@ def test_release_guard_and_real_signature(tmp_path):
     assert mismatch.returncode != 0
     assert "Release tag must match versionName" in mismatch.stdout + mismatch.stderr
     env.pop("ANDROID_RELEASE_VERSION")
-    signed = gradle(env, ":app:assembleRelease")
+    signed = gradle(env, ":app:testReleaseUnitTest", ":app:lintRelease", ":app:assembleRelease")
     assert signed.returncode == 0, signed.stdout + signed.stderr
     signer = Path(env["ANDROID_HOME"]) / "build-tools/35.0.0" / (
         "apksigner.bat" if os.name == "nt" else "apksigner")
@@ -46,6 +47,17 @@ def test_release_guard_and_real_signature(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "CN=Issue39 Test" in result.stdout
     assert "CN=Android Debug" not in result.stdout
+
+
+def test_release_unit_task_is_available_without_legacy_warnings():
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ANDROID_KEY")}
+    env.pop("ANDROID_RELEASE_VERSION", None)
+    result = gradle(env, ":app:testReleaseUnitTest", "--dry-run")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert ":app:testReleaseUnitTest SKIPPED" in output
+    assert "deprecated" not in output.lower(), output
+    assert "obsolete" not in output.lower(), output
 
 
 def test_debug_tasks_need_no_release_secrets():
