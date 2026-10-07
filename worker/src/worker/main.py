@@ -251,7 +251,10 @@ def build_meta() -> object | None:
             redirect_uri=os.environ.get("META_REDIRECT_URI", "").strip()
             or f"{resolve_public_base_url()}/api/meta/oauth/callback",
             graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
-            allowed_return_uris=[u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",") if u.strip()],
+            allowed_return_uris=[
+                u.strip() for u in os.environ.get("META_ALLOWED_RETURN_URIS", "").split(",")
+                if u.strip()
+            ],
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(

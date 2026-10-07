@@ -26,6 +26,7 @@ def _docker_run(tmp_path: Path, entrypoint: str, command: list[str]) -> str:
         command=command,
         volumes={str(tmp_path.resolve()): {"bind": "/work", "mode": "rw"}},
         entrypoint=entrypoint,
+        log_config={"type": "json-file"},
         remove=True,
     )
     return logs.decode()

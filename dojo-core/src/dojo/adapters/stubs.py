@@ -80,10 +80,14 @@ class StubNotifier:
             self.fail_next = None
             raise exc
         self.sent.append((notification, list(tokens)))
-        delivered = [t for t in tokens if t not in self.invalid_tokens and t not in self.transient_tokens]
+        delivered = [
+            t for t in tokens if t not in self.invalid_tokens and t not in self.transient_tokens
+        ]
         invalid = [t for t in tokens if t in self.invalid_tokens]
         transient = [t for t in tokens if t in self.transient_tokens]
-        return NotificationResult(delivered=delivered, invalid_tokens=invalid, transient_failures=transient)
+        return NotificationResult(
+            delivered=delivered, invalid_tokens=invalid, transient_failures=transient
+        )
 
 
 class StubSignedUrlStore:

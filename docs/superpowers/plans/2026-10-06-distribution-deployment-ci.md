@@ -137,4 +137,6 @@ CLI subcommands `bundle`, `validate`, `adopt`, `deploy` mirror these functions. 
 
 Recommended: Native execution in this session. Tasks share workflow and bundle interfaces, so inline implementation avoids repeated context setup; one independent whole-branch review remains necessary before completion. Subagent-driven execution remains available if the user prefers per-task independent review.
 
-Written-spec review: approved in conversation. Implementation-plan review and execution choice: pending.
+Written-spec review, implementation-plan review, and inline execution: approved in conversation.
+All five tasks implemented; local verification and independent review performed.
+Operational acceptance remains pending operator configuration and hosted evidence.

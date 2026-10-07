@@ -1407,9 +1407,17 @@ class DojoPublishing:
         end_raw = self._settings.get(REMINDER_END_KEY)
         tz = self._settings.get(REMINDER_TZ_KEY)
         default = ReminderPolicy()
-        interval_minutes = int(cast(int, interval)) if interval is not None else default.interval_minutes
-        delivery_start = time.fromisoformat(str(start_raw)) if isinstance(start_raw, str) and start_raw else default.delivery_start
-        delivery_end = time.fromisoformat(str(end_raw)) if isinstance(end_raw, str) and end_raw else default.delivery_end
+        interval_minutes = (
+            int(cast(int, interval)) if interval is not None else default.interval_minutes
+        )
+        delivery_start = (
+            time.fromisoformat(str(start_raw))
+            if isinstance(start_raw, str) and start_raw else default.delivery_start
+        )
+        delivery_end = (
+            time.fromisoformat(str(end_raw))
+            if isinstance(end_raw, str) and end_raw else default.delivery_end
+        )
         timezone = str(tz) if isinstance(tz, str) and tz else default.timezone
         return ReminderPolicy(
             interval_minutes=interval_minutes,
@@ -1494,7 +1502,9 @@ class DojoPublishing:
         policy = self.get_reminder_policy()
         now = self._clock.now()
         now_local = now.astimezone(ISTANBUL)
-        if not self._in_delivery_window(now_local.time(), policy.delivery_start, policy.delivery_end):
+        if not self._in_delivery_window(
+            now_local.time(), policy.delivery_start, policy.delivery_end
+        ):
             return
         pending = self._reviews.list_pending()
         if not pending:

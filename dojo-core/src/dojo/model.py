@@ -391,7 +391,7 @@ class PushRegistration:
 class Notification:
     title: str
     body: str
-    data: dict[str, str]
+    data: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -402,7 +402,9 @@ class NotificationResult:
 
 
 REVIEW_REQUIRED_TITLE = "Yayın İncelemesi Bekliyor"
-REVIEW_REQUIRED_BODY = "Paketiniz incelemeyi bekliyor. Lütfen onaylayın, atlayın veya yeniden planlayın."
+REVIEW_REQUIRED_BODY = (
+    "Paketiniz incelemeyi bekliyor. Lütfen onaylayın, atlayın veya yeniden planlayın."
+)
 
 
 META_HEALTH_NOT_CONNECTED = "not_connected"
@@ -449,7 +451,9 @@ class MetaConnectionStatus:
             "page_name": self.page_name,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
-            "last_refreshed_at": self.last_refreshed_at.isoformat() if self.last_refreshed_at else None,
+            "last_refreshed_at": (
+                self.last_refreshed_at.isoformat() if self.last_refreshed_at else None
+            ),
             "last_error": self.last_error,
             "connection_type": self.connection_type,
         }

@@ -11,7 +11,7 @@ from testcontainers.postgres import PostgresContainer
 @pytest.fixture(scope="session")
 def _pg_session() -> Iterator[PostgresStore]:
     """One real PostgreSQL container shared by all tests in the session."""
-    with PostgresContainer("postgres:16-alpine") as pg:
+    with PostgresContainer("postgres:18") as pg:
         url = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql+psycopg://")
         store = PostgresStore(url)
         store.create_all()

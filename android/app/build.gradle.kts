@@ -5,6 +5,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val signingInputs = listOf(
+    "ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD",
+).associateWith { providers.environmentVariable(it) }
+val releaseVersion = providers.environmentVariable("ANDROID_RELEASE_VERSION")
+
 android {
     namespace = "com.dojo.aisomedo"
     compileSdk = 35
@@ -16,6 +21,20 @@ android {
         versionCode = 4
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = signingInputs.getValue("ANDROID_KEYSTORE_PATH").orNull?.let { file(it) }
+            storePassword = signingInputs.getValue("ANDROID_KEYSTORE_PASSWORD").orNull
+            keyAlias = signingInputs.getValue("ANDROID_KEY_ALIAS").orNull
+            keyPassword = signingInputs.getValue("ANDROID_KEY_PASSWORD").orNull
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     buildFeatures {
@@ -30,6 +49,24 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+}
+
+val validateReleaseInputs = tasks.register("validateReleaseInputs") {
+    doLast {
+        val missing = signingInputs.filterValues { it.orNull.isNullOrBlank() }.keys
+        check(missing.isEmpty()) { "Missing release signing inputs: ${missing.joinToString()}" }
+        check(file(signingInputs.getValue("ANDROID_KEYSTORE_PATH").get()).isFile) {
+            "Release keystore file does not exist"
+        }
+        check(!releaseVersion.isPresent || releaseVersion.get() == android.defaultConfig.versionName) {
+            "Release tag must match versionName"
+        }
+    }
+}
+tasks.configureEach {
+    if (name.contains("Release") && name != "validateReleaseInputs") {
+        dependsOn(validateReleaseInputs)
     }
 }
 

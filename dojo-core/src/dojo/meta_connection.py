@@ -55,7 +55,9 @@ class DojoMetaConnection:
         redirect_uri: str,
         graph_version: str = "v26.0",
         allowed_return_uris: list[str] | None = None,
-        oauth_scope: str = "instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement",
+        oauth_scope: str = (
+            "instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement"
+        ),
         instagram_provider: InstagramTokenProvider | None = None,
     ) -> None:
         if not app_id or not app_secret or not redirect_uri:
@@ -82,7 +84,10 @@ class DojoMetaConnection:
         self._instagram_provider = instagram_provider
 
     def connect_instagram_token(self, client_id: int, token: str) -> MetaConnectionStatus:
-        if (not token.strip() or not token.isascii() or len(token) > 16384 or any(c.isspace() for c in token.strip())):
+        if (
+            not token.strip() or not token.isascii() or len(token) > 16384
+            or any(c.isspace() for c in token.strip())
+        ):
             raise MetaTokenInvalid("A valid Instagram access token is required")
         if self._instagram_provider is None:
             raise MetaProviderUnavailable("Instagram Login is not configured")
@@ -141,12 +146,13 @@ class DojoMetaConnection:
             "encrypted_temp_token": None,
             "temp_token_expires_at": None,
             "last_error": None,
-            "raw_state": raw_state,  # stored only for retrieval via state_hash lookup; not persisted in DB raw
+            # Stored only for retrieval via state_hash lookup; not persisted in DB raw.
+            "raw_state": raw_state,
         }
         # DB store will hold hash; we keep raw only in memory attempt? For DB we store hash
         self._store.create_attempt(attempt)  # type: ignore[attr-defined]
         auth_url = self._provider.build_auth_url(raw_state, self._redirect_uri)  # type: ignore[attr-defined]
-        # For convenience, return both url and attempt_id (attempt_id is not in URL, callback will resolve via state)
+        # Return URL and attempt_id (not in URL; callback resolves via state).
         return auth_url, attempt_id
 
     def complete_callback(self, state: str, code: str) -> str:
@@ -209,7 +215,9 @@ class DojoMetaConnection:
             expires_at=rec["expires_at"],
         )
 
-    def select_account(self, client_id: int, attempt_id: str, ig_user_id: str) -> MetaConnectionStatus:
+    def select_account(
+        self, client_id: int, attempt_id: str, ig_user_id: str
+    ) -> MetaConnectionStatus:
         now = self._now()
         rec = self._store.get_meta_attempt(attempt_id)  # type: ignore[attr-defined]
         if rec is None:
@@ -265,7 +273,12 @@ class DojoMetaConnection:
         self._store.consume_attempt(attempt_id)  # type: ignore[attr-defined]
         if self._audit is not None:
             try:
-                self._audit.append(AuditEvent(action="meta.connected", actor=str(client_id), occurred_at=now, details={"ig_user_id": cand.ig_user_id}))  # type: ignore[attr-defined]
+                self._audit.append(  # type: ignore[attr-defined]
+                    AuditEvent(
+                        action="meta.connected", actor=str(client_id), occurred_at=now,
+                        details={"ig_user_id": cand.ig_user_id},
+                    )
+                )
             except Exception:
                 pass
         return status

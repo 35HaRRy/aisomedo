@@ -67,6 +67,7 @@ def render_test_clip(dst: Path, *, duration: float = 1.0, size: str = "640x360")
         ],
         volumes={str(dst.parent): {"bind": "/work", "mode": "rw"}},
         entrypoint="ffmpeg",
+        log_config={"type": "json-file"},
         remove=True,
     )
     return dst
@@ -84,6 +85,7 @@ def probe_duration(dst: Path) -> float:
         command=["-v", "error", "-print_format", "json", "-show_format", "-i", f"/work/{dst.name}"],
         volumes={str(dst.parent): {"bind": "/work", "mode": "rw"}},
         entrypoint="ffprobe",
+        log_config={"type": "json-file"},
         remove=True,
     )
     duration = json.loads(logs.decode()).get("format", {}).get("duration")

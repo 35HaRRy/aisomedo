@@ -49,7 +49,10 @@ class StubMetaOAuthProvider:
         inspect_valid: bool = True,
     ) -> None:
         self._candidates = candidates or [
-            MetaCandidate(ig_user_id="ig_123", ig_username="dojo_test", page_id="page_1", page_name="Dojo Page")
+            MetaCandidate(
+                ig_user_id="ig_123", ig_username="dojo_test",
+                page_id="page_1", page_name="Dojo Page",
+            )
         ]
         self._refresh_result = refresh_result
         self._inspect_valid = inspect_valid
@@ -122,7 +125,9 @@ class HttpMetaOAuthProvider:
             "client_id": self._app_id,
             "redirect_uri": redirect_uri,
             "state": state,
-            "scope": "instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement",
+            "scope": (
+                "instagram_basic,instagram_content_publish,pages_show_list,pages_read_engagement"
+            ),
             "response_type": "code",
         }
         return f"https://www.facebook.com/{self._graph_version}/dialog/oauth?{urlencode(params)}"

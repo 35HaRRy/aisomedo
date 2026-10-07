@@ -52,7 +52,9 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def finalize_media(tmp_path, seam, *, filename="pic.jpg", content_type="image/jpeg", seed=b"x" * 100):
+def finalize_media(
+    tmp_path, seam, *, filename="pic.jpg", content_type="image/jpeg", seed=b"x" * 100
+):
     seam._media = StubMediaProcessor(content_type=content_type, duration=None)
     seam.get_or_create_active_package()
     status = seam.start_upload(filename, content_type, len(seed))

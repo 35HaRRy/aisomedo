@@ -3,6 +3,11 @@ name: ci
 on:
   push:
   pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
 
 jobs:
   android:
@@ -12,12 +17,22 @@ jobs:
         working-directory: android
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "25"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Verify unsigned guards and synthetic release signing
+        working-directory: .
+        env:
+          RUN_ANDROID_SIGNING_TESTS: "1"
+        run: |
+          uv sync --all-packages --frozen
+          uv run --project backend pytest ops/tests/test_android_signing.py -v
       - name: Build, unit tests, lint and instrumentation compilation
         run: ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleDebugAndroidTest
 
@@ -27,7 +42,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: Sync
-        run: uv sync --all-packages
+        run: uv sync --all-packages --frozen
+      - name: Install real media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Lint
         run: |
           uv run --project dojo-core ruff check dojo-core/src dojo-core/tests
@@ -66,13 +83,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose --env-file ops/.env.example -f ops/docker-compose.yml config
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-packages --frozen
+      - run: uv run --project backend ruff check ops/deploy.py ops/tests backend/scripts
+      - run: uv run --project backend pytest ops/tests/test_deploy.py ops/tests/test_workflows.py -v
+      - name: Render development Compose with synthetic settings
+        run: |
+          set -euo pipefail
+          test ! -e ops/.env
+          trap 'rm -f ops/.env' EXIT
+          cp ops/.env.example ops/.env
+          docker compose --env-file ops/.env.example -f ops/docker-compose.yml config --quiet
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml config
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml config
-      # The monitoring override requires BOTH the credential path and the
-      # project id, so CI supplies throwaway values with no real project, key
-      # or token. Render only: nothing is started, so no notification can ever
-      # be sent, and no real credential is read or needed.
+      - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml pull db
+      # The monitoring override requires BOTH the credential path and the project id, so CI supplies throwaway values with no real project, key or token.
+      # Render only: nothing is started, so no notification can ever be sent, and no real credential is read or needed.
       - name: Render the monitoring override
         run: |
           set -euo pipefail
@@ -90,9 +116,14 @@ jobs:
           docker compose --env-file .ci-monitoring.env \
             -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml \
             -f ops/docker-compose.monitoring.yml config
-      - run: docker build -f backend/Dockerfile .
-      - run: docker build -f worker/Dockerfile .
-      - run: docker build -f ops/gateway/Dockerfile .
+      - run: docker build -t dojo-backend-verify:${{ github.sha }} -f backend/Dockerfile .
+      - run: docker build -t dojo-worker-verify:${{ github.sha }} -f worker/Dockerfile .
+      - run: docker build -t dojo-gateway-verify:${{ github.sha }} -f ops/gateway/Dockerfile .
+      - name: Verify real deployment rollback
+        env:
+          REQUIRE_DEPLOY_INTEGRATION: "1"
+          VERIFY_IMAGE_TAG: ${{ github.sha }}
+        run: uv run --project backend pytest ops/tests/test_deploy_integration.py -v
       # The gateway image build only copies the Caddyfile, so a syntax error in
       # it would otherwise reach a deploy. Validating here fails on the PR.
       - name: Validate the Caddyfile
@@ -108,6 +139,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
       - name: Sync
         run: uv sync --all-packages
@@ -119,3 +152,211 @@ jobs:
         run: git diff --exit-code -- backend/openapi.json web/src/api/openapi.ts "android/app/src/main/java/com/dojo/aisomedo/api/GeneratedApi.kt"
       - name: Contract tests
         run: uv run --project backend pytest backend/tests/test_contract.py -v
+      - name: Check backward compatibility
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            merge_group) base="$QUEUE_BASE" ;;
+            push) base="$PUSH_BASE" ;;
+            *) echo 'Unsupported baseline event' >&2; exit 1 ;;
+          esac
+          if [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
+            # New branch: compare parent. Only a genuine root commit bootstraps.
+            base="$(git rev-parse HEAD^ 2>/dev/null || true)"
+            if [[ -z "$base" ]]; then
+              test "$(git rev-list --count HEAD)" = 1
+              echo 'Initial repository contract bootstrap'; exit 0
+            fi
+          fi
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
+          git show "$base:backend/openapi.json" > "$RUNNER_TEMP/base-openapi.json"
+          uv run --project backend python backend/scripts/check_openapi_compat.py \
+            "$RUNNER_TEMP/base-openapi.json" backend/openapi.json
+
+  ffmpeg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-packages --frozen
+      - name: Require Docker and real FFmpeg
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          docker info >/dev/null
+          ffmpeg -version
+          ffprobe -version
+      - name: Real media fixtures cannot skip
+        run: |
+          uv run --project dojo-core pytest dojo-core/tests/test_ffmpeg_fixtures.py -v --junitxml=ffmpeg.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('ffmpeg.xml').getroot()
+          assert not root.findall('.//skipped'), 'required FFmpeg fixture skipped'
+          assert len(root.findall('.//testcase')) >= 2, 'missing real media fixtures'
+          PY
+
+  required:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [android, backend, web, ops, contract, ffmpeg]
+    steps:
+      - name: Require every check to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          results = json.loads(os.environ['NEEDS_JSON'])
+          assert results and all(job['result'] == 'success' for job in results.values()), results
+          PY
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [required]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Lowercase registry namespace
+        id: registry
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "prefix=ghcr.io/${OWNER,,}/aisomedo" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        id: backend
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ steps.registry.outputs.prefix }}-backend:${{ github.sha }}
+      - uses: docker/build-push-action@v6
+        id: worker
+        with:
+          context: .
+          file: worker/Dockerfile
+          push: true
+          tags: ${{ steps.registry.outputs.prefix }}-worker:${{ github.sha }}
+      - uses: docker/build-push-action@v6
+        id: gateway
+        with:
+          context: .
+          file: ops/gateway/Dockerfile
+          push: true
+          tags: ${{ steps.registry.outputs.prefix }}-gateway:${{ github.sha }}
+      - name: Bundle exact digests
+        env:
+          PREFIX: ${{ steps.registry.outputs.prefix }}
+          BACKEND: ${{ steps.backend.outputs.digest }}
+          WORKER: ${{ steps.worker.outputs.digest }}
+          GATEWAY: ${{ steps.gateway.outputs.digest }}
+        run: |
+          python3 ops/deploy.py bundle --sha "$GITHUB_SHA" \
+            --backend "$PREFIX-backend@$BACKEND" --worker "$PREFIX-worker@$WORKER" \
+            --gateway "$PREFIX-gateway@$GATEWAY" --output release-bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: release-bundle/
+          if-no-files-found: error
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [publish]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
+      DEPLOY_MODE: ${{ vars.DEPLOY_MODE }}
+      DEPLOY_ORIGIN: ${{ vars.DEPLOY_ORIGIN }}
+      DEPLOY_MONITORING: ${{ vars.DEPLOY_MONITORING }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: release-bundle
+      - name: Skip superseded main commits
+        id: freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [[ "$current" == "$GITHUB_SHA" ]]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Main advanced; leaving newer release in charge'
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate deployment inputs
+        id: inputs
+        run: |
+          python - <<'PY'
+          import os, re
+          from urllib.parse import urlsplit
+          env = os.environ
+          assert re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.-]*', env['DEPLOY_HOST'])
+          assert re.fullmatch(r'[a-z_][a-z0-9_-]*', env['DEPLOY_USER'])
+          assert env['DEPLOY_PORT'].isdigit() and 1 <= int(env['DEPLOY_PORT']) <= 65535
+          assert re.fullmatch(r'(/[a-zA-Z0-9_-]+)+', env['DEPLOY_ROOT'])
+          assert env['DEPLOY_MODE'] in ('dedicated', 'existing-proxy')
+          assert env['DEPLOY_MONITORING'] in ('true', 'false')
+          origin = urlsplit(env['DEPLOY_ORIGIN'])
+          assert origin.scheme == 'https' and origin.hostname and not origin.username
+          assert not origin.password and not origin.query and not origin.fragment
+          assert origin.path in ('', '/')
+          assert origin.port is None or 1 <= origin.port <= 65535
+          assert re.fullmatch(r'https://[a-zA-Z0-9.:-]+/?', env['DEPLOY_ORIGIN'])
+          PY
+          python3 release-bundle/deploy.py validate --release release-bundle
+      - name: Install SSH identity and verified host keys
+        if: steps.freshness.outputs.deploy == 'true'
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS"
+          mkdir -p "$RUNNER_TEMP/deploy-ssh"
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/deploy-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/deploy-ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/deploy-ssh/key" >/dev/null
+      - name: Deliver and deploy verified bundle
+        id: transport
+        if: steps.freshness.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          options=(-i "$RUNNER_TEMP/deploy-ssh/key" -o BatchMode=yes -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/deploy-ssh/known_hosts"
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          stage="$DEPLOY_ROOT/incoming-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ssh "${options[@]}" -p "$DEPLOY_PORT" "$target" "umask 077; mkdir '$stage'"
+          scp "${options[@]}" -P "$DEPLOY_PORT" -r release-bundle/. "$target:$stage/"
+          monitoring=()
+          if [[ "$DEPLOY_MONITORING" == true ]]; then monitoring=(--monitoring); fi
+          ssh "${options[@]}" -p "$DEPLOY_PORT" "$target" \
+            "python3 '$stage/deploy.py' deploy --release '$stage' --root '$DEPLOY_ROOT' --mode '$DEPLOY_MODE' --origin '$DEPLOY_ORIGIN' ${monitoring[*]}"
+      - name: Remove runner SSH material
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/deploy-ssh/key" "$RUNNER_TEMP/deploy-ssh/known_hosts"

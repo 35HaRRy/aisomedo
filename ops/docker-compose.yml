@@ -6,13 +6,13 @@ x-bounded-logs: &bounded-logs
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:18
     environment:
       POSTGRES_DB: dojo
       POSTGRES_USER: dojo
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dojo -d dojo"]
       interval: 5s

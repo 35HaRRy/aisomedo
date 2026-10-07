@@ -294,7 +294,9 @@ class YayinIncelemesiRow(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     oneoff_occurrence_id: Mapped[int | None] = mapped_column(nullable=True)
-    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_reminded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class PushRegistrationRow(Base):
@@ -322,7 +324,9 @@ class MetaConnectionRow(Base):
     )
     health: Mapped[str] = mapped_column(String(32), nullable=False)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -335,10 +339,14 @@ class MetaOAuthAttemptRow(Base):
     return_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)
     encrypted_temp_token: Mapped[str | None] = mapped_column(Text, nullable=True)
-    temp_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    temp_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -1366,7 +1374,9 @@ class PostgresStore:
 
     def remove_by_client(self, client_id: int) -> None:
         with self._session() as session:
-            session.execute(delete(PushRegistrationRow).where(PushRegistrationRow.client_id == client_id))
+            session.execute(
+                delete(PushRegistrationRow).where(PushRegistrationRow.client_id == client_id)
+            )
             session.commit()
 
     def remove_by_token(self, token: str) -> None:
@@ -1756,7 +1766,9 @@ class PostgresStore:
 
     def find_attempt_by_state_hash(self, state_hash: str) -> dict | None:
         with self._session() as session:
-            row = session.scalar(select(MetaOAuthAttemptRow).where(MetaOAuthAttemptRow.state_hash == state_hash))
+            row = session.scalar(
+                select(MetaOAuthAttemptRow).where(MetaOAuthAttemptRow.state_hash == state_hash)
+            )
             if row is None:
                 return None
             return {

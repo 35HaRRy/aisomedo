@@ -122,6 +122,151 @@ docker compose --env-file ops/.env -p dojo-prod \
 
 `restart: unless-stopped` on all long-lived services; `init` stays `no`.
 
+## Recorded releases and safe updates (#39)
+
+`ops/deploy.py` is a Linux, Python 3.12+ CLI using Docker Compose's `--wait`
+support, not a new daemon. Production project identity stays `dojo-prod`.
+Its `bundle`/`validate` commands also work outside Linux. Use a private
+installation root (example `/srv/aisomedo`, mode 0700) containing:
+
+- `config/production.env`: the operator-owned production settings (mode 0600).
+- `releases/<full-commit-sha>/`: immutable digest-pinned bundle and matching Compose files.
+- `current.json`: last verified successful release; updated atomically only after health checks.
+- `snapshots/`: private pre-deployment PostgreSQL dumps, never uploaded to Actions.
+- `deploy.lock`: host lock shared by manual and automated deployments.
+
+Generate a bundle from the checked checkout, substituting real immutable image
+digests (lowercase 64 hex characters), not tags:
+
+```bash
+python3 ops/deploy.py bundle --sha "$COMMIT_SHA" \
+  --backend "ghcr.io/OWNER/aisomedo-backend@sha256:$BACKEND_DIGEST" \
+  --worker "ghcr.io/OWNER/aisomedo-worker@sha256:$WORKER_DIGEST" \
+  --gateway "ghcr.io/OWNER/aisomedo-gateway@sha256:$GATEWAY_DIGEST" \
+  --output release-bundle
+python3 ops/deploy.py validate --release release-bundle
+```
+
+Registry paths must be lowercase. Before adopting an existing installation,
+explicitly pull/start a known baseline with its bundled files and `images.json`
+override, using `--env-file /srv/aisomedo/config/production.env -p dojo-prod`.
+Perform the volume-adoption procedure below if this is not already the same
+production project. Check the running database and all three application health
+checks, then record the baseline:
+
+```bash
+python3 release-bundle/deploy.py adopt --release release-bundle \
+  --root /srv/aisomedo --mode dedicated --origin https://dojo.example.com
+```
+
+`adopt` verifies running image IDs against every recorded digest and refuses an
+already recorded baseline. A normal deploy refuses missing or unhealthy baseline
+state. This deliberately prevents silently claiming rollback capability on a
+first install. For existing proxies use `--mode existing-proxy`; add `--monitoring`
+when the existing installation has its FCM configuration. Keep any custom external
+network override in the checked Compose configuration so releases preserve it.
+
+Update manually with the same CLI that SSH automation invokes:
+
+```bash
+python3 candidate-bundle/deploy.py deploy --release candidate-bundle \
+  --root /srv/aisomedo --mode dedicated --origin https://dojo.example.com
+```
+
+The CLI locks the installation, validates/pulls images, checks space (twice live
+database size plus 1 GiB for the dump area), gracefully stops backend/worker,
+and takes a custom-format `pg_dump`. Expect API downtime during this operation.
+It restores the dump in an isolated internal PostgreSQL network, runs candidate
+migrations there, and checks the previous backend against the migrated copy.
+The rehearsal receives no production media or external-service credentials.
+Only then does it run the live schema initializer and replace backend/worker/
+gateway containers. Database and durable volumes are never recreated.
+
+Rollout health must pass container probes and public HTTPS `/ready` and
+`/web-health.txt`. Snapshot, preflight, migration, or health failure restores
+previous images/configuration and verifies recovery; failed rollback remains a
+failed deployment requiring operator intervention. **No automatic DB restore or
+schema downgrade occurs.** Automatic migrations must be expand-only and work with
+previous containers. Previous-image readiness is only a smoke test, not proof of
+all query/publication semantics; review migration compatibility before merge.
+
+Snapshots are mode 0600 under a mode 0700 directory; they contain sensitive
+installation state. Keep at least the last successful baseline, its image
+digests, and the corresponding snapshot. Set an operator-owned retention policy
+and monitor both the installation filesystem and Docker's data root: rehearsal
+also needs database-sized space in Docker storage. The CLI never silently prunes
+snapshots, releases, or images. This safety snapshot is not a substitute for the
+encrypted off-host backup/restore procedure.
+
+Catchable INT/TERM/HUP triggers bounded recovery. SIGKILL, power loss, or host
+failure cannot run recovery: inspect `current.json`, containers, snapshots, and
+the retained failed bundle. Start only the last recorded application services
+with their previous bundle and `up --no-build --pull never --no-deps --wait`;
+do not blindly rerun previous migrations or restore a dump over live data.
+If a DB restore is necessary, keep applications stopped, take another forensic
+snapshot, and use the reviewed manual backup/restore procedure.
+
+Live schema initialization uses a unique invocation-owned container name and
+PostgreSQL application name. On interruption/timeout, recovery removes that
+initializer and terminates/verifies only its tagged DB sessions before restarting
+previous applications. If termination cannot be verified, rollback fails closed
+with applications still stopped for operator intervention. Automatic releases
+also reject changes to persistent-volume definitions and service volume mounts
+before quiescing; storage relocation belongs in a separate reviewed procedure.
+
+### GitHub Actions / SSH operator setup
+
+Local workflow tests do not configure GitHub rules or the VPS. Before enabling
+automatic updates, complete these operator-owned steps:
+
+1. On the VPS, provision Python 3.12+, Docker/Compose with `up --wait`, and a
+   dedicated SSH deployment account. Docker socket/group access is effectively
+   root access: protect this account and its key accordingly. Own the private
+   installation directory and `config/production.env` with this account.
+2. Authenticate the account to GHCR using a read-only `read:packages` credential
+   with access to all three packages. Use `docker login ghcr.io --password-stdin`
+   from a trusted session; do not put this token in Actions or release bundles.
+   Retain previous digests in GHCR and locally; an expired credential must fail
+   image pulling before applications stop.
+3. Explicitly install/adopt a healthy baseline as above. Verify its bundle files
+   and running image IDs, public HTTPS, existing persistent volumes, monitoring
+   settings, and available snapshot/Docker storage. Put no live config in Git.
+4. Create GitHub environment `production`, restricted to main. Routine main
+   deployment has no approval gate, as required by #39. Configure variables
+   `DEPLOY_HOST` (DNS name or IPv4), `DEPLOY_PORT` (1–65535), `DEPLOY_USER`,
+   `DEPLOY_ROOT` (absolute path with alphanumeric/underscore/hyphen components),
+   `DEPLOY_MODE` (`dedicated` or `existing-proxy`), `DEPLOY_ORIGIN` (public HTTPS
+   origin), and `DEPLOY_MONITORING` (`true` or `false`). These restricted inputs
+   prevent shell interpolation; paths with spaces or dots are not supported.
+5. Set secrets `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS` in that environment.
+   Verify the VPS host key fingerprint through an independent trusted channel
+   (provider console/operator), then store the corresponding known_hosts line.
+   For a non-default port use `[host]:port`. Do not obtain trust automatically
+   through unattended `ssh-keyscan`; host-key mismatch must fail closed.
+6. Configure main branch rules to require the aggregate `required` check from
+   workflow `ci` (often displayed as `ci / required`; confirm exact context after
+   the first hosted run). Require checks before merge and cover merge queues.
+   Restrict bypass permissions. Workflow YAML alone does not prevent merges.
+
+Every main push that passes all required suites publishes full-SHA-tagged GHCR
+images and a digest-pinned release artifact. Production deployment jobs serialize
+without cancelling an active rollout. Jobs skip superseded commits if main has
+advanced before the serialized job starts. SSH/SCP use strict known-host checks
+and private temporary key files. Bundles stage under `incoming-<run>-<attempt>` and
+remain available for diagnosis; CLI records verified releases separately. Remove
+old staging directories manually only after confirming they are not active and
+their release/snapshot is retained. No SSH or package credentials exist in PR jobs.
+
+Contract checks compare PR/merge-queue bases and the preceding push revision.
+A newly created branch compares its parent; only the genuine initial repository
+commit can bootstrap without a prior contract. Missing older contracts fail
+instead of silently skipping compatibility checks.
+
+Before treating #39 as operationally complete, capture a hosted passing required
+check and blocked failed-check merge, a real signed Android Release, and a real
+SSH deployment plus controlled failed-health recovery. This implementation does
+not itself prove any of those operator-dependent acceptance criteria.
+
 ## Volume lifecycle (never silently start empty)
 
 Project/volume naming is frozen by `name: dojo-prod`: volumes are

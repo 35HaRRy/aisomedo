@@ -36,13 +36,13 @@ x-bounded-logs: &bounded-logs
 
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:18
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-dojo}
       POSTGRES_USER: ${POSTGRES_USER:-dojo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - db-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-dojo} -d $${POSTGRES_DB:-dojo}"]
       interval: 5s
@@ -85,6 +85,9 @@ services:
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-private_ranges}
       SIGNED_URL_SECRET: ${SIGNED_URL_SECRET:?set SIGNED_URL_SECRET in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      ANDROID_CURRENT_VERSION_CODE: ${ANDROID_CURRENT_VERSION_CODE:-1}
+      ANDROID_MIN_VERSION_CODE: ${ANDROID_MIN_VERSION_CODE:-}
+      ANDROID_UPDATE_URL: ${ANDROID_UPDATE_URL:-}
       WORKER_HEALTH_PATH: ${WORKER_HEALTH_PATH:-/run/dojo-worker/health.json}
       META_APP_ID: ${META_APP_ID:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
