@@ -1,6 +1,7 @@
+import com.android.build.api.variant.HostTestBuilder
+
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
@@ -47,8 +48,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) {
+        it.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
     }
 }
 
