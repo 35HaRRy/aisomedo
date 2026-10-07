@@ -20,8 +20,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Require a release from main
-        run: git merge-base --is-ancestor HEAD origin/main
+      - name: Require a release from master
+        run: git merge-base --is-ancestor HEAD origin/master
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
