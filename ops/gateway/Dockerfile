@@ -2,7 +2,7 @@
 # Build from the repo root: docker build -f ops/gateway/Dockerfile .
 # Raw media volumes are deliberately NOT mounted here; artifact bytes flow
 # through the backend proxy, never from gateway disk.
-FROM node:22-alpine AS web-build
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
 
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
