@@ -319,7 +319,7 @@ anahtarı veya base64 içeriğini Git'e/komut geçmişine koymayın.
 ```powershell
 git fetch origin master
 if ($LASTEXITCODE -ne 0) { throw 'master alınamadı.' }
-$masterSha = git rev-parse origin/master
+$masterSha = git rev-parse master
 git show "${masterSha}:android/app/build.gradle.kts" | Select-String 'versionCode|versionName'
 $Surum = Read-Host 'Doğruladığınız versionName (örnek: 0.1.1)'
 $Etiket = "android-v$Surum"

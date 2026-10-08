@@ -58,6 +58,10 @@ both environments; no frontend origin setting exists.
 
 ## Fresh install
 
+These commands build from a source checkout. For GitHub Actions deployments,
+use the release-bundle procedure under **Recorded releases and safe updates**
+below instead.
+
 ```bash
 cp ops/.env.example ops/.env   # then fill secrets + DOMAIN + public origins
 # Dedicated domain (Caddy owns :80/:443, auto TLS):
@@ -134,6 +138,75 @@ installation root (example `/srv/aisomedo`, mode 0700) containing:
 - `current.json`: last verified successful release; updated atomically only after health checks.
 - `snapshots/`: private pre-deployment PostgreSQL dumps, never uploaded to Actions.
 - `deploy.lock`: host lock shared by manual and automated deployments.
+
+### İlk kurulum: hazır release bundle (Oracle Cloud)
+
+Bu adımlar yeni kurulum içindir. Mevcut veri varsa önce aşağıdaki volume-adoption
+prosedürünü uygula; `docker compose down -v` kullanma.
+
+Ön koşullar: Python 3.12+, Docker/Compose, aynı SSH kullanıcısıyla GHCR girişi,
+doldurulmuş `/srv/aisomedo/config/production.env` (0600). Domain VPS'e yönelmeli;
+Oracle NSG/Security List ve sunucu firewall'u 80/443 erişimine izin vermeli.
+`dedicated` modu için bu portlar boş olmalı. Ampere A1 (ARM64) kullanıyorsan
+önce ARM64 image desteğini sağla; mevcut workflow multi-architecture build yapmıyor.
+
+1. `master` CI çalışmasında `publish` başarılı olduktan sonra Actions'tan
+   `release-<commit-sha>` artifact'ını indir. İçeriğini VPS'te
+   `/srv/aisomedo/release-bundle` dizinine çıkar; içine `.env` veya ZIP ekleme.
+2. Windows CMD'den bağlan; key yolunu ve `PUBLIC_IP` değerini değiştir.
+   Oracle Linux için `ubuntu` yerine `opc` kullan (ayrı deploy hesabın varsa onu yaz):
+
+   ```cmd
+   ssh -i "C:\Keys\oracle-instance.key" -p 22 ubuntu@PUBLIC_IP
+   ```
+
+3. SSH bağlantısından sonra **VPS terminalinde** sırayla çalıştır.
+   Doğrulama veya başlatma başarısızsa sonraki adıma geçme:
+
+   ```bash
+   cd /srv/aisomedo/release-bundle
+   python3 deploy.py validate --release .
+
+   docker compose \
+     --env-file /srv/aisomedo/config/production.env \
+     -p dojo-prod \
+     -f docker-compose.prod.yml \
+     -f docker-compose.dedicated.yml \
+     -f images.json \
+     up -d --no-build --pull always --wait --wait-timeout 180
+   ```
+
+   `images.json` en son kalmalı: kaydedilmiş image sürümlerini seçer.
+   `--no-build` VPS'te build yapmaz; `--pull always` image'ları indirir;
+   `--wait` servislerin sağlıklı başlamasını bekler.
+4. Domain'i değiştirip sağlık kontrollerini çalıştır:
+
+   ```bash
+   docker ps -a --filter "label=com.docker.compose.project=dojo-prod"
+   curl -fsS https://dojo.example.com/ready
+   curl -fsS https://dojo.example.com/web-health.txt
+   ```
+
+   `db`, `backend`, `worker`, `gateway` sağlıklı; `init` ise `Exited (0)` olmalı.
+   `/ready` çıktısı `{"status":"ok"}` olmalı. Hata varsa ilgili servisin logunu
+   incele: örneğin `docker logs --tail 100 dojo-prod-init-1`.
+5. Kontroller başarılıysa çalışan sürümü kaydet (domain'i değiştir):
+
+   ```bash
+   python3 deploy.py adopt --release . \
+     --root /srv/aisomedo --mode dedicated --origin https://dojo.example.com
+   ```
+
+   `up` tek başına baseline oluşturmaz; `adopt`, otomasyonun beklediği
+   `current.json` kaydını oluşturur. İlk CI çalışmasında yalnızca deploy başarısız
+   olduysa **Re-run failed jobs** seç.
+
+Mevcut reverse proxy için `docker-compose.dedicated.yml` yerine
+`docker-compose.existing-proxy.yml`, `adopt` için `--mode existing-proxy` kullan.
+Host proxy HTTPS isteklerini `http://127.0.0.1:9080` adresine yönlendirmeli.
+Bu örnek monitoring kapalıdır (`DEPLOY_MONITORING=false`).
+
+### Manual bundle creation and existing-installation adoption
 
 Generate a bundle from the checked checkout, substituting real immutable image
 digests (lowercase 64 hex characters), not tags:
@@ -231,7 +304,7 @@ automatic updates, complete these operator-owned steps:
 3. Explicitly install/adopt a healthy baseline as above. Verify its bundle files
    and running image IDs, public HTTPS, existing persistent volumes, monitoring
    settings, and available snapshot/Docker storage. Put no live config in Git.
-4. Create GitHub environment `production`, restricted to main. Routine main
+4. Create GitHub environment `production`, restricted to `master`. Routine `master`
    deployment has no approval gate, as required by #39. Configure variables
    `DEPLOY_HOST` (DNS name or IPv4), `DEPLOY_PORT` (1–65535), `DEPLOY_USER`,
    `DEPLOY_ROOT` (absolute path with alphanumeric/underscore/hyphen components),
@@ -243,14 +316,14 @@ automatic updates, complete these operator-owned steps:
    (provider console/operator), then store the corresponding known_hosts line.
    For a non-default port use `[host]:port`. Do not obtain trust automatically
    through unattended `ssh-keyscan`; host-key mismatch must fail closed.
-6. Configure main branch rules to require the aggregate `required` check from
+6. Configure `master` branch rules to require the aggregate `required` check from
    workflow `ci` (often displayed as `ci / required`; confirm exact context after
    the first hosted run). Require checks before merge and cover merge queues.
    Restrict bypass permissions. Workflow YAML alone does not prevent merges.
 
-Every main push that passes all required suites publishes full-SHA-tagged GHCR
+Every `master` push that passes all required suites publishes full-SHA-tagged GHCR
 images and a digest-pinned release artifact. Production deployment jobs serialize
-without cancelling an active rollout. Jobs skip superseded commits if main has
+without cancelling an active rollout. Jobs skip superseded commits if `master` has
 advanced before the serialized job starts. SSH/SCP use strict known-host checks
 and private temporary key files. Bundles stage under `incoming-<run>-<attempt>` and
 remain available for diagnosis; CLI records verified releases separately. Remove
