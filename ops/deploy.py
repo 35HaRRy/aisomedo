@@ -84,19 +84,22 @@ def validate_bundle(path: Path) -> dict[str, str]:
     return info["images"]
 
 
-def run(args: list[str], *, input=None, stdout=None, timeout=300) -> bytes:
+def run(args: list[str], *, input=None, stdout=None, timeout=300, step="docker command") -> bytes:
     streamed = hasattr(input, "read")
-    result = subprocess.run(
-        [str(arg) for arg in args],
-        input=None if streamed else input,
-        stdin=input if streamed else None,
-        stdout=stdout or subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            [str(arg) for arg in args],
+            input=None if streamed else input,
+            stdin=input if streamed else None,
+            stdout=stdout or subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise subprocess.TimeoutExpired(step, timeout) from None
     if result.returncode:
-        # Do not echo arguments, Compose config or DB output: they can carry secrets.
-        raise RuntimeError(f"{args[0]} command failed (exit {result.returncode})")
+        # Only caller-supplied static labels; arguments and output can carry secrets.
+        raise RuntimeError(f"{step} failed (exit {result.returncode})")
     return result.stdout or b""
 
 
@@ -181,25 +184,32 @@ def installed_bundle(release: Path, root: Path) -> Path:
     return target
 
 
-def inspect_container(identifier: str) -> dict:
-    return json.loads(run(["docker", "inspect", identifier]))[0]
+def inspect_container(identifier: str, *, step="container inspection") -> dict:
+    return json.loads(run(["docker", "inspect", identifier], step=f"{step} (docker inspect)"))[0]
 
 
-def running(command: list[str], images: dict[str, str]) -> dict[str, list[str]]:
+def running(
+    command: list[str], images: dict[str, str], *, step="baseline health"
+) -> dict[str, list[str]]:
     ids = {}
     for service in ("db", *SERVICES):
-        ids[service] = run(command + ["ps", "--all", "-q", service]).decode().split()
+        ids[service] = run(
+            command + ["ps", "--all", "-q", service], step=f"{step} (docker compose ps)"
+        ).decode().split()
         if not ids[service]:
             raise RuntimeError(f"baseline has no {service} container")
         expected = (
-            run(["docker", "image", "inspect", images[service], "--format", "{{.Id}}"])
+            run(
+                ["docker", "image", "inspect", images[service], "--format", "{{.Id}}"],
+                step=f"{step} (docker image inspect)",
+            )
             .decode()
             .strip()
             if service != "db"
             else None
         )
         for identifier in ids[service]:
-            info = inspect_container(identifier)
+            info = inspect_container(identifier, step=step)
             if (
                 not info["State"]["Running"]
                 or info["State"].get("Health", {}).get("Status") != "healthy"
@@ -278,7 +288,10 @@ def preflight(
         )
         env_file.chmod(0o600)
         try:
-            run(["docker", "network", "create", "--internal", network])
+            run(
+                ["docker", "network", "create", "--internal", network],
+                step="preflight network setup (docker network create)",
+            )
             run(
                 [
                     "docker",
@@ -291,7 +304,8 @@ def preflight(
                     "--env-file",
                     str(env_file),
                     database_image,
-                ]
+                ],
+                step="preflight database start (docker run)",
             )
             deadline = time.monotonic() + timeout
             while True:
@@ -308,12 +322,15 @@ def preflight(
                             "dojo",
                             "-d",
                             "dojo",
-                        ]
+                        ],
+                        step="preflight database readiness (docker exec)",
                     )
                     break
                 except RuntimeError:
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("preflight PostgreSQL readiness timed out") from None
+                        raise RuntimeError(
+                            "preflight database readiness (docker exec) timed out"
+                        ) from None
                     time.sleep(1)
             with snapshot.open("rb") as data:
                 run(
@@ -333,6 +350,7 @@ def preflight(
                     ],
                     input=data,
                     timeout=timeout,
+                    step="preflight restore (docker exec)",
                 )
             run(
                 [
@@ -350,6 +368,7 @@ def preflight(
                     "dojo.schema",
                 ],
                 timeout=timeout,
+                step="preflight migration (docker run)",
             )
             run(
                 [
@@ -363,33 +382,56 @@ def preflight(
                     "--env-file",
                     str(env_file),
                     previous_images["backend"],
-                ]
+                ],
+                step="preflight previous backend start (docker run)",
             )
             deadline = time.monotonic() + timeout
             probe = "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready',timeout=4)"
             while True:
                 try:
-                    run(["docker", "exec", smoke, ".venv/bin/python", "-c", probe])
+                    run(
+                        ["docker", "exec", smoke, ".venv/bin/python", "-c", probe],
+                        step="preflight previous backend readiness (docker exec)",
+                    )
                     break
                 except RuntimeError:
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("previous backend rejects migrated snapshot") from None
+                        raise RuntimeError(
+                            "preflight previous backend readiness (docker exec): "
+                            "previous backend rejects migrated snapshot"
+                        ) from None
                     time.sleep(2)
         finally:
             # Exact random names owned by this invocation; -v only removes their
             # anonymous preflight volumes, never any Compose production volume.
             for name in (smoke, migrate, db):
                 try:
-                    run(["docker", "rm", "-f", "-v", name])
+                    run(
+                        ["docker", "rm", "-f", "-v", name],
+                        step="preflight container cleanup (docker rm)",
+                    )
                 except RuntimeError:
                     # A failure before creation leaves no container to remove.
-                    if run(["docker", "ps", "-aq", "--filter", f"name=^/{name}$"]).strip():
-                        raise RuntimeError("preflight container cleanup failed") from None
+                    if run(
+                        ["docker", "ps", "-aq", "--filter", f"name=^/{name}$"],
+                        step="preflight container cleanup verification (docker ps)",
+                    ).strip():
+                        raise RuntimeError(
+                            "preflight container cleanup (docker rm) failed"
+                        ) from None
             try:
-                run(["docker", "network", "rm", network])
+                run(
+                    ["docker", "network", "rm", network],
+                    step="preflight network cleanup (docker network rm)",
+                )
             except RuntimeError:
-                if run(["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"]).strip():
-                    raise RuntimeError("preflight network cleanup failed") from None
+                if run(
+                    ["docker", "network", "ls", "-q", "--filter", f"name=^{network}$"],
+                    step="preflight network cleanup verification (docker network ls)",
+                ).strip():
+                    raise RuntimeError(
+                        "preflight network cleanup (docker network rm) failed"
+                    ) from None
 
 
 def deploy(
@@ -419,12 +461,18 @@ def deploy(
         release = installed_bundle(release, root)
         old = compose(previous, root, state["mode"], state["monitoring"])
         new = compose(release, root, mode, monitoring)
-        help_text = run(["docker", "compose", "up", "--help"]).decode()
+        help_text = run(
+            ["docker", "compose", "up", "--help"], step="Compose feature check (docker compose up)"
+        ).decode()
         if any(option not in help_text for option in ("--wait-timeout", "--no-deps", "--pull")):
             raise RuntimeError("Compose lacks required rollout/rollback features")
         ids = running(old, old_images)
-        old_config = json.loads(run(old + ["config", "--format", "json"]))
-        config = json.loads(run(new + ["config", "--format", "json"]))
+        old_config = json.loads(run(
+            old + ["config", "--format", "json"], step="baseline config (docker compose config)"
+        ))
+        config = json.loads(run(
+            new + ["config", "--format", "json"], step="candidate config (docker compose config)"
+        ))
         if config["services"]["db"] != old_config["services"]["db"]:
             raise ValueError("automatic releases must not change the database service")
         if config.get("volumes", {}) != old_config.get("volumes", {}) or any(
@@ -436,7 +484,9 @@ def deploy(
         for service in SERVICES:
             if config["services"].get(service, {}).get("image", images[service]) != images[service]:
                 raise ValueError("rendered candidate does not match recorded images")
-        run(new + ["pull", *SERVICES, "init"], timeout=600)
+        run(
+            new + ["pull", *SERVICES, "init"], timeout=600, step="image pull (docker compose pull)"
+        )
         env = config["services"]["db"]["environment"]
         user, database = env["POSTGRES_USER"], env["POSTGRES_DB"]
         db = ids["db"][0]
@@ -453,7 +503,8 @@ def deploy(
                     database,
                     "-tAc",
                     "SELECT pg_database_size(current_database())",
-                ]
+                ],
+                step="snapshot size check (docker exec)",
             ).strip()
         )
         snapshots = root / "snapshots"
@@ -478,10 +529,14 @@ def deploy(
                 handlers[signum] = signal.signal(signum, abort)
         try:
             interrupted = True  # A failed stop can already have stopped one service.
-            run(old + ["stop", "backend", "worker"], timeout=300)
+            run(
+                old + ["stop", "backend", "worker"], timeout=300,
+                step="quiesce (docker compose stop)",
+            )
             for service in ("backend", "worker"):
                 if any(
-                    inspect_container(identifier)["State"]["Running"] for identifier in ids[service]
+                    inspect_container(identifier, step="quiesce verification")["State"]["Running"]
+                    for identifier in ids[service]
                 ):
                     raise RuntimeError("could not quiesce application services")
             with snapshot.open("xb") as output:
@@ -500,12 +555,16 @@ def deploy(
                     ],
                     stdout=output,
                     timeout=600,
+                    step="snapshot dump (docker exec)",
                 )
                 output.flush()
                 os.fsync(output.fileno())
             if snapshot.stat().st_size == 0:
                 raise RuntimeError("snapshot was empty")
-            preflight(snapshot, images, old_images, inspect_container(db)["Image"], health_timeout)
+            preflight(
+                snapshot, images, old_images,
+                inspect_container(db, step="preflight database image")["Image"], health_timeout,
+            )
             initializer_started = True
             run(
                 new
@@ -520,6 +579,7 @@ def deploy(
                     "init",
                 ],
                 timeout=600,
+                step="live init (docker compose run)",
             )
             initializer_started = False
             start = [
@@ -534,8 +594,8 @@ def deploy(
                 str(health_timeout),
                 *SERVICES,
             ]
-            run(new + start, timeout=health_timeout + 60)
-            running(new, images)
+            run(new + start, timeout=health_timeout + 60, step="rollout (docker compose up)")
+            running(new, images, step="rollout health")
             verify_public_health(origin, health_timeout)
             write_state(root, release, mode, monitoring, origin)
         except BaseException as original:
@@ -556,12 +616,27 @@ def deploy(
                             f"name=^/{live_init}$",
                         ]
                         try:
-                            run(["docker", "rm", "-f", live_init])
+                            run(
+                                ["docker", "rm", "-f", live_init],
+                                step="rollback initializer cleanup (docker rm)",
+                            )
                         except RuntimeError:
-                            if run(container_filter).strip():
-                                raise RuntimeError("live initializer termination failed") from None
-                        if run(container_filter).strip():
-                            raise RuntimeError("live initializer still exists")
+                            if run(
+                                container_filter,
+                                step="rollback initializer cleanup verification (docker ps)",
+                            ).strip():
+                                raise RuntimeError(
+                                    "rollback initializer cleanup (docker rm): "
+                                    "live initializer termination failed"
+                                ) from None
+                        if run(
+                            container_filter,
+                            step="rollback initializer cleanup verification (docker ps)",
+                        ).strip():
+                            raise RuntimeError(
+                                "rollback initializer cleanup verification (docker ps): "
+                                "live initializer still exists"
+                            )
                         query = ["docker", "exec", db, "psql", "-U", user, "-d", database, "-tAc"]
                         predicate = f"application_name = '{live_init}' AND pid <> pg_backend_pid()"
                         run(
@@ -569,20 +644,27 @@ def deploy(
                             + [
                                 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE "
                                 + predicate
-                            ]
+                            ],
+                            step="rollback database session termination (docker exec)",
                         )
                         deadline = time.monotonic() + 10
                         while int(
                             run(
-                                query + ["SELECT count(*) FROM pg_stat_activity WHERE " + predicate]
+                                query
+                                + ["SELECT count(*) FROM pg_stat_activity WHERE " + predicate],
+                                step="rollback database session verification (docker exec)",
                             ).strip()
                         ):
                             if time.monotonic() >= deadline:
                                 raise RuntimeError(
+                                    "rollback database session verification (docker exec): "
                                     "live initializer database sessions did not exit"
                                 )
                             time.sleep(0.2)
-                    run(new + ["stop", "backend", "worker"], timeout=300)
+                    run(
+                        new + ["stop", "backend", "worker"], timeout=300,
+                        step="rollback quiesce (docker compose stop)",
+                    )
                     run(
                         old
                         + [
@@ -598,12 +680,13 @@ def deploy(
                             *SERVICES,
                         ],
                         timeout=health_timeout + 60,
+                        step="rollback (docker compose up)",
                     )
-                    running(old, old_images)
+                    running(old, old_images, step="rollback health")
                     verify_public_health(state["origin"], health_timeout)
                 except BaseException as recovery:
                     raise RuntimeError(
-                        f"deployment failed; rollback failed: {recovery}"
+                        f"deployment failed: {original}; rollback failed: {recovery}"
                     ) from original
             raise
         finally:
