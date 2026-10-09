@@ -27,6 +27,7 @@ internal class UploadDeviceFixture : AutoCloseable {
     val runtime = UploadRuntime.get(target)
     val server = MockWebServer()
     val initializationCount = AtomicInteger()
+    val dashboardReads = AtomicInteger()
     val offsets = CopyOnWriteArrayList<Pair<String, Long>>()
     data class Remote(val size: Long, @Volatile var received: Long = 0, @Volatile var phase: String = "receiving")
     val uploads = ConcurrentHashMap<String, Remote>()
@@ -43,6 +44,7 @@ internal class UploadDeviceFixture : AutoCloseable {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.requestUrl!!.encodedPath
+                if (path == "/api/dashboard") dashboardReads.incrementAndGet()
                 val body = when (path) {
                     "/api/compat" -> """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":5,"update_url":"https://example.com/update"}"""
                     "/api/pairing/me" -> """{"id":1,"kind":"device","name":"Synthetic test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}"""
@@ -109,8 +111,10 @@ internal class UploadDeviceFixture : AutoCloseable {
         front()
         runtime.rows.value.filter { eligible(it) }.forEach { runtime.pause(it.id) }
         runCatching { await { runtime.rows.value.none(::eligible) } }
-        runtime.rows.value.forEach { runtime.dismiss(it.id) }
-        runCatching { await { runtime.rows.value.isEmpty() } }
+        if (runtime.matches(binding)) {
+            runtime.rows.value.forEach { runtime.dismiss(it.id) }
+            runCatching { await { runtime.rows.value.isEmpty() } }
+        }
         runtime.stopSession()
         runtime.sessionStore.clearTokenIfBinding(origin, binding)
         scenario.close()
