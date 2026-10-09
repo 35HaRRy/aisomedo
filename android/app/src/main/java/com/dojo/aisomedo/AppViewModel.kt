@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.*
+import com.dojo.aisomedo.uploads.UploadIssue
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
@@ -49,10 +50,12 @@ class AppViewModel(
     private val versionCode: Int,
     private val allowHttp: Boolean,
     val saved: SavedStateHandle,
+    private val onSessionStopped: () -> Unit = {},
 ) : ViewModel() {
     private val mutable = MutableStateFlow(AppUiState())
     val state = mutable.asStateFlow()
     private var token: String? = null
+    private var bindingId: String? = null
     private var generation = 0
     private var job: Job? = null
     private var prompted = false
@@ -88,6 +91,7 @@ class AppViewModel(
         val origin = try { ApiConfig.normalizeOrigin(raw, allowHttp) }
         catch (_: Exception) { mutable.update { it.copy(issue = UiIssue.INVALID_SERVER) }; return }
         launch {
+            onSessionStopped()
             withContext(Dispatchers.IO) { store.setOrigin(origin) }
             token = null
             mutable.value = AppUiState(origin = origin, busy = true)
@@ -109,14 +113,17 @@ class AppViewModel(
         if (generation != current) return
         mutable.update { it.copy(compat = compat, updateUrl = safeExternalUrl(compat.updateUrl)) }
         if (UpdatePolicy.isOutdated(versionCode, compat.androidMinVersionCode)) {
+            onSessionStopped()
             mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED) }; return
         }
-        token = try { withContext(Dispatchers.IO) { store.readToken(origin) } }
+        val credential = try { withContext(Dispatchers.IO) { store.readSession(origin) } }
         catch (_: CredentialUnavailable) {
             withContext(Dispatchers.IO) { store.clearToken() }
             mutable.update { it.copy(issue = UiIssue.STORAGE) }; null
         }
         if (generation != current) return
+        token = credential?.token
+        bindingId = credential?.bindingId
         if (token == null) { mutable.update { it.copy(phase = Phase.PAIRING) }; return }
         authenticated(current)
     }
@@ -132,6 +139,7 @@ class AppViewModel(
             withContext(Dispatchers.IO) { store.saveToken(state.value.origin, credential) }
             if (generation != current) return@launch
             token = credential
+            bindingId = withContext(Dispatchers.IO) { store.readSession(state.value.origin)?.bindingId }
             // A 401 after validation is revocation, not a rejected pairing code.
             try { authenticated(current) }
             catch (e: ApiFailure) { failure(e, false) }
@@ -161,14 +169,21 @@ class AppViewModel(
 
     private fun failure(error: Exception, pairing: Boolean = false) {
         if (error is PolicyChanged) return
+        if (error is ApiFailure && error.status in setOf(401, 426) && !pairing) {
+            val current = runCatching { store.readSession(state.value.origin) }.getOrNull()
+            if (current != null && bindingId != null && current.bindingId != bindingId) return
+        }
         when {
             error is ApiFailure && error.status == 426 -> {
+                onSessionStopped()
                 cancelWork()
                 mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, busy = false, updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
             }
             error is ApiFailure && error.status == 401 && !pairing -> {
+                onSessionStopped()
                 cancelWork(); token = null; prompted = false; clearSaved()
-                val issue = try { store.clearToken(); null } catch (_: Exception) { UiIssue.STORAGE }
+                val issue = try { bindingId?.let { store.clearTokenIfBinding(state.value.origin, it) }; null } catch (_: Exception) { UiIssue.STORAGE }
+                bindingId = null
                 mutable.value = AppUiState(origin = state.value.origin, compat = state.value.compat, phase = Phase.PAIRING, issue = issue)
             }
             else -> {
@@ -187,9 +202,20 @@ class AppViewModel(
     }
 
     fun changeServer() {
+        onSessionStopped()
         cancelWork(); token = null; prompted = false; clearSaved()
+        bindingId = null
         val issue = try { store.setOrigin(""); null } catch (_: Exception) { UiIssue.STORAGE }
         mutable.value = AppUiState(issue = issue)
+    }
+    fun observeSessionFailure(issue: UploadIssue, expectedBinding: String? = null) {
+        if (expectedBinding != null && expectedBinding != bindingId) return
+        if (state.value.phase != Phase.READY && state.value.phase != Phase.LOADING) return
+        when (issue) {
+            UploadIssue.AUTH -> failure(ApiFailure(401))
+            UploadIssue.UPDATE_REQUIRED -> failure(ApiFailure(426))
+            else -> Unit
+        }
     }
     private fun cancelWork() { generation++; job?.cancel(); job = null }
     private fun checkSession(current: Int) {

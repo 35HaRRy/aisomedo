@@ -87,6 +87,17 @@ npm run dev
 
 ## Usage (simple flow)
 
+### Android package uploads
+
+In **Paket → Aktif Paket**, choose **Fotoğraf/video seç** from a document source
+with durable read access. Progress, **Duraklat**, **Devam et** and **Tekrar dene**
+share a persistent queue with the background notification. Accepted chunks are
+reconciled on recovery; Android suspension/force-stop restrictions still apply.
+Queued/processing is not finalized success.
+
+[Turkish usage guide](docs/rehberler/issue-33-android-upload-deneme-rehberi.md) ·
+[Verification and blocked device checks](docs/verification/issue-33-android-upload.md).
+
 ### Guided browser setup
 
 After pairing, incomplete setup opens at `#/onboarding`. Resume later or reopen

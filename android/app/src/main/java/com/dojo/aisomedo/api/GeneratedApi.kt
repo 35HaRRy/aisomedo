@@ -4,6 +4,7 @@ package com.dojo.aisomedo.api
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 object ApiContract {
     const val CONTRACT_VERSION = "0.1.0"
@@ -194,6 +195,33 @@ data class StatusOut(
     @SerialName("last_refreshed_at") val lastRefreshedAt: String? = null,
     @SerialName("page_id") val pageId: String? = null,
     @SerialName("page_name") val pageName: String? = null,
+)
+
+@Serializable
+data class UploadInitIn(
+    @SerialName("content_type") val contentType: String,
+    @SerialName("declared_size_bytes") val declaredSizeBytes: Long,
+    @SerialName("expected_package_id") val expectedPackageId: Int? = null,
+    @SerialName("filename") val filename: String,
+)
+
+@Serializable
+data class UploadLimitsOut(
+    @SerialName("active_package_id") val activePackageId: Int? = null,
+    @SerialName("max_file_bytes") val maxFileBytes: Long,
+    @SerialName("max_package_bytes") val maxPackageBytes: Long,
+)
+
+@Serializable
+data class UploadOut(
+    @SerialName("conflicts") val conflicts: List<Map<String, JsonElement>> = emptyList(),
+    @SerialName("declared_size_bytes") val declaredSizeBytes: Long,
+    @SerialName("error_reason") val errorReason: String? = null,
+    @SerialName("package_id") val packageId: Int? = null,
+    @SerialName("received_bytes") val receivedBytes: Long,
+    @SerialName("received_ranges") val receivedRanges: List<List<Long>>,
+    @SerialName("status") val status: String,
+    @SerialName("upload_id") val uploadId: String,
 )
 
 @Serializable
