@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import subprocess
+import traceback
 from pathlib import Path
 
 import pytest
@@ -72,7 +74,7 @@ class DockerDouble:
         self.unhealthy = unhealthy
         self.stopped = False
 
-    def __call__(self, args, *, input=None, stdout=None, timeout=300):
+    def __call__(self, args, *, input=None, stdout=None, timeout=300, step="docker command"):
         self.calls.append(list(map(str, args)))
         command = " ".join(map(str, args))
         if self.fail and self.fail in command and not self.failed:
@@ -133,6 +135,7 @@ def installation(cli, tmp_path, monkeypatch):
     (root / "config").mkdir(parents=True)
     (root / "config/production.env").write_text("POSTGRES_PASSWORD=fixture\n")
     docker = DockerDouble()
+    docker.real_run = cli.run
     monkeypatch.setattr(cli, "run", docker)
     monkeypatch.setattr(cli, "verify_public_health", lambda *a: None)
     # Exercise locking on Linux in integration; Windows lacks fcntl.
@@ -185,6 +188,119 @@ def test_failure_preserves_old_state_and_recovers(cli, installation, failure):
     assert json.loads((root / "current.json").read_text())["sha"] == OLD
     assert not docker.stopped
     assert not any("down" in c or "downgrade" in c for c in docker.calls)
+
+
+@pytest.mark.parametrize(
+    "failure,step",
+    [
+        ("pg_restore", "preflight restore (docker exec)"),
+        ("-m dojo.schema", "preflight migration (docker run)"),
+        ("run --rm", "live init (docker compose run)"),
+        ("--wait-timeout", "rollout (docker compose up)"),
+    ],
+)
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_command_failure_identifies_step_without_leaking_secrets(
+    cli, installation, monkeypatch, capsys, failure, step, rollback_fails
+):
+    root, new, docker = installation
+    failed = False
+
+    def external_command(args, **kwargs):
+        nonlocal failed
+        if failure in " ".join(map(str, args)) and not failed:
+            failed = True
+            return subprocess.CompletedProcess(args, 17, b"stdout-secret", b"stderr-secret")
+        if rollback_fails and failed and "up" in args:
+            return subprocess.CompletedProcess(args, 18, b"stdout-secret", b"stderr-secret")
+        output = docker(args, stdout=kwargs.get("stdout"))
+        return subprocess.CompletedProcess(args, 0, output, b"")
+
+    monkeypatch.setattr(cli, "run", docker.real_run)
+    monkeypatch.setattr(cli.subprocess, "run", external_command)
+    with pytest.raises(RuntimeError) as error:
+        cli.deploy(new, root, mode="existing-proxy", monitoring=False, origin="https://example.test")
+    message = str(error.value)
+    assert step in message
+    assert "exit 17" in message
+    captured = capsys.readouterr()
+    assert "secret" not in message + captured.out + captured.err
+    assert str(root) not in message and IMAGES["backend"] not in message
+    assert json.loads((root / "current.json").read_text())["sha"] == OLD
+    if rollback_fails:
+        assert "rollback (docker compose up)" in message and "exit 18" in message
+    else:
+        assert not docker.stopped
+
+
+def test_command_timeout_does_not_expose_arguments_or_output(cli, monkeypatch):
+    def timed_out(args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            args, kwargs["timeout"], output=b"stdout-secret", stderr=b"stderr-secret"
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", timed_out)
+    args = ["docker", "run", "-e", "TOKEN=argument-secret"]
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        cli.run(args, timeout=1)
+    assert "timed out" in str(error.value)
+    assert error.value.output is None and error.value.stderr is None
+    assert "secret" not in "".join(traceback.format_exception(error.value))
+
+
+def test_preflight_cleanup_timeout_is_not_swallowed(cli, tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot.dump"
+    snapshot.write_bytes(b"PGDMPfixture")
+
+    def external_command(args, **kwargs):
+        if args[1] == "rm":
+            raise subprocess.TimeoutExpired(args, kwargs["timeout"], stderr=b"stderr-secret")
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", external_command)
+    with pytest.raises(subprocess.TimeoutExpired) as error:
+        cli.preflight(snapshot, IMAGES, IMAGES, "postgres:18", 1)
+    assert "preflight container cleanup (docker rm)" in str(error.value)
+    assert "dojo-preflight-" not in str(error.value)
+
+
+@pytest.mark.parametrize("failure,step", [
+    ("database readiness", "preflight database readiness (docker exec)"),
+    ("backend readiness", "preflight previous backend readiness (docker exec)"),
+    ("container cleanup", "preflight container cleanup (docker rm)"),
+    ("network cleanup", "preflight network cleanup (docker network rm)"),
+])
+def test_preflight_terminal_failure_keeps_step(cli, tmp_path, monkeypatch, failure, step):
+    snapshot = tmp_path / "snapshot.dump"
+    snapshot.write_bytes(b"PGDMPfixture")
+    ticks = 0
+
+    def clock():
+        nonlocal ticks
+        ticks += 2
+        return ticks
+
+    def external_command(args, **kwargs):
+        failed = (
+            (failure == "database readiness" and "pg_isready" in args)
+            or (failure == "backend readiness" and "-c" in args)
+            or (failure == "container cleanup" and args[1] == "rm")
+            or (failure == "network cleanup" and args[1:3] == ["network", "rm"])
+        )
+        if failed:
+            return subprocess.CompletedProcess(args, 1, b"stdout-secret", b"stderr-secret")
+        present = (
+            (failure == "container cleanup" and args[1] == "ps")
+            or (failure == "network cleanup" and args[1:3] == ["network", "ls"])
+        )
+        return subprocess.CompletedProcess(args, 0, b"present\n" if present else b"", b"")
+
+    monkeypatch.setattr(cli.subprocess, "run", external_command)
+    monkeypatch.setattr(cli.time, "monotonic", clock)
+    with pytest.raises(RuntimeError) as error:
+        cli.preflight(snapshot, IMAGES, IMAGES, "postgres:18", 1)
+    assert step in str(error.value)
+    assert "secret" not in str(error.value)
 
 
 def test_missing_baseline_and_unhealthy_baseline_never_interrupt(cli, installation):
