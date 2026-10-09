@@ -4,7 +4,7 @@ Date: 2026-10-09
 Issue: https://github.com/35HaRRy/aisomedo/issues/33
 Parent: #1, Dojo Reel Publishing MVP
 Prerequisites: #7 and #32 are closed.
-Status: conversational design approved; written spec awaiting review.
+Status: conversational design and written spec approved; implementation plan awaiting review.
 
 ## Intent and approved scope
 
