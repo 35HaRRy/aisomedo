@@ -72,6 +72,13 @@ def test_upload_generation_emits_wire_types(tmp_path):
     assert 'export type UploadInitIn =' in output
     assert 'export type UploadOut =' in output
     assert '"received_ranges": Array<Array<number>>;' in output
+    kotlin = module.ANDROID_TARGET.read_text(encoding="utf-8")
+    assert "val maxFileBytes: Long" in kotlin
+    assert "val declaredSizeBytes: Long" in kotlin
+    assert "val receivedBytes: Long" in kotlin
+    assert "val receivedRanges: List<List<Long>>" in kotlin
+    assert "val conflicts: List<Map<String, JsonElement>> = emptyList()" in kotlin
+    assert "val androidMinVersionCode: Int" in kotlin
 
 
 def test_kotlin_preserves_required_null_and_defaults():

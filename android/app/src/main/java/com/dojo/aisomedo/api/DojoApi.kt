@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class ApiFailure(val status: Int, val updateUrl: String? = null) : Exception("API failure: $status")
+class ApiFailure(val status: Int, val updateUrl: String? = null, val detail: String? = null) : Exception("API failure: $status")
 
 class DojoApi(private val origin: String, private val token: String?, private val versionCode: Int, http: OkHttpClient) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = true }
@@ -42,11 +42,13 @@ class DojoApi(private val origin: String, private val token: String?, private va
                         if (!continuation.isActive) return
                         try {
                             if (!response.isSuccessful) {
-                                val update = if (response.code == 426) {
-                                    val text = response.body?.byteStream()?.use { readBounded(it, 65536).toString(Charsets.UTF_8) } ?: ""
-                                    runCatching { json.parseToJsonElement(text).jsonObject["update_url"]?.jsonPrimitive?.content }.getOrNull()
-                                } else null
-                                continuation.resumeWithException(ApiFailure(response.code, update))
+                                val error = runCatching {
+                                    val text = response.body?.byteStream()?.use { readBounded(it, 65536).toString(Charsets.UTF_8) }.orEmpty()
+                                    json.parseToJsonElement(text).jsonObject
+                                }.getOrNull()
+                                val update = if (response.code == 426) (error?.get("update_url") as? JsonPrimitive)?.contentOrNull else null
+                                val detail = (error?.get("detail") as? JsonPrimitive)?.contentOrNull?.take(1024)
+                                continuation.resumeWithException(ApiFailure(response.code, update, detail))
                             } else {
                                 val source = response.body?.byteStream()
                                 val data = source?.use { readBounded(it, 10 * 1024 * 1024) } ?: ByteArray(0)
@@ -94,6 +96,17 @@ class DojoApi(private val origin: String, private val token: String?, private va
         catch (_: SerializationException) { throw SerializationException("Invalid server response") }
     }
     suspend fun preview(path: String): ByteArray = bytes("GET", path)
+    suspend fun uploadLimits(): UploadLimitsOut = decode(request("GET", "/api/media/upload-limits"))
+    suspend fun startUpload(body: UploadInitIn): UploadOut = decode(request("POST", "/api/media/uploads", json.encodeToJsonElement(body)))
+    suspend fun uploadStatus(id: String): UploadOut = decode(request("GET", "/api/media/uploads/${segment(id)}"))
+    suspend fun completeUpload(id: String): UploadOut = decode(request("POST", "/api/media/uploads/${segment(id)}/complete"))
+    suspend fun uploadRange(id: String, offset: Long, checksum: String, bytes: ByteArray): UploadOut {
+        require(offset >= 0 && checksum.matches(Regex("[a-f0-9]{64}")) && bytes.isNotEmpty() && bytes.size <= 2 * 1024 * 1024)
+        val result = this.bytes("PUT", "/api/media/uploads/${segment(id)}/ranges?offset=$offset&checksum_sha256=$checksum",
+            bytes.toRequestBody("application/octet-stream".toMediaType()))
+        return try { json.decodeFromString<UploadOut>(result.toString(Charsets.UTF_8)) }
+        catch (_: SerializationException) { throw SerializationException("Invalid server response") }
+    }
     private fun segment(value: String) = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 }
 

@@ -81,7 +81,7 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
     pending = set(roots)
     emitted: dict[str, str] = {}
 
-    def convert(node: dict) -> str:
+    def convert(node: dict, wide: bool = False) -> str:
         if "$ref" in node:
             ref = node["$ref"]
             prefix = "#/components/schemas/"
@@ -95,17 +95,23 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
             values = [part for part in parts if part.get("type") != "null"]
             if len(parts) != 2 or len(values) != 1:
                 raise ValueError(f"Unsupported union: {node}")
-            return convert(values[0]) + "?"
+            return convert(values[0], wide) + "?"
         if "allOf" in node or "oneOf" in node or "not" in node:
             raise ValueError(f"Unsupported schema: {node}")
         kind = node.get("type")
         scalars = {"string": "String", "integer": "Int", "number": "Double", "boolean": "Boolean"}
         if kind in scalars:
+            if kind == "integer" and wide:
+                return "Long"
             return scalars[kind]
         if kind == "array":
-            return f"List<{convert(node['items'])}>"
-        if kind == "object" and isinstance(node.get("additionalProperties"), dict):
-            return f"Map<String, {convert(node['additionalProperties'])}>"
+            return f"List<{convert(node['items'], wide)}>"
+        if kind == "object":
+            extra = node.get("additionalProperties", True)
+            value = convert(extra, wide) if isinstance(extra, dict) else "JsonElement"
+            return f"Map<String, {value}>"
+        if not node or set(node).issubset({"title", "description"}):
+            return "JsonElement"
         raise ValueError(f"Unsupported schema: {node}")
 
     while pending - emitted.keys():
@@ -126,11 +132,17 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
         )
         for key in names:
             value = properties[key]
-            kind = convert(value)
+            wide = name in {"UploadLimitsOut", "UploadInitIn", "UploadOut"} and key in {
+                "max_file_bytes", "max_package_bytes", "declared_size_bytes",
+                "received_bytes", "received_ranges",
+            }
+            kind = convert(value, wide)
             default = ""
             if key not in required:
                 if value.get("default") is not None:
                     literal = json.dumps(value["default"], ensure_ascii=False).replace("$", r"\$")
+                    if value["default"] == []:
+                        literal = "emptyList()"
                     default = f" = {literal}"
                 else:
                     kind = kind if kind.endswith("?") else kind + "?"
@@ -199,6 +211,7 @@ def main() -> None:
         "",
         "import kotlinx.serialization.SerialName",
         "import kotlinx.serialization.Serializable",
+        "import kotlinx.serialization.json.JsonElement",
         "",
         "object ApiContract {",
         f'    const val CONTRACT_VERSION = "{version}"',
@@ -216,6 +229,7 @@ def main() -> None:
         "ConsentOut", "AcceptanceIn", "AcceptanceOut", "PlanIn", "PlanOut",
         "BrandingDefaultsOut", "BrandingAssetOut", "StatusOut", "StartIn", "StartOut",
         "AttemptOut", "SelectIn",
+        "UploadLimitsOut", "UploadInitIn", "UploadOut",
     ]))
     ANDROID_TARGET.parent.mkdir(parents=True, exist_ok=True)
     ANDROID_TARGET.write_text("\n".join(kt_lines), encoding="utf-8")
