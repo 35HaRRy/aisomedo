@@ -3,6 +3,7 @@ package com.dojo.aisomedo
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
 import com.dojo.aisomedo.auth.SessionStore
+import com.dojo.aisomedo.uploads.UploadIssue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -34,6 +35,8 @@ class AppViewModelTest {
         val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
         val origin: String
         val model: AppViewModel
+        var stopped = 0
+        var tokenAtStop: String? = null
         private val owner = ViewModelStore()
         init {
             bodies["/api/compat"] = """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":1,"update_url":"https://example.com/update"}"""
@@ -58,7 +61,10 @@ class AppViewModelTest {
             origin = server.url("/").toString().trimEnd('/')
             if (configure) store.setOrigin(origin)
             if (paired) store.saveToken(origin, "DEVICE")
-            model = AppViewModel(store, OkHttpClient(), 1, true, SavedStateHandle())
+            model = AppViewModel(store, OkHttpClient(), 1, true, SavedStateHandle()) {
+                stopped++
+                tokenAtStop = store.readToken(origin)
+            }
             owner.put("model", model)
         }
         fun await(predicate: (AppUiState) -> Boolean) {
@@ -70,6 +76,57 @@ class AppViewModelTest {
 
     @Test fun noOriginRequiresAddressWithoutNetwork() = runTest(main.scheduler) {
         Fixture(configure = false).use { f -> f.await { it.phase == Phase.ADDRESS }; assertEquals(0, f.server.requestCount) }
+    }
+    @Test fun backgroundAuthFailureReturnsToPairing() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.observeSessionFailure(UploadIssue.AUTH)
+            assertEquals(Phase.PAIRING, f.model.state.value.phase)
+            assertNull(f.store.readToken(f.origin))
+            assertEquals(1, f.stopped)
+            assertEquals("DEVICE", f.tokenAtStop)
+        }
+    }
+    @Test fun backgroundUpdateFailureGatesMutationWithoutDeletingCredential() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.observeSessionFailure(UploadIssue.UPDATE_REQUIRED)
+            assertEquals(Phase.UPDATE_REQUIRED, f.model.state.value.phase)
+            assertEquals("DEVICE", f.store.readToken(f.origin))
+            assertEquals(1, f.stopped)
+            val count = f.server.requestCount
+            f.model.savePlan("2026-10-05", "18:30", true)
+            main.scheduler.runCurrent()
+            assertEquals(count, f.server.requestCount)
+        }
+    }
+    @Test fun lateOldPairingCannotClearNewCredential() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.store.saveToken(f.origin, "NEW-DEVICE")
+            f.model.observeSessionFailure(UploadIssue.AUTH)
+            assertEquals("NEW-DEVICE", f.store.readToken(f.origin))
+            assertEquals(0, f.stopped)
+        }
+    }
+    @Test fun serverChangeStopsUploadsBeforeCredentialsChange() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.changeServer()
+            assertEquals(1, f.stopped)
+            assertEquals("DEVICE", f.tokenAtStop)
+        }
+    }
+    @Test fun deliveredOldBackgroundIssueCannotClearRefreshedPairing() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val old = f.store.readSession(f.origin)!!.bindingId
+            f.store.saveToken(f.origin, "NEW-DEVICE")
+            f.model.refresh(); f.await { it.phase == Phase.READY && !it.busy }
+            f.model.observeSessionFailure(UploadIssue.AUTH, old)
+            assertEquals(Phase.READY, f.model.state.value.phase)
+            assertEquals("NEW-DEVICE", f.store.readToken(f.origin))
+        }
     }
     @Test fun compatibilityBeforePairingThenTokenSavedAndMeValidated() = runTest(main.scheduler) {
         Fixture().use { f ->

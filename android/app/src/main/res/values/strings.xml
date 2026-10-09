@@ -34,7 +34,10 @@
     <string name="activity">Hareketler</string>
     <string name="settings">Ayarlar</string>
     <string name="activity_later">Hareket geçmişi sonraki sürümde sunulacak.</string>
-    <string name="package_read_only">Bu sürümde paket bilgileri salt okunurdur. Medya yükleme ve düzenleme sonraki sürümde sunulacak.</string>
+    <string name="upload_help">Fotoğraf ve videoları Dosyalar gibi kalıcı erişim sağlayan bir kaynaktan seçin. Sınırlar sunucudan alınır; büyük dosyalar aktarımdan önce reddedilir. Android izin verdiği sürece aktarım arka planda devam eder.</string>
+    <string name="upload_original">Orijinal dosyayı seç</string>
+    <string name="upload_dismiss">Listeden kaldır</string>
+    <string name="upload_notification_settings">Bildirim ayarlarını aç</string>
     <string name="pending">Bekleyen işlemler</string>
     <string name="no_pending">Bekleyen işlem yok</string>
     <string name="pending_read_only">İnceleme işlemleri sonraki sürümde sunulacak.</string>

@@ -20,13 +20,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dojo.aisomedo.*
 import com.dojo.aisomedo.R
 import com.dojo.aisomedo.onboarding.OnboardingScreen
+import com.dojo.aisomedo.uploads.UploadRuntime
 
 @Composable fun DojoTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(), content = content)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun DojoApp(model: AppViewModel, openUrl: (String) -> Unit) {
+@Composable fun DojoApp(model: AppViewModel, uploads: UploadRuntime? = null, openUrl: (String) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     DojoTheme {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -58,7 +59,15 @@ import com.dojo.aisomedo.onboarding.OnboardingScreen
                         else if (state.step != null) OnboardingScreen(model, openUrl)
                         else when (state.destination) {
                             Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup)
-                            Destination.PACKAGE -> { Heading(R.string.active_package); PackageSummary(state.dashboard); Text(stringResource(R.string.package_read_only)) }
+                            Destination.PACKAGE -> {
+                                Heading(R.string.active_package); PackageSummary(state.dashboard)
+                                if (uploads != null) {
+                                    val rows by uploads.rows.collectAsStateWithLifecycle()
+                                    val issue by uploads.issue.collectAsStateWithLifecycle()
+                                    UploadPanel(rows, issue, uploads::enqueue, uploads::pause, uploads::resume, uploads::retry, uploads::dismiss)
+                                    OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
+                                }
+                            }
                             Destination.ACTIVITY -> { Heading(R.string.activity); Text(stringResource(R.string.activity_later)) }
                             Destination.SETTINGS -> SettingsScreen(state, model)
                         }

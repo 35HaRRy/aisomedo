@@ -27,6 +27,8 @@ class UploadRuntime private constructor(private val context: Context) {
     val rows = visibleRows.asStateFlow()
     private val currentIssue = MutableStateFlow<UploadIssue?>(null)
     val issue = currentIssue.asStateFlow()
+    @Volatile var failureBinding: String? = null
+        private set
     private val http = OkHttpClient()
     private val engine = UploadEngine(store, source::open, { row ->
         if (row.bindingId in blocked) null else sessionStore.readSession(row.origin)?.takeIf { it.bindingId == row.bindingId }
@@ -71,6 +73,7 @@ class UploadRuntime private constructor(private val context: Context) {
             if (store.rows.value.any { it.bindingId == binding.third && eligible(it) }) schedule(binding.third)
         } }
     }
+    fun enqueue(uris: List<Uri>) { scope.launch { select(uris) } }
     private fun schedule(binding: String) {
         if (binding in blocked) return
         if (!UploadNotifications(context).visible()) currentIssue.value = UploadIssue.NOTIFICATIONS
@@ -123,8 +126,11 @@ class UploadRuntime private constructor(private val context: Context) {
     private fun releaseUnused(uri: String) { if (store.rows.value.none { it.uri == uri }) runCatching { source.release(uri) } }
     fun stopSession() {
         val binding = attached?.third ?: runCatching { sessionStore.origin?.let(sessionStore::readSession)?.bindingId }.getOrNull() ?: return
+        stopBinding(binding)
+    }
+    private fun stopBinding(binding: String) {
         blocked.add(binding)
-        attached = null
+        if (attached?.third == binding) attached = null
         store.rows.value.filter { it.bindingId == binding }.forEach { engine.cancel(it.id) }
         launchAction {
             store.rows.value.filter { it.bindingId == binding && eligible(it) }.forEach { row ->
@@ -151,17 +157,20 @@ class UploadRuntime private constructor(private val context: Context) {
         }
     }
     private fun sessionFailure(origin: String, binding: String, outcome: QueueOutcome) {
-        if (!matches(binding)) return
-        stopSession()
-        if (outcome == QueueOutcome.AUTH_REQUIRED) sessionStore.clearTokenIfBinding(origin, binding)
-        currentIssue.value = if (outcome == QueueOutcome.AUTH_REQUIRED) UploadIssue.AUTH else UploadIssue.UPDATE_REQUIRED
+        synchronized(sessionStore) {
+            if (!matches(binding)) return
+            stopBinding(binding)
+            if (outcome == QueueOutcome.AUTH_REQUIRED && !sessionStore.clearTokenIfBinding(origin, binding)) return
+            failureBinding = binding
+            currentIssue.value = if (outcome == QueueOutcome.AUTH_REQUIRED) UploadIssue.AUTH else UploadIssue.UPDATE_REQUIRED
+        }
     }
     suspend fun refresh() {
         safely {
+            val origin = sessionStore.origin
+            val binding = origin?.let(sessionStore::readSession)?.bindingId
             try { engine.refresh() }
             catch (e: UploadFailure) {
-                val origin = sessionStore.origin
-                val binding = origin?.let(sessionStore::readSession)?.bindingId
                 if (origin != null && binding != null && e.issue in setOf(UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED)) sessionFailure(origin, binding, if (e.issue == UploadIssue.AUTH) QueueOutcome.AUTH_REQUIRED else QueueOutcome.UPDATE_REQUIRED)
                 else throw e
             }
