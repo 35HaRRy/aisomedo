@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import kotlinx.coroutines.*
 import java.io.InputStream
+import java.io.IOException
 import java.security.MessageDigest
 
 data class SelectedDocument(val uri: String, val filename: String, val contentType: String, val size: Long?)
@@ -68,8 +69,8 @@ internal suspend fun scanChunks(open: () -> InputStream, limit: Long = Long.MAX_
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             context.ensureActive()
-            if (e is UploadFailure) throw e
-            throw UploadFailure(UploadIssue.FILE_ACCESS)
+            if (e is IOException || e is SecurityException) throw UploadFailure(UploadIssue.FILE_ACCESS)
+            throw e
         } finally { closer?.dispose() }
     }
 }
