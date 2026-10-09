@@ -7,12 +7,14 @@ import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.KeyStore
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class CredentialUnavailable : Exception("Credential storage unavailable")
+class SessionCredential(val bindingId: String, val token: String)
 
 class SessionStore(private val directory: File, private val keyProvider: () -> SecretKey) {
     private val originFile = File(directory, "server.txt")
@@ -24,7 +26,9 @@ class SessionStore(private val directory: File, private val keyProvider: () -> S
         writeAtomically(originFile, value.toByteArray(Charsets.UTF_8))
     }
 
-    @Synchronized fun readToken(origin: String): String? {
+    @Synchronized fun readToken(origin: String): String? = readSession(origin)?.token
+
+    @Synchronized fun readSession(origin: String): SessionCredential? {
         if (origin != this.origin || !tokenFile.exists()) return null
         return try {
             val bytes = tokenFile.readBytes()
@@ -32,7 +36,8 @@ class SessionStore(private val directory: File, private val keyProvider: () -> S
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, keyProvider(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
             cipher.updateAAD(origin.toByteArray(Charsets.UTF_8))
-            cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8).also { require(it.isNotBlank()) }
+            val token = cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8).also { require(it.isNotBlank()) }
+            SessionCredential(MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }, token)
         } catch (_: Exception) { throw CredentialUnavailable() }
     }
 
@@ -48,6 +53,11 @@ class SessionStore(private val directory: File, private val keyProvider: () -> S
 
     @Synchronized fun clearToken() {
         if (tokenFile.exists() && !tokenFile.delete()) throw CredentialUnavailable()
+    }
+    @Synchronized fun clearTokenIfBinding(origin: String, bindingId: String): Boolean {
+        if (readSession(origin)?.bindingId != bindingId) return false
+        clearToken()
+        return true
     }
 
     private fun writeAtomically(file: File, bytes: ByteArray) {

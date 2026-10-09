@@ -7,6 +7,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SessionStoreTest {
+    @Test fun pairingBindingRotatesWithoutLeakingCredentials() {
+        val dir = Files.createTempDirectory("dojo-binding").toFile()
+        try {
+            val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+            val store = SessionStore(dir) { key }
+            store.setOrigin("https://example.com")
+            store.saveToken("https://example.com", "FIRST-SECRET")
+            val first = store.readSession("https://example.com")!!
+            assertFalse(first.toString().contains("FIRST-SECRET"))
+            store.saveToken("https://example.com", "SECOND-SECRET")
+            assertNotEquals(first.bindingId, store.readSession("https://example.com")!!.bindingId)
+            assertFalse(store.clearTokenIfBinding("https://example.com", first.bindingId))
+            assertEquals("SECOND-SECRET", store.readToken("https://example.com"))
+            assertTrue(store.clearTokenIfBinding("https://example.com", store.readSession("https://example.com")!!.bindingId))
+            assertNull(store.readSession("https://example.com"))
+        } finally { dir.deleteRecursively() }
+    }
     @Test fun rejectsSecretBearingAndNonOriginUrls() {
         listOf("https://u:p@example.com", "https://example.com/api", "https://example.com?q=1", "https://example.com#x", "http://example.com", "https://example.com:99999").forEach {
             assertThrows(IllegalArgumentException::class.java) { ApiConfig.normalizeOrigin(it, false) }
