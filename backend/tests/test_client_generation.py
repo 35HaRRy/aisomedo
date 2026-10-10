@@ -78,6 +78,10 @@ def test_upload_generation_emits_wire_types(tmp_path):
     assert "val receivedBytes: Long" in kotlin
     assert "val receivedRanges: List<List<Long>>" in kotlin
     assert "val conflicts: List<Map<String, JsonElement>> = emptyList()" in kotlin
+    assert "data class ResolveConflictIn(" in kotlin
+    assert '@SerialName("confirmed_overwrite") val confirmedOverwrite: Boolean = false' in kotlin
+    assert '@SerialName("apply_to_all") val applyToAll: Boolean = false' in kotlin
+    assert '@SerialName("target_media_id") val targetMediaId: String? = null' in kotlin
     assert "val androidMinVersionCode: Int" in kotlin
 
 

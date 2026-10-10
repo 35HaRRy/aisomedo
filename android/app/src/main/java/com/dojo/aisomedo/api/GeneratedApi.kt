@@ -154,6 +154,14 @@ data class PlanOut(
 )
 
 @Serializable
+data class ResolveConflictIn(
+    @SerialName("apply_to_all") val applyToAll: Boolean = false,
+    @SerialName("confirmed_overwrite") val confirmedOverwrite: Boolean = false,
+    @SerialName("decision") val decision: String,
+    @SerialName("target_media_id") val targetMediaId: String? = null,
+)
+
+@Serializable
 data class SelectIn(
     @SerialName("ig_user_id") val igUserId: String,
 )

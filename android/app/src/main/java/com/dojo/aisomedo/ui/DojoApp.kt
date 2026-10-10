@@ -64,7 +64,9 @@ import com.dojo.aisomedo.uploads.UploadRuntime
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val issue by uploads.issue.collectAsStateWithLifecycle()
-                                    UploadPanel(rows, issue, uploads::enqueue, uploads::pause, uploads::resume, uploads::retry, uploads::dismiss)
+                                    val resolving by uploads.resolvingId.collectAsStateWithLifecycle()
+                                    UploadPanel(rows, issue, uploads::enqueue, uploads::pause, uploads::resume, uploads::retry, uploads::dismiss,
+                                        resolving, uploads::resolve, uploads::refresh, uploads::preview)
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
                             }

@@ -10,6 +10,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.io.InputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -22,7 +23,8 @@ class DojoApi(private val origin: String, private val token: String?, private va
     private val client = http.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
 
-    private suspend fun bytes(method: String, path: String, body: RequestBody? = null, authenticated: Boolean = true): ByteArray {
+    private suspend fun bytes(method: String, path: String, body: RequestBody? = null, authenticated: Boolean = true,
+        destination: File? = null, limit: Long = 10L * 1024 * 1024): ByteArray {
         require(path.startsWith("/api/") && !path.contains('\\'))
         val base = origin.toHttpUrl()
         val url = base.resolve(path) ?: throw IllegalArgumentException("path")
@@ -35,13 +37,15 @@ class DojoApi(private val origin: String, private val token: String?, private va
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
+                    destination?.delete()
                     if (continuation.isActive) continuation.resumeWithException(ApiFailure(0))
                 }
                 override fun onResponse(call: Call, response: Response) {
                     response.use {
-                        if (!continuation.isActive) return
+                        if (!continuation.isActive) { destination?.delete(); return }
                         try {
                             if (!response.isSuccessful) {
+                                destination?.delete()
                                 val error = runCatching {
                                     val text = response.body?.byteStream()?.use { readBounded(it, 65536).toString(Charsets.UTF_8) }.orEmpty()
                                     json.parseToJsonElement(text).jsonObject
@@ -51,10 +55,27 @@ class DojoApi(private val origin: String, private val token: String?, private va
                                 continuation.resumeWithException(ApiFailure(response.code, update, detail))
                             } else {
                                 val source = response.body?.byteStream()
-                                val data = source?.use { readBounded(it, 10 * 1024 * 1024) } ?: ByteArray(0)
-                                continuation.resume(data)
+                                val data = if (destination == null) source?.use { readBounded(it, limit.toInt()) } ?: ByteArray(0)
+                                else {
+                                    require(source != null)
+                                    source.use { input -> destination.outputStream().use { output ->
+                                        val buffer = ByteArray(8192)
+                                        var total = 0L
+                                        while (true) {
+                                            if (!continuation.isActive) throw IOException("Preview cancelled")
+                                            val count = input.read(buffer)
+                                            if (count < 0) break
+                                            total += count
+                                            if (total > limit) throw ApiFailure(413)
+                                            output.write(buffer, 0, count)
+                                        }
+                                    } }
+                                    ByteArray(0)
+                                }
+                                if (continuation.isActive) continuation.resume(data) else destination?.delete()
                             }
                         } catch (e: Exception) {
+                            destination?.delete()
                             if (continuation.isActive) continuation.resumeWithException(if (e is ApiFailure) e else ApiFailure(0))
                         }
                     }
@@ -100,6 +121,42 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun startUpload(body: UploadInitIn): UploadOut = decode(request("POST", "/api/media/uploads", json.encodeToJsonElement(body)))
     suspend fun uploadStatus(id: String): UploadOut = decode(request("GET", "/api/media/uploads/${segment(id)}"))
     suspend fun completeUpload(id: String): UploadOut = decode(request("POST", "/api/media/uploads/${segment(id)}/complete"))
+    suspend fun resolveUpload(id: String, body: ResolveConflictIn): UploadOut = decode(request("POST", "/api/media/uploads/${segment(id)}/resolve", json.encodeToJsonElement(body)))
+    suspend fun conflictPreview(id: String, targetId: String, file: File, limit: Long) {
+        require(limit > 0)
+        bytes("GET", "/api/media/uploads/${segment(id)}/conflicts/${segment(targetId)}/preview", destination = file, limit = limit)
+    }
+    suspend fun uploadWasSkipped(id: String): Boolean {
+        // Reuse authoritative audit evidence: UploadOut cannot distinguish skip from expiry.
+        // ponytail: paginate existing audit; add an upload-scoped outcome field if history scans become slow.
+        var cursor: Long? = null
+        while (true) {
+            val page = request("GET", "/api/activity?limit=100" + (cursor?.let { "&before_id=$it" } ?: "")) as? JsonObject
+                ?: throw SerializationException("Invalid activity response")
+            val events = page["events"] as? JsonArray ?: throw SerializationException("Invalid activity response")
+            for (value in events) {
+                val event = value as? JsonObject ?: throw SerializationException("Invalid activity event")
+                val action = (event["action"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    ?: throw SerializationException("Invalid activity action")
+                if (action !in setOf("conflict.resolved", "upload.expired", "upload.aborted")) continue
+                val details = event["details"] as? JsonObject ?: throw SerializationException("Invalid conflict event")
+                val uploadId = (details["upload_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    ?: throw SerializationException("Invalid conflict upload")
+                if (uploadId != id) continue
+                if (action != "conflict.resolved") return false
+                val decision = (details["decision"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                if (decision !in setOf("keep_both", "keep_selected", "keep_target")) throw SerializationException("Invalid conflict decision")
+                return decision == "keep_target"
+            }
+            val next = page["next_cursor"] ?: throw SerializationException("Missing activity cursor")
+            // State and audit writes are separate. Missing evidence is still unknown, not expiry.
+            if (next == JsonNull) throw ApiFailure(0)
+            val number = (next as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+                ?: throw SerializationException("Invalid activity cursor")
+            if (number <= 0 || (cursor != null && number >= cursor)) throw SerializationException("Invalid activity cursor")
+            cursor = number
+        }
+    }
     suspend fun uploadRange(id: String, offset: Long, checksum: String, bytes: ByteArray): UploadOut {
         require(offset >= 0 && checksum.matches(Regex("[a-f0-9]{64}")) && bytes.isNotEmpty() && bytes.size <= 2 * 1024 * 1024)
         val result = this.bytes("PUT", "/api/media/uploads/${segment(id)}/ranges?offset=$offset&checksum_sha256=$checksum",

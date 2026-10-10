@@ -65,6 +65,7 @@ class UploadStore(private val directory: File) {
             }
             row.status?.let { require(row.identity != null); validateStatus(it, row.size!! ) }
             require(row.diagnostic == null || row.diagnostic.length <= 1024)
+            require(row.pendingDecision == null || row.pendingDecision in conflictDecisions)
         } catch (_: Exception) { throw UploadFailure(UploadIssue.STORAGE) }
     }
     private fun write(row: UploadRecord) {

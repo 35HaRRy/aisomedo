@@ -3,7 +3,7 @@ package com.dojo.aisomedo.uploads
 import android.content.Context
 import android.net.Uri
 import com.dojo.aisomedo.BuildConfig
-import com.dojo.aisomedo.api.DojoApi
+import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.io.File
 
 class UploadRuntime private constructor(private val context: Context) {
     val sessionStore = SessionStore(context.noBackupFilesDir.resolve("session")) { androidKeystoreKey() }
@@ -27,13 +28,19 @@ class UploadRuntime private constructor(private val context: Context) {
     val rows = visibleRows.asStateFlow()
     private val currentIssue = MutableStateFlow<UploadIssue?>(null)
     val issue = currentIssue.asStateFlow()
+    private val mutableResolving = MutableStateFlow<String?>(null)
+    val resolvingId = mutableResolving.asStateFlow()
     @Volatile var failureBinding: String? = null
         private set
     private val http = OkHttpClient()
     private val engine = UploadEngine(store, source::open, { row ->
         if (row.bindingId in blocked) null else sessionStore.readSession(row.origin)?.takeIf { it.bindingId == row.bindingId }
     }, { row, credential -> DojoApi(row.origin, credential.token, BuildConfig.VERSION_CODE, http) }, System::currentTimeMillis)
-    init { scope.launch { store.rows.collect { publishRows() } } }
+    init {
+        // Remove only this feature's abandoned private previews after process death.
+        context.cacheDir.resolve("conflict-previews").listFiles()?.filter { it.isFile }?.forEach { it.delete() }
+        scope.launch { store.rows.collect { publishRows() } }
+    }
 
     private fun publishRows() {
         val binding = attached?.third ?: runCatching { sessionStore.origin?.let(sessionStore::readSession)?.bindingId }.getOrNull()
@@ -97,9 +104,40 @@ class UploadRuntime private constructor(private val context: Context) {
     }
     fun resume(id: String, replacement: Uri? = null) = activate(id, replacement, false)
     fun retry(id: String, replacement: Uri? = null) = activate(id, replacement, true)
+    fun resolve(id: String, body: ResolveConflictIn) {
+        if (!mutableResolving.compareAndSet(null, id)) return
+        scope.launch {
+            try { actions.withLock { safely {
+                val row = bound(id)?.takeIf { it.phase == UploadPhase.CONFLICT } ?: return@safely
+                currentIssue.value = null
+                try { queue.withLock { engine.resolve(id, body) } }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) { handleConflictFailure(row, e); throw e }
+                publishRows()
+                if (pending(row.bindingId)) schedule(row.bindingId)
+            } } } finally { mutableResolving.value = null }
+        }
+    }
+    suspend fun preview(id: String, target: ConflictTarget, file: File) {
+        val row = bound(id) ?: throw CancellationException("Upload session changed")
+        try { engine.preview(id, target.mediaId, file) }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) { handleConflictFailure(row, e); throw e }
+    }
+    private fun handleConflictFailure(row: UploadRecord, error: Exception) {
+        val issue = when (error) {
+            is UploadFailure -> error.issue
+            is ApiFailure -> when (error.status) { 401 -> UploadIssue.AUTH; 426 -> UploadIssue.UPDATE_REQUIRED; else -> null }
+            else -> null
+        }
+        if (issue in setOf(UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED)) {
+            sessionFailure(row.origin, row.bindingId, if (issue == UploadIssue.AUTH) QueueOutcome.AUTH_REQUIRED else QueueOutcome.UPDATE_REQUIRED)
+            throw UploadFailure(issue!!)
+        }
+    }
     private fun activate(id: String, replacement: Uri?, retry: Boolean) = launchAction {
         val row = bound(id) ?: return@launchAction
-        if (row.phase in setOf(UploadPhase.QUEUED, UploadPhase.PROCESSING, UploadPhase.FINALIZED, UploadPhase.CONFLICT)) return@launchAction
+        if (row.phase in setOf(UploadPhase.QUEUED, UploadPhase.PROCESSING, UploadPhase.FINALIZED, UploadPhase.CONFLICT, UploadPhase.SKIPPED)) return@launchAction
         var document: SelectedDocument? = null
         if (replacement != null) {
             document = source.retain(replacement)
@@ -174,6 +212,7 @@ class UploadRuntime private constructor(private val context: Context) {
                 if (origin != null && binding != null && e.issue in setOf(UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED)) sessionFailure(origin, binding, if (e.issue == UploadIssue.AUTH) QueueOutcome.AUTH_REQUIRED else QueueOutcome.UPDATE_REQUIRED)
                 else throw e
             }
+            if (binding != null && pending(binding)) schedule(binding)
         }
     }
     companion object {
