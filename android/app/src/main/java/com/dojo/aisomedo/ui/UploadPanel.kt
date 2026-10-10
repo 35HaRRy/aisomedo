@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.dojo.aisomedo.R
 import com.dojo.aisomedo.uploads.*
+import com.dojo.aisomedo.api.ResolveConflictIn
+import java.io.File
 
 fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
     UploadIssue.NETWORK -> R.string.network_error; UploadIssue.OVERSIZE -> R.string.upload_oversize
@@ -37,6 +39,8 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
 @Composable fun UploadPanel(
     rows: List<UploadRecord>, issue: UploadIssue?, onSelect: (List<Uri>) -> Unit,
     onPause: (String) -> Unit, onResume: (String, Uri?) -> Unit, onRetry: (String, Uri?) -> Unit, onDismiss: (String) -> Unit,
+    resolvingId: String? = null, onResolve: (String, ResolveConflictIn) -> Unit = { _, _ -> }, onRefresh: suspend () -> Unit = {},
+    onPreview: suspend (String, ConflictTarget, File) -> Unit = { _, _, _ -> throw UploadFailure(UploadIssue.FILE_ACCESS) },
 ) {
     val context = LocalContext.current
     var pendingUris by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
@@ -58,7 +62,7 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
         if (id != null && uri != null) onResume(id, uri)
     }
     Column(Modifier.widthIn(max = 640.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Button(onClick = {
+        Button(enabled = resolvingId == null, onClick = {
             try { picker.launch(arrayOf("image/*", "video/*")); pickerIssue = null }
             catch (_: Exception) { pickerIssue = UploadIssue.FILE_ACCESS }
         }) { Text(stringResource(R.string.upload_select)) }
@@ -86,6 +90,9 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
                 }
                 row.issue?.let { Text(stringResource(uploadIssueLabel(it)), color = MaterialTheme.colorScheme.error) }
                 row.diagnostic?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                if (row.phase == UploadPhase.CONFLICT) key(row.bindingId, row.status?.conflicts) {
+                    ConflictControls(row, resolvingId != null, onResolve, onRefresh, onPreview)
+                }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     when (row.phase) {
                         UploadPhase.PREPARING, UploadPhase.WAITING, UploadPhase.UPLOADING -> OutlinedButton(onClick = { onPause(row.id) }) { Text(stringResource(R.string.upload_pause)) }
@@ -98,7 +105,7 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
                         }) { Text(stringResource(R.string.upload_original)) }
                         else -> Unit
                     }
-                    if (row.phase !in setOf(UploadPhase.PREPARING, UploadPhase.WAITING, UploadPhase.UPLOADING, UploadPhase.QUEUED, UploadPhase.PROCESSING)) TextButton(onClick = { onDismiss(row.id) }) { Text(stringResource(R.string.upload_dismiss)) }
+                    if (row.phase !in setOf(UploadPhase.PREPARING, UploadPhase.WAITING, UploadPhase.UPLOADING, UploadPhase.QUEUED, UploadPhase.PROCESSING)) TextButton(enabled = resolvingId == null, onClick = { onDismiss(row.id) }) { Text(stringResource(R.string.upload_dismiss)) }
                 }
             }
         } }

@@ -9,8 +9,71 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.concurrent.TimeUnit
+import java.nio.file.Files
 
 class DojoApiTest {
+    @Test fun skippedUploadLookupPaginatesAuditAndDoesNotGuessFromOtherUploads() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient())
+            server.enqueue(MockResponse().setBody("""{"events":[{"action":"conflict.resolved","details":{"upload_id":"other","decision":"keep_target"}}],"next_cursor":10}"""))
+            server.enqueue(MockResponse().setBody("""{"events":[{"action":"conflict.resolved","details":{"upload_id":"saved","decision":"keep_target"}}],"next_cursor":null}"""))
+            assertTrue(api.uploadWasSkipped("saved"))
+            assertEquals("/api/activity?limit=100", server.takeRequest().path)
+            val second = server.takeRequest()
+            assertEquals("/api/activity?limit=100&before_id=10", second.path)
+            assertEquals("Bearer SYNTHETIC", second.getHeader("Authorization"))
+            server.enqueue(MockResponse().setBody("""{"events":[{"action":"upload.expired","details":{"upload_id":"expired"}}],"next_cursor":null}"""))
+            assertFalse(api.uploadWasSkipped("expired"))
+            server.enqueue(MockResponse().setBody("""{"events":[],"next_cursor":null}"""))
+            assertEquals(0, (runCatching { api.uploadWasSkipped("saved") }.exceptionOrNull() as ApiFailure).status)
+            server.enqueue(MockResponse().setBody("""{"events":[],"next_cursor":10}"""))
+            server.enqueue(MockResponse().setBody("""{"events":[],"next_cursor":10}"""))
+            assertTrue(runCatching { api.uploadWasSkipped("saved") }.exceptionOrNull() is SerializationException)
+        }
+    }
+    @Test fun conflictResolutionAndPreviewUseAuthenticatedEncodedPaths() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient())
+            server.enqueue(MockResponse().setBody(upload))
+            api.resolveUpload("id /ğ", ResolveConflictIn(decision = "keep_selected", targetMediaId = "target", applyToAll = true, confirmedOverwrite = true))
+            val resolve = server.takeRequest()
+            assertEquals("/api/media/uploads/id%20%2F%C4%9F/resolve", resolve.path)
+            val body = Json.parseToJsonElement(resolve.body.readUtf8()).jsonObject
+            assertTrue(body["confirmed_overwrite"]!!.jsonPrimitive.boolean)
+            assertTrue(body["apply_to_all"]!!.jsonPrimitive.boolean)
+            assertEquals("keep_selected", body["decision"]!!.jsonPrimitive.content)
+            val file = Files.createTempFile("preview", ".jpg").toFile()
+            try {
+                server.enqueue(MockResponse().setBody("preview"))
+                api.conflictPreview("id /ğ", "target /ğ", file, 10)
+                assertEquals("preview", file.readText())
+                val request = server.takeRequest()
+                assertEquals("/api/media/uploads/id%20%2F%C4%9F/conflicts/target%20%2F%C4%9F/preview", request.path)
+                assertEquals("Bearer SYNTHETIC", request.getHeader("Authorization"))
+                assertEquals("5", request.getHeader("X-Android-Version-Code"))
+                server.enqueue(MockResponse().setBody("too large"))
+                assertEquals(413, (runCatching { api.conflictPreview("saved", "target", file, 2) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(file.exists())
+                server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "https://evil.example/"))
+                assertEquals(302, (runCatching { api.conflictPreview("saved", "target", file, 10) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(file.exists())
+            } finally { file.delete() }
+        }
+    }
+    @Test fun cancelledPreviewRemovesPartialFileWithoutRetry() = runBlocking {
+        MockWebServer().use { server ->
+            val file = Files.createTempFile("preview-cancel", ".mp4").toFile()
+            try {
+                val api = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient())
+                server.enqueue(MockResponse().setBody("preview").setBodyDelay(2, TimeUnit.SECONDS))
+                val pending = async { api.conflictPreview("saved", "target", file, 10) }
+                withContext(Dispatchers.IO) { server.takeRequest() }
+                pending.cancelAndJoin()
+                withTimeout(3000) { while (file.exists()) delay(10) }
+                assertEquals(1, server.requestCount)
+            } finally { file.delete() }
+        }
+    }
     private val upload = """{"upload_id":"saved","declared_size_bytes":2147483648,"received_bytes":2147483648,"received_ranges":[[0,2147483648]],"status":"receiving","conflicts":[{"media_id":"target","size_bytes":3,"preview":{"ready":true}}]}"""
     @Test fun uploadMethodsPreserveLargeOffsetsAndCancellation() = runBlocking {
         MockWebServer().use { server ->
