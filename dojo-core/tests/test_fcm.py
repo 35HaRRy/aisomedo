@@ -99,12 +99,30 @@ def test_notification_data_is_string_only() -> None:
     assert all(isinstance(value, str) for value in message.data.values())
 
 
-def test_message_without_an_alert_id_carries_no_android_tag() -> None:
+@pytest.mark.parametrize("kind", ["review_required", "empty_package"])
+def test_review_and_empty_messages_are_actionable_data_only(kind) -> None:
     noti, sender = notifier()
+    notification = Notification(REVIEW.title, REVIEW.body, {"type": kind, "identity": 7})
+    noti.send(notification, ["token-a"])
+    message = sender.sent[0][0]
+    assert message.notification is None
+    assert message.android.priority == "high"
+    assert message.android.notification is None
+    assert message.data == {
+        "type": kind, "identity": "7", "title": REVIEW.title, "body": REVIEW.body,
+    }
 
-    noti.send(REVIEW, ["token-a"])
 
-    assert sender.sent[0][0].android is None
+@pytest.mark.parametrize("kind", ["publication_confirmed", "publication_failed"])
+def test_publication_outcomes_remain_sdk_displayed_mixed_messages(kind) -> None:
+    noti, sender = notifier()
+    noti.send(Notification("Outcome", "Details", {"type": kind, "package_folder": "package"}),
+              ["token-a"])
+    message = sender.sent[0][0]
+    assert message.notification.title == "Outcome"
+    assert message.notification.body == "Details"
+    assert message.data == {"type": kind, "package_folder": "package"}
+    assert message.android is None
 
 
 def test_batches_are_chunked_at_the_sdk_limit() -> None:
