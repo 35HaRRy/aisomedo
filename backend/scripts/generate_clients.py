@@ -231,7 +231,7 @@ def main() -> None:
         "BrandingDefaultsOut", "BrandingAssetOut", "StatusOut", "StartIn", "StartOut",
         "AttemptOut", "SelectIn",
         "UploadLimitsOut", "UploadInitIn", "UploadOut",
-        "ActiveEditorOut", "SelectionIn", "OrderIn",
+        "ActiveEditorOut", "SelectionIn", "OrderIn", "ResolveConflictIn",
     ]))
     ANDROID_TARGET.parent.mkdir(parents=True, exist_ok=True)
     ANDROID_TARGET.write_text("\n".join(kt_lines), encoding="utf-8")

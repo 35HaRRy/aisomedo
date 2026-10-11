@@ -4,8 +4,10 @@ import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.SessionCredential
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerializationException
 import java.io.InputStream
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 internal fun eligible(row: UploadRecord) = row.intent == UploadIntent.ACTIVE && row.failures < 5 &&
@@ -22,6 +24,26 @@ class UploadEngine(
     private val guard = Mutex()
     private val jobs = ConcurrentHashMap<String, Job>()
     fun cancel(id: String) { jobs[id]?.cancel() }
+
+    suspend fun resolve(id: String, body: ResolveConflictIn) = withContext(Dispatchers.IO) {
+        guard.withLock {
+            val row = store.rows.value.find { it.id == id && it.phase == UploadPhase.CONFLICT } ?: return@withLock
+            if (row.pendingDecision != null) { Attempt(row) {}.refresh(); return@withLock }
+            if (body.decision !in conflictDecisions || (body.decision == "keep_selected" &&
+                (!body.confirmedOverwrite || conflictTargets(row.status).none { it.mediaId == body.targetMediaId }))) {
+                throw UploadFailure(UploadIssue.INVALID_RESPONSE)
+            }
+            val attempt = Attempt(row) {}
+            attempt.resolve(body)
+        }
+    }
+    suspend fun preview(id: String, targetId: String, file: File) = withContext(Dispatchers.IO) {
+        val row = store.rows.value.find { it.id == id && it.phase == UploadPhase.CONFLICT }
+            ?: throw CancellationException("Conflict changed")
+        val target = conflictTargets(row.status).find { it.mediaId == targetId } ?: throw UploadFailure(UploadIssue.INVALID_RESPONSE)
+        try { Attempt(row) {}.preview(target, file) }
+        catch (e: Exception) { file.delete(); throw e }
+    }
 
     suspend fun run(onProgress: (UploadRecord) -> Unit): QueueOutcome = withContext(Dispatchers.IO) {
         if (!guard.tryLock()) return@withContext QueueOutcome.IDLE
@@ -46,7 +68,7 @@ class UploadEngine(
     suspend fun refresh() = withContext(Dispatchers.IO) {
         if (!guard.tryLock()) return@withContext
         try {
-            for (row in store.rows.value.filter { it.phase in setOf(UploadPhase.QUEUED, UploadPhase.PROCESSING) }) {
+            for (row in store.rows.value.filter { it.pendingDecision != null || it.phase in setOf(UploadPhase.QUEUED, UploadPhase.PROCESSING, UploadPhase.CONFLICT) }) {
                 val attempt = Attempt(row) {}
                 try { attempt.refresh() }
                 catch (e: CancellationException) { currentCoroutineContext().ensureActive() }
@@ -71,13 +93,16 @@ class UploadEngine(
             credential = session(row)?.takeIf { it.bindingId == row.bindingId } ?: throw CancellationException("Upload session changed")
             remote = api(row, credential)
             fence(false)
-            val me = remote.me()
+            val me = try { remote.me() } catch (e: ApiFailure) { fence(false); throw e }
             fence(false)
             if (me.id != row.clientId || me.kind != "device" || me.revokedAt != null) throw UploadFailure(UploadIssue.AUTH)
         }
         private fun diagnostic(value: String?): String? = value?.replace(credential.token, "[redacted]")?.filter { !it.isISOControl() }?.take(1024)
-        private fun accept(status: UploadOut, active: Boolean = true) {
+        private suspend fun accept(status: UploadOut, active: Boolean = true) {
             validateStatus(status, row.identity!!.size, row.status?.uploadId)
+            fence(active)
+            val skipped = status.status == "aborted" && remote.uploadWasSkipped(status.uploadId)
+            fence(active)
             val progress = status.receivedBytes > (row.status?.receivedBytes ?: 0)
             val phase = when (status.status) {
                 "receiving" -> UploadPhase.UPLOADING
@@ -85,10 +110,11 @@ class UploadEngine(
                 "processing" -> UploadPhase.PROCESSING
                 "finalized" -> UploadPhase.FINALIZED
                 "conflict" -> UploadPhase.CONFLICT
-                "aborted" -> UploadPhase.EXPIRED
+                "aborted" -> if (skipped) UploadPhase.SKIPPED else UploadPhase.EXPIRED
                 else -> UploadPhase.FAILED
             }
-            save(active) { it.copy(status = status, phase = phase, diagnostic = diagnostic(status.errorReason),
+            save(active) { it.copy(status = status, phase = if (status.status == "receiving" && it.intent == UploadIntent.PAUSED) UploadPhase.PAUSED else phase,
+                pendingDecision = it.pendingDecision.takeIf { status.status == "conflict" }, diagnostic = diagnostic(status.errorReason),
                 issue = when (phase) { UploadPhase.CONFLICT -> UploadIssue.CONFLICT; UploadPhase.EXPIRED -> UploadIssue.EXPIRED; UploadPhase.FAILED -> UploadIssue.SERVER; else -> null },
                 failures = if (progress) 0 else it.failures, retryAtMillis = if (progress) null else it.retryAtMillis) }
         }
@@ -101,7 +127,76 @@ class UploadEngine(
                 fence(false)
                 if (e.status == 401) throw UploadFailure(UploadIssue.AUTH)
                 if (e.status == 426) throw UploadFailure(UploadIssue.UPDATE_REQUIRED)
-                if (e.status == 404) save(false) { it.copy(phase = UploadPhase.EXPIRED, issue = UploadIssue.EXPIRED) }
+                if (e.status == 404) save(false) { it.copy(phase = UploadPhase.EXPIRED, issue = UploadIssue.EXPIRED, pendingDecision = null) }
+            }
+        }
+        suspend fun preview(target: ConflictTarget, file: File) {
+            authenticate()
+            fence(false)
+            // ponytail: bounded private cache (10 MiB image / 512 MiB video); range streaming if larger previews are needed.
+            remote.conflictPreview(row.status!!.uploadId, target.mediaId, file,
+                if (target.contentType == "video/mp4") 512L * 1024 * 1024 else 10L * 1024 * 1024)
+            fence(false)
+        }
+        suspend fun resolve(body: ResolveConflictIn) {
+            authenticate()
+            fence(false)
+            // Collision target IDs encode server Unicode casefold; local lowercasing does not.
+            if (body.applyToAll) {
+                for (candidate in store.rows.value.filter { it.bindingId == row.bindingId && it.phase == UploadPhase.CONFLICT && conflictTargets(it.status).isEmpty() }) {
+                    Attempt(candidate) {}.refresh()
+                    if (candidate.id == row.id) row = store.rows.value.find { it.id == row.id } ?: throw CancellationException("Upload removed")
+                }
+                fence(false)
+                if (row.phase != UploadPhase.CONFLICT) return
+                if (store.rows.value.any { it.bindingId == row.bindingId && it.phase == UploadPhase.CONFLICT && conflictTargets(it.status).isEmpty() })
+                    throw UploadFailure(UploadIssue.INVALID_RESPONSE)
+            }
+            val ids = conflictTargets(row.status).map { it.mediaId }.toSet()
+            if (body.applyToAll && ids.isEmpty()) throw UploadFailure(UploadIssue.INVALID_RESPONSE)
+            val candidates = store.rows.value.filter { it.id == row.id || (body.applyToAll && it.bindingId == row.bindingId &&
+                it.phase == UploadPhase.CONFLICT && it.status?.packageId == row.status?.packageId && conflictTargets(it.status).any { target -> target.mediaId in ids }) }
+            for (candidate in candidates) {
+                fence(false)
+                val saved = store.mutate(candidate.id, candidate.revision) { it.copy(pendingDecision = body.decision, issue = null, diagnostic = null) }
+                    ?: throw CancellationException("Upload changed")
+                if (saved.id == row.id) row = saved
+            }
+            var failure: Exception? = null
+            try {
+                // Bulk response may belong to a sibling. GET each ID rather than accepting it.
+                remote.resolveUpload(row.status!!.uploadId, body)
+                fence(false)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                fence(false)
+                failure = e
+                if (e is ApiFailure && e.status in 400..499 && e.status !in setOf(408, 429)) {
+                    for (candidate in candidates) {
+                        val current = store.rows.value.find { it.id == candidate.id } ?: continue
+                        val saved = store.mutate(current.id, current.revision) { it.copy(pendingDecision = null) }
+                        if (saved?.id == row.id) row = saved
+                    }
+                }
+            }
+            for (candidate in candidates) {
+                fence(false)
+                val current = store.rows.value.find { it.id == candidate.id } ?: continue
+                try {
+                    val reconcile = Attempt(current) {}
+                    reconcile.refresh()
+                } catch (e: CancellationException) { throw e }
+                catch (e: UploadFailure) { throw e }
+                catch (e: Exception) { failure = e }
+                if (candidate.id == row.id) row = store.rows.value.find { it.id == row.id } ?: throw CancellationException("Upload removed")
+            }
+            if (failure != null && row.phase == UploadPhase.CONFLICT) {
+                val issue = when ((failure as? ApiFailure)?.status) {
+                    401 -> UploadIssue.AUTH; 426 -> UploadIssue.UPDATE_REQUIRED; 0 -> UploadIssue.NETWORK
+                    else -> UploadIssue.SERVER
+                }
+                save(false) { it.copy(issue = issue, diagnostic = diagnostic((failure as? ApiFailure)?.detail)) }
+                if (issue in setOf(UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED)) throw UploadFailure(issue)
             }
         }
         suspend fun run(): QueueOutcome {

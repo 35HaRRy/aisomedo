@@ -3,7 +3,7 @@ package com.dojo.aisomedo.uploads
 import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.SessionCredential
 import kotlinx.coroutines.*
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
@@ -30,6 +30,18 @@ class UploadEngineTest {
         var loseComplete = false
         var responseDelay = false
         var invalid = false
+        var resolveError = 0
+        var statusError = 0
+        var hideAudit = false
+        var loseResolve = false
+        var delayResolve = false
+        val resolutions = CopyOnWriteArrayList<String>()
+        val resolved = mutableMapOf<String, String>()
+        val targets = buildJsonObject {
+            put("media_id", "target"); put("filename", "Straße.jpg"); put("size_bytes", 1)
+            put("uploaded_at", "2026-10-09T10:00:00Z")
+            put("processed", buildJsonObject { put("content_type", "image/jpeg") })
+        }
         var clock = 0L
         var credential: SessionCredential? = SessionCredential("a".repeat(64), "TEST-ONLY")
         val putStarted = CompletableDeferred<Unit>()
@@ -39,7 +51,33 @@ class UploadEngineTest {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.requestUrl!!.encodedPath
                     if (path == "/api/pairing/me") return MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
+                    if (path == "/api/activity") {
+                        val events = resolved.filterValues { it == "aborted" }.keys.mapIndexed { index, id -> buildJsonObject {
+                            put("id", index + 1); put("action", "conflict.resolved"); put("occurred_at", "2026-10-09T10:00:00Z"); put("actor", "system")
+                            put("details", buildJsonObject { put("upload_id", id); put("decision", "keep_target") })
+                        } }.toMutableList()
+                        if (status == "aborted" && resolved["saved"] == null) events.add(buildJsonObject {
+                            put("action", "upload.expired"); put("details", buildJsonObject { put("upload_id", "saved") })
+                        })
+                        return MockResponse().setBody(buildJsonObject { put("events", JsonArray(if (hideAudit) emptyList() else events)); put("next_cursor", JsonNull) }.toString())
+                    }
                     if (error != 0) return MockResponse().setResponseCode(error)
+                    if (path.endsWith("resolve")) {
+                        val body = request.body.readUtf8()
+                        resolutions.add(body)
+                        putStarted.complete(Unit)
+                        if (resolveError != 0) return MockResponse().setResponseCode(resolveError)
+                        val decision = Json.parseToJsonElement(body).jsonObject["decision"]!!.jsonPrimitive.content
+                        resolved["saved"] = if (decision == "keep_target") "aborted" else "receiving"
+                        if (Json.parseToJsonElement(body).jsonObject["apply_to_all"]?.jsonPrimitive?.booleanOrNull == true) resolved["second"] = resolved["saved"]!!
+                        if (loseResolve) { loseResolve = false; return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) }
+                        // Bulk response intentionally belongs to a different upload.
+                        return MockResponse().setBody(Json.encodeToString(UploadOut.serializer(), UploadOut(declaredSizeBytes = content.size.toLong(), receivedBytes = 0,
+                            receivedRanges = emptyList(), status = resolved["saved"]!!, uploadId = "second"))).apply {
+                            if (delayResolve) setBodyDelay(2, TimeUnit.SECONDS)
+                        }
+                    }
+                    if (request.method == "GET" && path.startsWith("/api/media/uploads/") && statusError != 0) return MockResponse().setResponseCode(statusError)
                     if (path.endsWith("upload-limits")) return MockResponse().setBody("""{"max_file_bytes":$max,"max_package_bytes":$max,"active_package_id":0}""")
                     if (request.method == "POST" && path.endsWith("uploads")) {
                         initializations++
@@ -57,8 +95,11 @@ class UploadEngineTest {
                         status = "queued"
                         if (loseComplete) { loseComplete = false; return MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST) }
                     }
+                    val uploadId = path.removePrefix("/api/media/uploads/").takeIf { !it.contains('/') && it != path } ?: "saved"
+                    val state = resolved[uploadId] ?: status
                     val out = UploadOut(declaredSizeBytes = content.size.toLong(), receivedBytes = confirmed,
-                        receivedRanges = if (confirmed > 0) listOf(listOf(0, confirmed)) else emptyList(), status = status, uploadId = if (invalid) "wrong" else "saved")
+                        receivedRanges = if (confirmed > 0) listOf(listOf(0, confirmed)) else emptyList(), status = state,
+                        conflicts = if (state == "conflict") listOf(targets) else emptyList(), packageId = 1, uploadId = if (invalid) "wrong" else uploadId)
                     return MockResponse().setBody(Json.encodeToString(UploadOut.serializer(), out)).apply {
                         if (responseDelay && request.method == "PUT") setBodyDelay(2, TimeUnit.SECONDS)
                     }
@@ -87,6 +128,211 @@ class UploadEngineTest {
             assertEquals(0, f.initializations)
             assertEquals("saved", f.store.rows.value.single().status!!.uploadId)
             assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun conflictRefreshRecoversDecisionMadeOnAnotherClient() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.add()
+            f.store.mutate(row.id) { it.copy(phase = UploadPhase.CONFLICT, status = it.status!!.copy(status = "conflict")) }
+            f.engine.refresh()
+            assertEquals("receiving", f.store.rows.value.single().status!!.status)
+            assertTrue(eligible(f.store.rows.value.single()))
+        }
+    }
+    private suspend fun Fixture.conflict(uploadId: String = "saved", filename: String = "Straße.jpg", targetId: String = "target"): UploadRecord {
+        val row = add()
+        status = "conflict"
+        return store.mutate(row.id) { it.copy(filename = filename, phase = UploadPhase.CONFLICT,
+            status = it.status!!.copy(status = "conflict", uploadId = uploadId, packageId = 1,
+                conflicts = listOf(targets + ("media_id" to JsonPrimitive(targetId))))) }!!
+    }
+    @Test fun bulkResolutionReconcilesByIdAndUsesServerUnicodeTargets() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val first = f.conflict()
+            val second = f.conflict("second", "STRASSE.jpg")
+            val unrelated = f.conflict("unrelated", "other.jpg", "other-target")
+            f.engine.resolve(first.id, ResolveConflictIn(decision = "keep_both", applyToAll = true))
+            assertTrue(eligible(f.store.rows.value.find { it.id == first.id }!!))
+            assertTrue(eligible(f.store.rows.value.find { it.id == second.id }!!))
+            assertEquals(UploadPhase.CONFLICT, f.store.rows.value.find { it.id == unrelated.id }!!.phase)
+            assertEquals(1, f.resolutions.size)
+            assertEquals("saved", f.store.rows.value.find { it.id == first.id }!!.status!!.uploadId)
+        }
+    }
+    @Test fun lostKeepTargetResponseBecomesSkippedWithoutReplay() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val first = f.conflict(); f.conflict("second", "STRASSE.jpg")
+            f.loseResolve = true
+            f.engine.resolve(first.id, ResolveConflictIn(decision = "keep_target", applyToAll = true))
+            assertTrue(f.store.rows.value.all { it.phase == UploadPhase.SKIPPED && it.issue == null })
+            f.engine.run {}; f.engine.refresh()
+            assertEquals(1, f.resolutions.size)
+            assertTrue(f.puts.isEmpty())
+            assertTrue(UploadStore(f.directory).rows.value.all { it.phase == UploadPhase.SKIPPED })
+        }
+    }
+    @Test fun overwriteRequiresConfirmationAndCurrentValidTarget() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            for (body in listOf(ResolveConflictIn(decision = "keep_selected", targetMediaId = "target"),
+                ResolveConflictIn(decision = "keep_selected", confirmedOverwrite = true, targetMediaId = "wrong"),
+                ResolveConflictIn(decision = "unknown"))) {
+                assertTrue(runCatching { f.engine.resolve(row.id, body) }.isFailure)
+            }
+            assertTrue(f.resolutions.isEmpty())
+            f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_selected", confirmedOverwrite = true, targetMediaId = "target"))
+            val body = Json.parseToJsonElement(f.resolutions.single()).jsonObject
+            assertEquals("target", body["target_media_id"]!!.jsonPrimitive.content)
+            assertTrue(body["confirmed_overwrite"]!!.jsonPrimitive.boolean)
+            assertTrue(eligible(f.store.rows.value.single()))
+        }
+    }
+    @Test fun definitiveRejectionCannotTurnLaterAbortIntoSkip() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict(); f.resolveError = 409
+            f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_target"))
+            assertEquals(UploadPhase.CONFLICT, f.store.rows.value.single().phase)
+            assertNull(f.store.rows.value.single().pendingDecision)
+            f.status = "aborted"; f.engine.refresh()
+            assertEquals(UploadPhase.EXPIRED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun timeoutOrRateLimitDoesNotReleaseUnknownOutcomeProtection() = runBlocking {
+        for (status in listOf(408, 429)) Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict(); f.resolveError = status
+            f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_target"))
+            assertEquals("keep_target", f.store.rows.value.single().pendingDecision)
+            f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_both"))
+            assertEquals(1, f.resolutions.size)
+        }
+    }
+    @Test fun pendingKeepTargetSurvivesRestartAndRefreshNeverReplaysPost() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            f.store.mutate(row.id) { it.copy(pendingDecision = "keep_target") }
+            f.status = "aborted"
+            f.resolved["saved"] = "aborted"
+            val restarted = UploadStore(f.directory)
+            val engine = UploadEngine(restarted, { f.content.inputStream() }, { f.credential },
+                { r, c -> DojoApi(r.origin, c.token, 5, OkHttpClient()) }, { 0 })
+            engine.refresh()
+            assertEquals(UploadPhase.SKIPPED, restarted.rows.value.single().phase)
+            assertTrue(f.resolutions.isEmpty())
+        }
+    }
+    @Test fun bulkResolutionRecoversMissingPrimaryTargetMetadata() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            f.store.mutate(row.id) { it.copy(status = it.status!!.copy(conflicts = emptyList())) }
+            f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_target", applyToAll = true))
+            assertEquals(UploadPhase.SKIPPED, f.store.rows.value.single().phase)
+            assertEquals(1, f.resolutions.size)
+        }
+    }
+    @Test fun ambiguousDecisionBlocksReplayUntilStatusIsKnown() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            f.loseResolve = true; f.statusError = 503
+            f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_target"))
+            assertEquals("keep_target", f.store.rows.value.single().pendingDecision)
+            assertEquals(UploadPhase.CONFLICT, f.store.rows.value.single().phase)
+            assertNotNull(f.store.rows.value.single().issue)
+            runCatching { f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_selected", targetMediaId = "target", confirmedOverwrite = true)) }
+            assertEquals(1, f.resolutions.size)
+            f.statusError = 0; f.engine.refresh()
+            assertEquals(UploadPhase.SKIPPED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun unchangedConflictCannotReleaseUncertainDecisionOrReplayAfterRestart() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            f.store.mutate(row.id) { it.copy(pendingDecision = "keep_target") }
+            f.engine.refresh()
+            assertEquals("keep_target", f.store.rows.value.single().pendingDecision)
+            val restarted = UploadStore(f.directory)
+            val engine = UploadEngine(restarted, { f.content.inputStream() }, { f.credential },
+                { r, c -> DojoApi(r.origin, c.token, 5, OkHttpClient()) }, { 0 })
+            engine.resolve(row.id, ResolveConflictIn(decision = "keep_selected", confirmedOverwrite = true, targetMediaId = "target"))
+            assertTrue(f.resolutions.isEmpty())
+            assertEquals("keep_target", restarted.rows.value.single().pendingDecision)
+            f.resolved["saved"] = "aborted"
+            engine.refresh()
+            assertEquals(UploadPhase.SKIPPED, restarted.rows.value.single().phase)
+        }
+    }
+    @Test fun crossClientKeepTargetUsesAuditRatherThanOfferingExpiryRetry() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.conflict()
+            f.resolved["saved"] = "aborted"
+            f.engine.refresh()
+            assertEquals(UploadPhase.SKIPPED, f.store.rows.value.single().phase)
+            assertNull(f.store.rows.value.single().issue)
+            f.engine.run {}
+            assertTrue(f.puts.isEmpty())
+        }
+    }
+    @Test fun pendingKeepTargetDoesNotMislabelAuditedExpiry() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            f.store.mutate(row.id) { it.copy(pendingDecision = "keep_target") }
+            f.status = "aborted"
+            f.engine.refresh()
+            assertEquals(UploadPhase.EXPIRED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun abortedStateBeforeAuditCommitCannotReleaseUnknownOutcome() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            f.store.mutate(row.id) { it.copy(pendingDecision = "keep_target") }
+            f.resolved["saved"] = "aborted"; f.hideAudit = true
+            f.engine.refresh()
+            assertEquals("keep_target", f.store.rows.value.single().pendingDecision)
+            assertEquals(UploadPhase.CONFLICT, f.store.rows.value.single().phase)
+            f.hideAudit = false; f.engine.refresh()
+            assertEquals(UploadPhase.SKIPPED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun missingUploadIsDefinitiveAndClearsOldPendingDecision() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            f.store.mutate(row.id) { it.copy(pendingDecision = "keep_target") }
+            f.error = 404
+            f.engine.refresh()
+            assertEquals(UploadPhase.EXPIRED, f.store.rows.value.single().phase)
+            assertNull(f.store.rows.value.single().pendingDecision)
+        }
+    }
+    @Test fun delayedResolutionCannotMutateNewPairing() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict(); f.delayResolve = true
+            val pending = async { f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_target")) }
+            f.putStarted.await()
+            f.credential = SessionCredential("b".repeat(64), "NEW-SECRET")
+            val revision = f.store.rows.value.single().revision
+            assertTrue(runCatching { pending.await() }.exceptionOrNull() is CancellationException)
+            assertEquals(revision, f.store.rows.value.single().revision)
+            assertEquals("NEW-SECRET", f.credential!!.token)
+        }
+    }
+    @Test fun previewChecksTargetAndSessionBeforeAndAfterTransfer() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict()
+            val file = f.directory.resolve("preview.jpg")
+            assertTrue(runCatching { f.engine.preview(row.id, "wrong", file) }.isFailure)
+            assertEquals(0, f.server.requestCount)
+            f.server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = if (request.path == "/api/pairing/me")
+                    MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
+                else {
+                    f.putStarted.complete(Unit)
+                    MockResponse().setBody("preview").setBodyDelay(1, TimeUnit.SECONDS)
+                }
+            }
+            val pending = async { f.engine.preview(row.id, "target", file) }
+            f.putStarted.await()
+            f.credential = SessionCredential("b".repeat(64), "NEW-SECRET")
+            assertTrue(runCatching { pending.await() }.exceptionOrNull() is CancellationException)
+            assertFalse(file.exists())
         }
     }
     @Test fun lostCompleteResponseReconcilesQueued() = runBlocking {

@@ -14,6 +14,7 @@ internal fun phaseLabel(phase: UploadPhase): Int = when (phase) {
     UploadPhase.QUEUED -> R.string.upload_queued; UploadPhase.PROCESSING -> R.string.upload_processing
     UploadPhase.FINALIZED -> R.string.upload_finalized; UploadPhase.FAILED -> R.string.upload_failed
     UploadPhase.CONFLICT -> R.string.upload_conflict; UploadPhase.EXPIRED -> R.string.upload_expired
+    UploadPhase.SKIPPED -> R.string.upload_skipped
 }
 class UploadNotifications(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
