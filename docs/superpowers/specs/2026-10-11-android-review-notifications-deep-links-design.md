@@ -6,7 +6,7 @@ Source: [issue #36](https://github.com/35HaRRy/aisomedo/issues/36), part of #1
 
 Prerequisites: #12, #15, #16, and #32 are closed.
 
-Status: conversational design approved; this written specification awaits review.
+Status: written specification approved by the user on 2026-10-11; implementation plan awaits review.
 
 ## Intent and scope
 
