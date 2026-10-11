@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.*
 import com.dojo.aisomedo.uploads.UploadIssue
+import com.dojo.aisomedo.uploads.UploadRecord
+import com.dojo.aisomedo.uploads.UploadPhase
 import com.dojo.aisomedo.editor.*
 import com.dojo.aisomedo.reviews.*
 import com.dojo.aisomedo.notifications.*
@@ -627,15 +629,17 @@ class AppViewModel(
         val target = runCatching { ReviewTarget(saved["review_id"], saved["review_occurrence"], saved["review_folder"], saved["review_version"],
             ReviewAction.valueOf(saved.get<String>("review_action") ?: "REVIEW")) }.getOrNull()
         if (target?.valid != true) { clearReviewSaved(); return }
-        mutable.update { it.copy(review = ReviewState(target = target)) }
+        mutable.update { it.copy(review = ReviewState(target = target, continuing = saved.get<Boolean>("review_continuing") ?: false)) }
     }
     private fun clearReviewSaved() { saved.keys().filter { it.startsWith("review_") }.forEach { saved.remove<Any>(it) } }
     fun openReview(target: ReviewTarget) {
         if (state.value.phase != Phase.READY || !target.valid) return
         reviewEpoch++; reviewJob?.cancel()
+        clearReviewSaved()
         saved["review_owner"] = state.value.destination.name
         saveReviewTarget(target)
         mutable.update { it.copy(review = ReviewState(target = target)) }
+        if (target.action == ReviewAction.UPLOAD) navigate(Destination.PACKAGE)
         refreshReview()
     }
     fun closeReview() {
@@ -710,6 +714,7 @@ class AppViewModel(
             checkReview(current, epoch)
             require(detail.review.id > 0 && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank() &&
                 detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "approved", "skipped", "rescheduled"))
+            saved.get<Int>("review_source_occurrence")?.let { require(detail.review.occurrenceId == it) }
             val issue = when {
                 detail.review.id != target.reviewId || target.packageFolder != null && target.packageFolder != detail.review.packageFolder -> ReviewIssue.STALE
                 detail.review.status != "pending" -> ReviewIssue.ALREADY_HANDLED
@@ -734,11 +739,32 @@ class AppViewModel(
             val issue = when {
                 pending == null -> ReviewIssue.ALREADY_HANDLED
                 pending.packageFolder != target.packageFolder || dashboard.`package`?.folderName != target.packageFolder -> ReviewIssue.PACKAGE_CHANGED
-                pending.reviewId != null || pending.state != "empty_package" -> ReviewIssue.STALE
+                pending.state !in setOf("empty_package", "preparing", "review_ready") -> ReviewIssue.STALE
                 else -> null
             }
-            mutable.update { it.copy(dashboard = dashboard, review = it.review.copy(readRequired = issue != null,
-                issue = issue, nextRegularAt = dashboard.nextSlot?.takeIf { slot -> slot.kind == "regular" }?.dueAt)) }
+            mutable.update { it.copy(dashboard = dashboard, review = it.review.copy(readRequired = issue != null || pending?.state != "empty_package",
+                issue = issue, continuing = it.review.continuing && issue == null,
+                nextRegularAt = it.review.nextRegularAt ?: dashboard.nextSlot?.takeIf { slot -> slot.kind == "regular" }?.dueAt)) }
+            if (issue != null) { saved["review_continuing"] = false; return }
+            if (pending?.reviewId != null) {
+                saved["review_source_occurrence"] = target.occurrenceId
+                val next = ReviewTarget(reviewId = pending.reviewId, packageFolder = target.packageFolder, expectedVersion = pending.version)
+                saveReviewTarget(next); saved["review_continuing"] = false
+                mutable.update { it.copy(review = ReviewState(target = next, busy = true)) }
+                loadReview(current, epoch)
+            } else if (target.action == ReviewAction.UPLOAD || state.value.review.continuing) {
+                val snapshot = transport.mediaEditor()
+                checkReview(current, epoch)
+                if (snapshot.`package`.folderName != target.packageFolder || snapshot.`package`.status != "active") {
+                    saved["review_continuing"] = false
+                    mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.PACKAGE_CHANGED, readRequired = true, continuing = false)) }
+                } else {
+                    val failed = snapshot.renderStatus == "failed"
+                    mutable.update { it.copy(editor = it.editor.accept(snapshot), review = it.review.copy(issue = if (failed) ReviewIssue.RENDER_FAILED else null,
+                        continuing = it.review.continuing && !failed)) }
+                    if (failed) saved["review_continuing"] = false
+                }
+            }
         }
     }
     fun requestReviewAction(action: ReviewAction) {
@@ -748,6 +774,41 @@ class AppViewModel(
         val updated = target.copy(action = action)
         saveReviewTarget(updated)
         mutable.update { it.copy(review = it.review.copy(target = updated)) }
+        if (action == ReviewAction.UPLOAD && target.occurrenceId != null) navigate(Destination.PACKAGE)
+    }
+    fun continueReview(uploadRows: List<UploadRecord>, retry: Boolean = false) {
+        val review = state.value.review
+        if (state.value.phase != Phase.READY || state.value.busy || review.busy || review.target?.occurrenceId == null ||
+            review.target.action != ReviewAction.UPLOAD || review.continuing && !retry ||
+            review.issue in setOf(ReviewIssue.UNCERTAIN, ReviewIssue.PACKAGE_CHANGED, ReviewIssue.ALREADY_HANDLED, ReviewIssue.NOT_FOUND)) return
+        if (uploadRows.any { it.origin == state.value.origin && it.bindingId == bindingId && it.phase !in setOf(UploadPhase.FINALIZED, UploadPhase.SKIPPED) }) {
+            mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.UPLOAD_PENDING)) }; return
+        }
+        reviewWork(mutation = true) { current, epoch ->
+            loadReview(current, epoch)
+            val fresh = state.value.review
+            if (fresh.target?.reviewId != null || fresh.issue != null && !(fresh.issue == ReviewIssue.RENDER_FAILED && retry)) return@reviewWork
+            val snapshot = state.value.editor.snapshot ?: return@reviewWork
+            if (state.value.editor.dirty || state.value.editor.readRequired || snapshot.montage.order.isEmpty() ||
+                snapshot.media.none { it.status == "finalized" && it.mediaId in snapshot.montage.order } ||
+                !snapshot.montage.durationComplete || snapshot.montage.overLimit) {
+                mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.MEDIA_REQUIRED)) }; return@reviewWork
+            }
+            if (snapshot.renderStatus !in setOf("ready", "queued", "processing") || retry) {
+                try { api().renderPackage(requireNotNull(fresh.target?.packageFolder), retry) }
+                catch (e: ApiFailure) {
+                    if (e.status == 409) {
+                        checkReview(current, epoch)
+                        mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.PACKAGE_CHANGED, readRequired = true, continuing = false)) }
+                        return@reviewWork
+                    }
+                    throw e
+                }
+            }
+            checkReview(current, epoch)
+            saved["review_continuing"] = true
+            mutable.update { it.copy(review = it.review.copy(continuing = true, readRequired = true, issue = null)) }
+        }
     }
     fun markReviewPreviewReady(id: Int, revision: String, ready: Boolean) {
         val review = state.value.review

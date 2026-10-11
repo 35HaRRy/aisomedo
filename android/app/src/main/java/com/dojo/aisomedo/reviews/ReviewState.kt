@@ -21,7 +21,7 @@ data class ReviewTarget(
         (expectedVersion == null || expectedVersion > 0) && (packageFolder == null || packageFolder.isNotBlank())
 }
 
-enum class ReviewIssue { NETWORK, INVALID_TIME, INVALID_RESPONSE, STALE, ALREADY_HANDLED, NOT_FOUND, UNCERTAIN, PREVIEW, RENDER_FAILED, PACKAGE_CHANGED }
+enum class ReviewIssue { NETWORK, INVALID_TIME, INVALID_RESPONSE, STALE, ALREADY_HANDLED, NOT_FOUND, UNCERTAIN, PREVIEW, RENDER_FAILED, PACKAGE_CHANGED, UPLOAD_PENDING, MEDIA_REQUIRED }
 
 data class ReviewState(
     val target: ReviewTarget? = null,

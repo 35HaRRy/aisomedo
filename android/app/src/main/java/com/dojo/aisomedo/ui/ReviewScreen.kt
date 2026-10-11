@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import com.dojo.aisomedo.R
 import com.dojo.aisomedo.api.ReviewDetailOut
 import com.dojo.aisomedo.reviews.*
+import com.dojo.aisomedo.uploads.UploadRecord
 import java.time.*
 
 @Composable fun ReviewScreen(state: ReviewState, enabled: Boolean, onAction: (ReviewAction) -> Unit,
@@ -40,7 +41,10 @@ import java.time.*
             SectionHeading(R.string.review_caption)
             SelectionContainer { Text(detail.review.caption.orEmpty()) }
             Button(onClick = onApprove, enabled = enabled && state.canApprove, modifier = Modifier.testTag("review-approve")) { Text(stringResource(R.string.review_approve)) }
-        } else Text(stringResource(if (target.occurrenceId != null) R.string.empty_package else R.string.loading))
+        } else {
+            Text(stringResource(if (target.occurrenceId != null) R.string.empty_package else R.string.loading))
+            if (target.occurrenceId != null) Button(onClick = { onAction(ReviewAction.UPLOAD) }, enabled = enabled && !state.busy) { Text(stringResource(R.string.review_upload)) }
+        }
         state.publication?.get("state")?.let { value ->
             Text(stringResource(when (value.toString().trim('"')) {
                 "confirmed" -> R.string.publication_confirmed; "failed" -> R.string.publication_failed
@@ -87,4 +91,26 @@ fun reviewIssueLabel(issue: ReviewIssue) = when (issue) {
     ReviewIssue.INVALID_TIME -> R.string.review_invalid_time; ReviewIssue.PREVIEW -> R.string.review_preview_error
     ReviewIssue.RENDER_FAILED -> R.string.review_render_failed; ReviewIssue.PACKAGE_CHANGED -> R.string.media_changed
     ReviewIssue.INVALID_RESPONSE -> R.string.unknown_error; ReviewIssue.NETWORK -> R.string.network_error
+    ReviewIssue.UPLOAD_PENDING -> R.string.review_upload_pending; ReviewIssue.MEDIA_REQUIRED -> R.string.review_media_required
+}
+
+@Composable fun ReviewContinuation(state: ReviewState, enabled: Boolean, uploadRows: List<UploadRecord>,
+    onContinue: (List<UploadRecord>, Boolean) -> Unit, onAction: (ReviewAction) -> Unit, onRefresh: () -> Unit, onClose: () -> Unit) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeading(R.string.review_continue_title)
+        state.target?.packageFolder?.let { Text(it) }
+        Text(stringResource(if (state.continuing) R.string.review_continue_waiting else R.string.review_continue_help))
+        state.issue?.let { Text(stringResource(reviewIssueLabel(it)), color = MaterialTheme.colorScheme.error) }
+        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        val retry = state.issue == ReviewIssue.RENDER_FAILED
+        Button(onClick = { onContinue(uploadRows, retry) }, enabled = enabled && !state.busy && !state.continuing &&
+            state.issue !in setOf(ReviewIssue.UNCERTAIN, ReviewIssue.PACKAGE_CHANGED, ReviewIssue.ALREADY_HANDLED), modifier = Modifier.testTag("review-continue")) {
+            Text(stringResource(if (retry) R.string.retry else R.string.review_continue))
+        }
+        TextButton(onClick = { onAction(ReviewAction.SKIP) }, enabled = enabled && state.canDecide) { Text(stringResource(R.string.review_skip)) }
+        TextButton(onClick = { onAction(ReviewAction.RESCHEDULE) }, enabled = enabled && state.canDecide) { Text(stringResource(R.string.review_reschedule)) }
+        TextButton(onClick = onRefresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
+        TextButton(onClick = onClose) { Text(stringResource(R.string.close)) }
+        HorizontalDivider()
+    }
 }

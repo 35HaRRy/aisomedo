@@ -1,4 +1,10 @@
 <resources>
+    <string name="review_continue_title">Bekleyen Yayın Zamanı</string>
+    <string name="review_continue_help">Aşağıdan medya yükleyin ve montajı düzenleyin. Aynı Yayın Zamanı için Reel hazırlanacak.</string>
+    <string name="review_continue_waiting">Reel hazırlanıyor. Hazır olduğunda aynı Yayın Zamanının incelemesi açılır.</string>
+    <string name="review_continue">Reel hazırla ve incelemeye devam et</string>
+    <string name="review_upload_pending">Yükleme veya çakışma çözümü bekliyor. Aşağıdaki işlemleri tamamlayın.</string>
+    <string name="review_media_required">Geçerli medya ve kaydedilmiş, süre sınırına uygun montaj gerekli.</string>
     <string name="review_channel">Yayın incelemeleri</string>
     <string name="publication_channel">Paylaşım sonuçları</string>
     <string name="publication_context">Paylaşım bildirimi: %1$s. Güncel bilgiler sunucudan yenilenir.</string>

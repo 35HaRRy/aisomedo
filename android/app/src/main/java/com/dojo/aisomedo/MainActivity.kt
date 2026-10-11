@@ -65,7 +65,10 @@ class MainActivity : ComponentActivity() {
                 combine(uploads.rows, model.state) { rows, state -> rows to state }.collect { (rows, state) ->
                     if (state.phase == Phase.READY && !state.busy) {
                         val transitions = rows.flatMap { row -> listOfNotNull(row.status?.uploadId?.let { "init:$it" }, if (row.phase == UploadPhase.FINALIZED) "final:${row.id}" else null) }.toSet()
-                        if ((transitions - observed).isNotEmpty()) { observed = transitions; model.refresh() }
+                        if ((transitions - observed).isNotEmpty()) {
+                            observed = transitions; model.refresh()
+                            if (state.review.target != null) model.refreshReview()
+                        }
                     }
                 }
             }

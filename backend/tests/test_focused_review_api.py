@@ -125,3 +125,6 @@ def test_empty_due_upload_renders_review_for_same_occurrence_and_package(tmp_pat
     assert action["package_folder"] == package.folder_name
     assert action["state"] == "review_ready"
     assert client.get(f"/api/reviews/{action['review_id']}").status_code == 200
+    assert publishing.get_active_package().id == package.id
+    assert len(publishing._schedule.list_all()) == 1
+    assert len(publishing.list_pending_reviews()) == 1

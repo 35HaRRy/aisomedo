@@ -80,7 +80,7 @@ import kotlinx.coroutines.delay
                         state.issue?.let { Text(stringResource(issueLabel(it)), color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }) }
                         if (!ready) StartupScreen(state, model, openUrl)
-                        else if (state.review.target != null) ReviewScreen(state.review, !state.busy,
+                        else if (state.review.target != null && state.review.target?.action != ReviewAction.UPLOAD) ReviewScreen(state.review, !state.busy,
                             model::requestReviewAction, model::approveReview, model::skipReview, model::rescheduleReview,
                             model::refreshReview, model::closeReview) { detail ->
                                 ReviewPreview(detail, model::downloadReviewPreview, model::markReviewPreviewReady)
@@ -89,6 +89,11 @@ import kotlinx.coroutines.delay
                         else when (state.destination) {
                             Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup, onPending)
                             Destination.PACKAGE -> {
+                                if (state.review.target?.action == ReviewAction.UPLOAD) {
+                                    val continuationRows = uploads?.rows?.collectAsStateWithLifecycle()?.value.orEmpty()
+                                    ReviewContinuation(state.review, !state.busy, continuationRows, model::continueReview,
+                                        model::requestReviewAction, model::refreshReview, model::closeReview)
+                                }
                                 Heading(R.string.active_package); PackageSummary(state.dashboard)
                                 MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
                                     model::removeMedia, model::restoreMedia, model::editRanges, model::saveMediaTrims, model::discardMediaTrims)
