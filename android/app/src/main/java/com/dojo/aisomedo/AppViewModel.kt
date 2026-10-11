@@ -7,6 +7,7 @@ import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.*
 import com.dojo.aisomedo.uploads.UploadIssue
 import com.dojo.aisomedo.editor.*
+import com.dojo.aisomedo.reviews.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
@@ -14,6 +15,7 @@ import java.net.URI
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.Instant
 import kotlinx.serialization.json.*
 
 enum class Phase { ADDRESS, LOADING, PAIRING, READY, UPDATE_REQUIRED, CONNECTION_ERROR }
@@ -44,6 +46,7 @@ data class AppUiState(
     val consentAcknowledged: Boolean = false,
     val pendingAssets: Map<String, BrandingAssetOut> = emptyMap(),
     val editor: MediaEditorState = MediaEditorState(),
+    val review: ReviewState = ReviewState(),
 )
 
 class AppViewModel(
@@ -61,6 +64,8 @@ class AppViewModel(
     private var generation = 0
     private var job: Job? = null
     private var prompted = false
+    private var reviewJob: Job? = null
+    private var reviewEpoch = 0
 
     init {
         mutable.update { it.copy(
@@ -124,6 +129,11 @@ class AppViewModel(
             mutable.update { it.copy(issue = UiIssue.STORAGE) }; null
         }
         if (generation != current) return
+        if (bindingId != null && bindingId != credential?.bindingId) {
+            onSessionStopped()
+            reviewEpoch++; reviewJob?.cancel(); clearReviewSaved()
+            mutable.update { it.copy(review = ReviewState()) }
+        }
         token = credential?.token
         bindingId = credential?.bindingId
         if (token == null) { mutable.update { it.copy(phase = Phase.PAIRING) }; return }
@@ -168,6 +178,8 @@ class AppViewModel(
         if (step != null) loadConfiguration(current)
         checkKnownAttempt(current)
         if (state.value.destination == Destination.PACKAGE) loadEditor(current)
+        restoreReviewTarget()
+        if (state.value.review.target != null) refreshReview()
     }
 
     private fun failure(error: Exception, pairing: Boolean = false) {
@@ -180,7 +192,7 @@ class AppViewModel(
             error is ApiFailure && error.status == 426 -> {
                 onSessionStopped()
                 cancelWork()
-                mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, busy = false, updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
+                mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, busy = false, review = ReviewState(), updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
             }
             error is ApiFailure && error.status == 401 && !pairing -> {
                 onSessionStopped()
@@ -220,7 +232,7 @@ class AppViewModel(
             else -> Unit
         }
     }
-    private fun cancelWork() { generation++; job?.cancel(); job = null }
+    private fun cancelWork() { generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null }
     private fun checkSession(current: Int) {
         if (generation != current) throw CancellationException("Session changed")
     }
@@ -559,6 +571,181 @@ class AppViewModel(
         mediaMutation(snapshot.copy(montage = snapshot.montage.copy(selections = removedSelections + selections)), savedTrims = true) { api, folder -> api.selectVideoRanges(folder, selections) }
     }
     fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
+
+    private fun saveReviewTarget(target: ReviewTarget) {
+        saved["review_id"] = target.reviewId
+        saved["review_occurrence"] = target.occurrenceId
+        saved["review_folder"] = target.packageFolder
+        saved["review_version"] = target.expectedVersion
+        saved["review_action"] = target.action.name
+        saved["review_origin"] = state.value.origin
+        saved["review_binding"] = bindingId
+    }
+    private fun restoreReviewTarget() {
+        if (state.value.review.target != null || saved.get<String>("review_origin") == null) return
+        if (saved.get<String>("review_origin") != state.value.origin || saved.get<String>("review_binding") != bindingId) {
+            clearReviewSaved(); return
+        }
+        val target = runCatching { ReviewTarget(saved["review_id"], saved["review_occurrence"], saved["review_folder"], saved["review_version"],
+            ReviewAction.valueOf(saved.get<String>("review_action") ?: "REVIEW")) }.getOrNull()
+        if (target?.valid != true) { clearReviewSaved(); return }
+        mutable.update { it.copy(review = ReviewState(target = target)) }
+    }
+    private fun clearReviewSaved() { saved.keys().filter { it.startsWith("review_") }.forEach { saved.remove<Any>(it) } }
+    fun openReview(target: ReviewTarget) {
+        if (state.value.phase != Phase.READY || !target.valid) return
+        reviewEpoch++; reviewJob?.cancel()
+        saved["review_owner"] = state.value.destination.name
+        saveReviewTarget(target)
+        mutable.update { it.copy(review = ReviewState(target = target)) }
+        refreshReview()
+    }
+    fun closeReview() {
+        reviewEpoch++; reviewJob?.cancel(); reviewJob = null
+        val owner = Destination.entries.firstOrNull { it.name == saved.get<String>("review_owner") } ?: state.value.destination
+        clearReviewSaved(); saved["destination"] = owner.name
+        mutable.update { it.copy(review = ReviewState(), destination = owner) }
+    }
+    private fun checkReview(current: Int, epoch: Int) {
+        checkSession(current)
+        if (epoch != reviewEpoch || state.value.phase != Phase.READY) throw CancellationException("Review changed")
+        if (runCatching { store.readSession(state.value.origin)?.bindingId }.getOrNull() != bindingId) {
+            clearReviewSaved()
+            mutable.update { it.copy(review = ReviewState()) }
+            throw CancellationException("Session binding changed")
+        }
+    }
+    private fun reviewWork(mutation: Boolean = false, action: suspend (Int, Int) -> Unit) {
+        if (state.value.phase != Phase.READY || state.value.review.busy || state.value.review.target == null || mutation && state.value.busy) return
+        val current = generation
+        val epoch = reviewEpoch
+        mutable.update { it.copy(review = it.review.copy(busy = true)) }
+        reviewJob = viewModelScope.launch {
+            try { checkReview(current, epoch); action(current, epoch) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                checkReview(current, epoch)
+                if (e is ApiFailure && e.status in setOf(401, 426)) failure(e)
+                else mutable.update { it.copy(review = it.review.copy(readRequired = true, issue = when {
+                    mutation -> ReviewIssue.UNCERTAIN
+                    e is ApiFailure && e.status == 404 -> ReviewIssue.NOT_FOUND
+                    e is ApiFailure -> ReviewIssue.NETWORK
+                    else -> ReviewIssue.INVALID_RESPONSE
+                })) }
+            } finally {
+                if (generation == current && reviewEpoch == epoch) mutable.update { it.copy(review = it.review.copy(busy = false)) }
+            }
+        }
+    }
+    fun refreshReview() { reviewWork { current, epoch -> loadReview(current, epoch) } }
+    private suspend fun loadReview(current: Int, epoch: Int) {
+        val target = state.value.review.target ?: return
+        val transport = api()
+        if (target.reviewId != null) {
+            val detail = transport.review(target.reviewId)
+            checkReview(current, epoch)
+            require(detail.review.id > 0 && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank() &&
+                detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "approved", "skipped", "rescheduled"))
+            val issue = when {
+                detail.review.id != target.reviewId || target.packageFolder != null && target.packageFolder != detail.review.packageFolder -> ReviewIssue.STALE
+                detail.review.status != "pending" -> ReviewIssue.ALREADY_HANDLED
+                target.expectedVersion != null && target.expectedVersion != detail.review.version -> ReviewIssue.STALE
+                else -> null
+            }
+            val bound = target.copy(packageFolder = target.packageFolder ?: detail.review.packageFolder,
+                expectedVersion = target.expectedVersion ?: detail.review.version)
+            saveReviewTarget(bound)
+            mutable.update { state ->
+                val previous = state.review.detail
+                state.copy(review = state.review.copy(target = bound, detail = detail, readRequired = issue != null,
+                    issue = issue, nextRegularAt = detail.nextRegularAt,
+                    previewReady = state.review.previewReady && issue == null && detail.renderReady &&
+                        previous?.review?.id == detail.review.id && previous.review.revisionDigest == detail.review.revisionDigest &&
+                        previous.review.version == detail.review.version))
+            }
+        } else {
+            val dashboard = transport.dashboard()
+            checkReview(current, epoch)
+            val pending = dashboard.pendingActions.find { it.occurrenceId == target.occurrenceId }
+            val issue = when {
+                pending == null -> ReviewIssue.ALREADY_HANDLED
+                pending.packageFolder != target.packageFolder || dashboard.`package`?.folderName != target.packageFolder -> ReviewIssue.PACKAGE_CHANGED
+                pending.reviewId != null || pending.state != "empty_package" -> ReviewIssue.STALE
+                else -> null
+            }
+            mutable.update { it.copy(dashboard = dashboard, review = it.review.copy(readRequired = issue != null,
+                issue = issue, nextRegularAt = dashboard.nextSlot?.takeIf { slot -> slot.kind == "regular" }?.dueAt)) }
+        }
+    }
+    fun requestReviewAction(action: ReviewAction) {
+        val review = state.value.review
+        val target = review.target ?: return
+        if (state.value.phase != Phase.READY || review.busy) return
+        val updated = target.copy(action = action)
+        saveReviewTarget(updated)
+        mutable.update { it.copy(review = it.review.copy(target = updated)) }
+    }
+    fun markReviewPreviewReady(id: Int, revision: String, ready: Boolean) {
+        val review = state.value.review
+        val detail = review.detail ?: return
+        if (state.value.phase != Phase.READY || review.target?.reviewId != id || detail.review.id != id ||
+            detail.review.revisionDigest != revision || !detail.renderReady || review.issue != null) return
+        mutable.update { it.copy(review = it.review.copy(previewReady = ready)) }
+    }
+    fun approveReview() {
+        if (state.value.review.canApprove) decideReview("approve")
+    }
+    fun skipReview() {
+        if (state.value.review.canDecide && state.value.review.target?.action == ReviewAction.SKIP) decideReview("skip")
+    }
+    fun rescheduleReview(date: LocalDate, time: LocalTime) {
+        val review = state.value.review
+        val validated = review.copy(issue = review.issue.takeUnless { it == ReviewIssue.INVALID_TIME })
+        if (!validated.canDecide || review.target?.action != ReviewAction.RESCHEDULE) return
+        val due = futureIstanbulInstant(date, time, Instant.now())
+        if (due == null) { mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.INVALID_TIME)) }; return }
+        mutable.update { it.copy(review = it.review.copy(issue = null)) }
+        decideReview("reschedule", due)
+    }
+    private fun decideReview(action: String, due: String? = null) {
+        val target = state.value.review.target ?: return
+        val detail = state.value.review.detail
+        reviewWork(mutation = true) { current, epoch ->
+            val transport = api()
+            try {
+                val result = if (target.reviewId != null && detail != null) {
+                    when (action) {
+                        "approve" -> transport.approveReview(target.reviewId, detail.review.version)
+                        "skip" -> transport.skipReview(target.reviewId, detail.review.version)
+                        else -> transport.rescheduleReview(target.reviewId, detail.review.version, requireNotNull(due))
+                    }
+                } else {
+                    val id = requireNotNull(target.occurrenceId)
+                    val folder = requireNotNull(target.packageFolder)
+                    val decision = if (action == "skip") transport.skipEmptyOccurrence(id, EmptySkipIn(expectedFolderName = folder, confirmed = true))
+                        else transport.rescheduleEmptyOccurrence(id, EmptyRescheduleIn(folder, requireNotNull(due)))
+                    checkReview(current, epoch)
+                    require(decision.occurrenceId == id && decision.packageFolder == folder)
+                    mutable.update { it.copy(review = it.review.copy(nextRegularAt = decision.nextRegularAt, continuing = false)) }
+                    null
+                }
+                checkReview(current, epoch)
+                mutable.update { it.copy(review = it.review.copy(readRequired = true, publication = result?.get("publication") as? JsonObject)) }
+                loadReview(current, epoch)
+                val dashboard = transport.dashboard()
+                checkReview(current, epoch)
+                mutable.update { it.copy(dashboard = dashboard) }
+            } catch (e: ApiFailure) {
+                checkReview(current, epoch)
+                if (e.status == 409) {
+                    loadReview(current, epoch)
+                    mutable.update { it.copy(review = it.review.copy(readRequired = true,
+                        issue = if (it.review.detail?.review?.status?.let { status -> status != "pending" } == true)
+                            ReviewIssue.ALREADY_HANDLED else ReviewIssue.STALE)) }
+                } else throw e
+            }
+        }
+    }
 }
 
 private class PolicyChanged : Exception()
