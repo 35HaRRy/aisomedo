@@ -1,4 +1,5 @@
 package com.dojo.aisomedo
+import kotlinx.coroutines.async
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
@@ -293,6 +294,72 @@ class AppViewModelTest {
             assertFalse(f.model.state.value.review.canApprove)
             assertTrue(f.saved.keys().none { it.startsWith("review_") })
             assertEquals("REPLACEMENT_DEVICE", f.store.readToken(f.origin))
+        }
+    }
+
+    @Test fun previewTransferRequiresExactIdentityAndDoesNotPreparePlayerByItself() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.model.openReview(ReviewTarget(reviewId = 7)); f.await { !it.review.busy }
+            val path = "/api/packages/active/render/preview?revision=exact"
+            f.bodies[path] = "preview"
+            val file = f.dir.resolve("private-review.mp4")
+            val transfer = async { f.model.downloadReviewPreview(7, "exact", file) }
+            f.await { transfer.isCompleted }
+            transfer.await()
+            assertEquals("preview", file.readText())
+            assertFalse(f.model.state.value.review.canApprove)
+            val rejected = async { runCatching { f.model.downloadReviewPreview(7, "old", file) } }
+            f.await { rejected.isCompleted }
+            assertTrue(rejected.await().isFailure)
+            assertFalse(file.exists())
+            assertEquals(1, f.seen.count { it == "GET $path" })
+        }
+    }
+
+    @Test fun sessionSwitchRejectsPreviewAndDeletesOwnedFile() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            val path = "/api/packages/active/render/preview?revision=exact"
+            f.bodies[path] = "preview"
+            f.delayPath = path
+            val file = f.dir.resolve("private-review.mp4")
+            val transfer = async { runCatching { f.model.downloadReviewPreview(7, "exact", file) } }
+            repeat(500) { main.scheduler.runCurrent(); if ("GET $path" !in f.seen) Thread.sleep(10) }
+            assertTrue("GET $path" in f.seen)
+            f.model.changeServer()
+            f.await { transfer.isCompleted }
+            assertTrue(transfer.await().isFailure)
+            assertFalse(file.exists())
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun previewDisposalRevokesReadinessEvenDuringUncertainMutation() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.bodies["/api/reviews/7/approve"] = "[]"
+            f.model.approveReview(); f.await { !it.review.busy }
+            f.model.markReviewPreviewReady(7, "exact", false)
+            assertFalse(f.model.state.value.review.previewReady)
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun pollingDoesNotResolveUncertainCommandOrOverwriteActionDraft() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.model.requestReviewAction(ReviewAction.RESCHEDULE)
+            f.model.pollReview(); f.await { !it.review.busy }
+            assertEquals(ReviewAction.RESCHEDULE, f.model.state.value.review.target!!.action)
+            f.bodies["/api/reviews/7/approve"] = "[]"
+            f.model.approveReview(); f.await { !it.review.busy }
+            val reads = f.seen.count { it == "GET /api/reviews/7" }
+            f.model.pollReview(); main.scheduler.runCurrent()
+            assertEquals(reads, f.seen.count { it == "GET /api/reviews/7" })
+            assertTrue(f.model.state.value.review.readRequired)
         }
     }
 

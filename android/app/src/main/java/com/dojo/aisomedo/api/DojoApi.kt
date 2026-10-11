@@ -111,6 +111,10 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun renderPackage(folder: String, retry: Boolean = false): RenderOut = decode(request("POST", "/api/packages/active/render", json.encodeToJsonElement(RenderIn(expectedFolderName = folder, retry = retry))))
     suspend fun registerPushToken(token: String) { request("PUT", "/api/pairing/me/push-token", json.encodeToJsonElement(PushTokenIn(token))) }
     suspend fun removePushToken() { request("DELETE", "/api/pairing/me/push-token") }
+    suspend fun downloadReviewPreview(path: String, destination: File, limit: Long = 512L * 1024 * 1024) {
+        try { bytes("GET", path, destination = destination, limit = limit) }
+        catch (e: Exception) { destination.delete(); throw e }
+    }
     suspend fun consent(): ConsentOut = decode(request("GET", "/api/setup/consent"))
     suspend fun acceptConsent(version: Int): AcceptanceOut = decode(request("POST", "/api/setup/consent/accept", buildJsonObject { put("version", version) }))
     suspend fun plan(): PlanOut = decode(request("GET", "/api/settings/plan"))

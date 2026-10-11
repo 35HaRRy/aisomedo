@@ -16,6 +16,7 @@ import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.Instant
+import java.io.File
 import kotlinx.serialization.json.*
 
 enum class Phase { ADDRESS, LOADING, PAIRING, READY, UPDATE_REQUIRED, CONNECTION_ERROR }
@@ -638,6 +639,32 @@ class AppViewModel(
         }
     }
     fun refreshReview() { reviewWork { current, epoch -> loadReview(current, epoch) } }
+    fun pollReview() {
+        val review = state.value.review
+        if (review.target != null && !review.busy && review.issue == null &&
+            (review.detail?.review?.status == "pending" || review.target.occurrenceId != null)) refreshReview()
+    }
+    suspend fun downloadReviewPreview(id: Int, revision: String, destination: File) {
+        val current = generation
+        val epoch = reviewEpoch
+        fun requirePreview(): String {
+            checkReview(current, epoch)
+            val review = state.value.review
+            val detail = requireNotNull(review.detail)
+            require(review.target?.reviewId == id && detail.review.id == id &&
+                detail.review.revisionDigest == revision && detail.renderReady && review.issue == null)
+            return requireNotNull(detail.previewUrl)
+        }
+        try {
+            api().downloadReviewPreview(requirePreview(), destination)
+            requirePreview()
+        } catch (e: CancellationException) { destination.delete(); throw e }
+        catch (e: Exception) {
+            destination.delete()
+            if (generation == current && reviewEpoch == epoch && e is ApiFailure && e.status in setOf(401, 426)) failure(e)
+            throw e
+        }
+    }
     private suspend fun loadReview(current: Int, epoch: Int) {
         val target = state.value.review.target ?: return
         val transport = api()
@@ -689,7 +716,7 @@ class AppViewModel(
         val review = state.value.review
         val detail = review.detail ?: return
         if (state.value.phase != Phase.READY || review.target?.reviewId != id || detail.review.id != id ||
-            detail.review.revisionDigest != revision || !detail.renderReady || review.issue != null) return
+            detail.review.revisionDigest != revision || ready && (!detail.renderReady || review.issue != null)) return
         mutable.update { it.copy(review = it.review.copy(previewReady = ready)) }
     }
     fun approveReview() {

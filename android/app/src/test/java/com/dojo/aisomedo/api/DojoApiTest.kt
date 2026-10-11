@@ -12,6 +12,59 @@ import java.util.concurrent.TimeUnit
 import java.nio.file.Files
 
 class DojoApiTest {
+    @Test fun reviewPreviewIsAuthenticatedBoundedAndNeverFollowsRedirects() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            val directory = Files.createTempDirectory("review-preview").toFile()
+            val file = directory.resolve("exact.mp4")
+            val path = "/api/packages/active/render/preview?expected_folder_name=active&revision=exact"
+            try {
+                server.enqueue(MockResponse().setBody("preview"))
+                api.downloadReviewPreview(path, file, 10)
+                assertEquals("preview", file.readText())
+                val request = server.takeRequest()
+                assertEquals("Bearer DEVICE", request.getHeader("Authorization"))
+                assertEquals("1", request.getHeader("X-Android-Version-Code"))
+                assertEquals(path, request.path)
+                server.enqueue(MockResponse().setBody("too large"))
+                assertEquals(413, (runCatching { api.downloadReviewPreview(path, file, 2) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(file.exists())
+                server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "https://evil.example/"))
+                assertEquals(302, (runCatching { api.downloadReviewPreview(path, file, 10) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(file.exists())
+                assertEquals(3, server.requestCount)
+            } finally { directory.deleteRecursively() }
+        }
+    }
+
+    @Test fun cancelledReviewTransferRemovesItsPartialFile() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            val file = Files.createTempFile("review-cancel", ".mp4").toFile()
+            try {
+                server.enqueue(MockResponse().setBody("preview").setBodyDelay(2, TimeUnit.SECONDS))
+                val pending = async { api.downloadReviewPreview("/api/packages/active/render/preview?revision=exact", file, 10) }
+                withContext(Dispatchers.IO) { server.takeRequest() }
+                pending.cancelAndJoin()
+                withTimeout(3000) { while (file.exists()) delay(10) }
+                assertEquals(1, server.requestCount)
+            } finally { file.delete() }
+        }
+    }
+
+    @Test fun cacheWriteFailureDoesNotDeleteParentOrSiblingFiles() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            val parent = Files.createTempFile("review-no-directory", ".owned").toFile()
+            val destination = parent.resolve("preview.mp4")
+            try {
+                server.enqueue(MockResponse().setBody("preview"))
+                assertEquals(0, (runCatching { api.downloadReviewPreview("/api/packages/active/render/preview?revision=exact", destination, 10) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(destination.exists())
+                assertTrue(parent.exists())
+            } finally { parent.delete() }
+        }
+    }
     @Test fun reviewActionsUseDisplayedIdentityAndExplicitBodies() = runBlocking {
         MockWebServer().use { server ->
             val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())

@@ -24,6 +24,11 @@ import com.dojo.aisomedo.*
 import com.dojo.aisomedo.R
 import com.dojo.aisomedo.onboarding.OnboardingScreen
 import com.dojo.aisomedo.uploads.UploadRuntime
+import com.dojo.aisomedo.reviews.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 
 @Composable fun DojoTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(), content = content)
@@ -32,27 +37,39 @@ import com.dojo.aisomedo.uploads.UploadRuntime
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun DojoApp(model: AppViewModel, uploads: UploadRuntime? = null, openUrl: (String) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle, state.phase, state.review.target?.reviewId, state.review.target?.occurrenceId) {
+        if (state.phase == Phase.READY && state.review.target != null) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) { delay(5000); model.pollReview() }
+        }
+    }
+    val onPending: (com.dojo.aisomedo.api.DashboardActionOut, ReviewAction) -> Unit = { pending, action ->
+        if (pending.reviewId != null) model.openReview(ReviewTarget(reviewId = pending.reviewId, packageFolder = pending.packageFolder, expectedVersion = pending.version, action = action))
+        else if (pending.packageFolder != null) model.openReview(ReviewTarget(occurrenceId = pending.occurrenceId, packageFolder = pending.packageFolder, action = action))
+        else model.navigate(Destination.PACKAGE)
+    }
     DojoTheme {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val wide = maxWidth >= 600.dp
             val scroll = rememberScrollState()
             var viewport by remember { mutableStateOf(Rect.Zero) }
             val ready = state.phase == Phase.READY
-            BackHandler(ready && (state.step != null || state.destination != Destination.DASHBOARD)) {
-                if (state.step != null) model.closeSetup() else model.navigate(Destination.DASHBOARD)
+            BackHandler(ready && (state.review.target != null || state.step != null || state.destination != Destination.DASHBOARD)) {
+                if (state.review.target != null) model.closeReview()
+                else if (state.step != null) model.closeSetup() else model.navigate(Destination.DASHBOARD)
             }
             Scaffold(
                 topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }) },
                 bottomBar = { if (ready && !wide) NavigationBar(Modifier.testTag("navigation-bar")) {
                     Destination.entries.forEach { item -> NavigationBarItem(
-                        selected = item == state.destination, onClick = { model.navigate(item) },
+                        selected = item == state.destination, onClick = { if (state.review.target != null) model.closeReview(); model.navigate(item) },
                         icon = { NavigationIcon(item) }, label = { Text(stringResource(destinationLabel(item))) }) }
                 } },
             ) { padding ->
                 Row(Modifier.padding(padding).fillMaxSize()) {
                     if (ready && wide) NavigationRail(Modifier.testTag("navigation-rail")) {
                         Destination.entries.forEach { item -> NavigationRailItem(
-                            selected = item == state.destination, onClick = { model.navigate(item) },
+                            selected = item == state.destination, onClick = { if (state.review.target != null) model.closeReview(); model.navigate(item) },
                             icon = { NavigationIcon(item) }, label = { Text(stringResource(destinationLabel(item))) }) }
                     }
                     Column(Modifier.weight(1f).fillMaxHeight().imePadding().onGloballyPositioned { viewport = it.boundsInRoot() }.verticalScroll(scroll).padding(24.dp),
@@ -61,9 +78,14 @@ import com.dojo.aisomedo.uploads.UploadRuntime
                         state.issue?.let { Text(stringResource(issueLabel(it)), color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }) }
                         if (!ready) StartupScreen(state, model, openUrl)
+                        else if (state.review.target != null) ReviewScreen(state.review, !state.busy,
+                            model::requestReviewAction, model::approveReview, model::skipReview, model::rescheduleReview,
+                            model::refreshReview, model::closeReview) { detail ->
+                                ReviewPreview(detail, model::downloadReviewPreview, model::markReviewPreviewReady)
+                            }
                         else if (state.step != null) OnboardingScreen(model, openUrl)
                         else when (state.destination) {
-                            Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup)
+                            Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup, onPending)
                             Destination.PACKAGE -> {
                                 Heading(R.string.active_package); PackageSummary(state.dashboard)
                                 MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
@@ -77,7 +99,7 @@ import com.dojo.aisomedo.uploads.UploadRuntime
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
                             }
-                            Destination.ACTIVITY -> { Heading(R.string.activity); Text(stringResource(R.string.activity_later)) }
+                            Destination.ACTIVITY -> ApprovalInbox(state.dashboard, state.stale, model::refresh, onPending)
                             Destination.SETTINGS -> SettingsScreen(state, model)
                         }
                     }
