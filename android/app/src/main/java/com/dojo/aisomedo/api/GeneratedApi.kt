@@ -28,6 +28,17 @@ data class AcceptanceOut(
 )
 
 @Serializable
+data class ActiveEditorOut(
+    @SerialName("media") val media: List<EditorMediaOut>,
+    @SerialName("montage") val montage: MontageOut,
+    @SerialName("package") val `package`: PackageOut,
+    @SerialName("render_preview_url") val renderPreviewUrl: String? = null,
+    @SerialName("render_revision") val renderRevision: String? = null,
+    @SerialName("render_stale") val renderStale: Boolean,
+    @SerialName("render_status") val renderStatus: String = "missing",
+)
+
+@Serializable
 data class AttemptOut(
     @SerialName("candidates") val candidates: List<MetaCandidateOut>,
     @SerialName("id") val id: String,
@@ -116,11 +127,69 @@ data class DashboardWorkerOut(
 )
 
 @Serializable
+data class EditorMediaOut(
+    @SerialName("artifacts") val artifacts: List<PackageArtifactOut>,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("effective_duration") val effectiveDuration: Double?,
+    @SerialName("filename") val filename: String,
+    @SerialName("is_video") val isVideo: Boolean,
+    @SerialName("media_id") val mediaId: String,
+    @SerialName("preview_url") val previewUrl: String?,
+    @SerialName("processed") val processed: ProcessedMetadataOut,
+    @SerialName("removed_position") val removedPosition: Int? = null,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    @SerialName("source_duration") val sourceDuration: Double?,
+    @SerialName("status") val status: String,
+    @SerialName("uploaded_at") val uploadedAt: String,
+)
+
+@Serializable
 data class MetaCandidateOut(
     @SerialName("ig_user_id") val igUserId: String,
     @SerialName("ig_username") val igUsername: String,
     @SerialName("page_id") val pageId: String? = null,
     @SerialName("page_name") val pageName: String? = null,
+)
+
+@Serializable
+data class MontageClipOut(
+    @SerialName("content_type") val contentType: String,
+    @SerialName("effective_duration") val effectiveDuration: Double,
+    @SerialName("filename") val filename: String,
+    @SerialName("is_video") val isVideo: Boolean,
+    @SerialName("media_id") val mediaId: String,
+    @SerialName("source_duration") val sourceDuration: Double?,
+)
+
+@Serializable
+data class MontageOut(
+    @SerialName("card_duration") val cardDuration: Double,
+    @SerialName("clips") val clips: List<MontageClipOut>,
+    @SerialName("combined_duration") val combinedDuration: Double,
+    @SerialName("duration_complete") val durationComplete: Boolean,
+    @SerialName("max_duration_seconds") val maxDurationSeconds: Double,
+    @SerialName("order") val order: List<String>,
+    @SerialName("over_limit") val overLimit: Boolean,
+    @SerialName("required_action") val requiredAction: String?,
+    @SerialName("selections") val selections: Map<String, List<VideoRangeOut>>,
+    @SerialName("trims") val trims: Map<String, VideoRangeOut>,
+)
+
+@Serializable
+data class OrderIn(
+    @SerialName("expected_folder_name") val expectedFolderName: String? = null,
+    @SerialName("order") val order: List<String>,
+)
+
+@Serializable
+data class PackageArtifactOut(
+    @SerialName("artifact_ref") val artifactRef: String,
+    @SerialName("available") val available: Boolean,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("filename") val filename: String,
+    @SerialName("kind") val kind: String,
+    @SerialName("preview_url") val previewUrl: String?,
+    @SerialName("url") val url: String?,
 )
 
 @Serializable
@@ -154,8 +223,24 @@ data class PlanOut(
 )
 
 @Serializable
+data class ProcessedMetadataOut(
+    @SerialName("content_type") val contentType: String? = null,
+    @SerialName("dimensions") val dimensions: List<Int>? = null,
+    @SerialName("duration") val duration: Double? = null,
+    @SerialName("path") val path: String? = null,
+    @SerialName("size_bytes") val sizeBytes: Long? = null,
+)
+
+@Serializable
 data class SelectIn(
     @SerialName("ig_user_id") val igUserId: String,
+)
+
+@Serializable
+data class SelectionIn(
+    @SerialName("expected_folder_name") val expectedFolderName: String,
+    @SerialName("photo_durations") val photoDurations: Map<String, Double>? = null,
+    @SerialName("selections") val selections: Map<String, List<VideoRangeOut>>,
 )
 
 @Serializable
@@ -229,4 +314,10 @@ data class ValidateIn(
     @SerialName("code") val code: String,
     @SerialName("kind") val kind: String,
     @SerialName("name") val name: String,
+)
+
+@Serializable
+data class VideoRangeOut(
+    @SerialName("end") val end: Double,
+    @SerialName("start") val start: Double,
 )

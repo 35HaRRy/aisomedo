@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.*
 import com.dojo.aisomedo.uploads.UploadIssue
+import com.dojo.aisomedo.editor.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
@@ -42,6 +43,7 @@ data class AppUiState(
     val drafts: Map<String, String> = emptyMap(),
     val consentAcknowledged: Boolean = false,
     val pendingAssets: Map<String, BrandingAssetOut> = emptyMap(),
+    val editor: MediaEditorState = MediaEditorState(),
 )
 
 class AppViewModel(
@@ -165,6 +167,7 @@ class AppViewModel(
         mutable.update { it.copy(phase = Phase.READY, client = client, setup = setup, dashboard = dashboard, step = step, destination = destination, stale = false) }
         if (step != null) loadConfiguration(current)
         checkKnownAttempt(current)
+        if (state.value.destination == Destination.PACKAGE) loadEditor(current)
     }
 
     private fun failure(error: Exception, pairing: Boolean = false) {
@@ -226,6 +229,7 @@ class AppViewModel(
         if (state.value.phase != Phase.READY) return
         saved["destination"] = destination.name
         closeSetup(); mutable.update { it.copy(destination = destination) }
+        if (destination == Destination.PACKAGE) refreshEditor()
     }
     fun openSetup() {
         if (state.value.phase != Phase.READY) return
@@ -473,6 +477,86 @@ class AppViewModel(
         }
         if (generation != current) throw CancellationException("Session changed")
         return bytes
+    }
+    fun refreshEditor() {
+        if (state.value.phase == Phase.READY) launch { loadEditor(it, explicit = true) }
+    }
+    private suspend fun loadEditor(current: Int, explicit: Boolean = false, expected: ActiveEditorOut? = null, savedTrims: Boolean = false) {
+        try {
+            val snapshot = api().mediaEditor()
+            checkSession(current)
+            mutable.update { it.copy(editor = it.editor.accept(snapshot, explicit, expected, savedTrims)) }
+        } catch (e: ApiFailure) {
+            checkSession(current)
+            if (e.status != 404) {
+                mutable.update { it.copy(editor = it.editor.copy(readRequired = true, issue = EditorIssue.READ)) }
+                throw e
+            }
+            mutable.update { it.copy(editor = if (it.editor.dirty) it.editor.copy(snapshot = null, readRequired = true, issue = EditorIssue.CONFLICT) else MediaEditorState()) }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            checkSession(current)
+            mutable.update { it.copy(editor = it.editor.copy(readRequired = true, issue = EditorIssue.READ)) }
+            throw e
+        }
+    }
+    fun editRanges(id: String, ranges: List<RangeInput>) {
+        if (state.value.phase != Phase.READY || state.value.busy || state.value.editor.readRequired) return
+        if (state.value.editor.snapshot?.media?.none { it.mediaId == id && it.isVideo && it.status == "finalized" } != false) return
+        mutable.update { it.copy(editor = it.editor.edit(id, ranges)) }
+    }
+    fun discardMediaTrims() { if (!state.value.busy) mutable.update { it.copy(editor = it.editor.discard()) } }
+    private fun mediaMutation(expected: ActiveEditorOut, savedTrims: Boolean = false, action: suspend (DojoApi, String) -> Unit) {
+        val editor = state.value.editor
+        if (state.value.phase != Phase.READY || state.value.busy || editor.readRequired || editor.snapshot == null || editor.snapshot.`package`.status == "completed") return
+        val folder = editor.snapshot.`package`.folderName
+        launch { current ->
+            try {
+                action(api(), folder)
+                checkSession(current)
+                // A lost read must not let the next write reuse an unverified snapshot.
+                mutable.update { it.copy(editor = it.editor.copy(readRequired = true)) }
+                loadEditor(current, explicit = true, expected = expected, savedTrims = savedTrims)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                checkSession(current)
+                if (e is ApiFailure && e.status in setOf(401, 426)) throw e
+                val issue = when ((e as? ApiFailure)?.status) {
+                    422 -> EditorIssue.INVALID
+                    409 -> EditorIssue.CONFLICT
+                    404 -> EditorIssue.CONFLICT
+                    else -> EditorIssue.UNCERTAIN
+                }
+                mutable.update { it.copy(editor = it.editor.copy(readRequired = issue != EditorIssue.INVALID, issue = issue)) }
+            }
+        }
+    }
+    fun reorderMedia(order: List<String>) {
+        val snapshot = state.value.editor.snapshot ?: return
+        if (order == snapshot.montage.order || order.size != order.toSet().size || order.toSet() != snapshot.montage.order.toSet()) return
+        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(order = order))) { api, folder -> api.orderMedia(folder, order) }
+    }
+    fun removeMedia(id: String) {
+        val snapshot = state.value.editor.snapshot ?: return
+        if (snapshot.media.none { it.mediaId == id && it.status == "finalized" }) return
+        val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "removed") else it },
+            montage = snapshot.montage.copy(order = snapshot.montage.order.filter { it != id }))
+        mediaMutation(expected) { api, folder -> api.removeMedia(folder, id) }
+    }
+    fun restoreMedia(id: String) {
+        val snapshot = state.value.editor.snapshot ?: return
+        val media = snapshot.media.find { it.mediaId == id && it.status == "removed" } ?: return
+        val order = snapshot.montage.order.toMutableList().apply { add((media.removedPosition ?: size).coerceIn(0, size), id) }
+        val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "finalized") else it }, montage = snapshot.montage.copy(order = order))
+        mediaMutation(expected) { api, folder -> api.restoreMedia(folder, id) }
+    }
+    fun saveMediaTrims() {
+        val editor = state.value.editor
+        if (!editor.canSave) return
+        val snapshot = editor.snapshot ?: return
+        val selections = editor.selections ?: return
+        val removedSelections = snapshot.montage.selections.filterKeys { id -> snapshot.media.any { it.mediaId == id && it.status == "removed" } }
+        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(selections = removedSelections + selections)), savedTrims = true) { api, folder -> api.selectVideoRanges(folder, selections) }
     }
     fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
 }

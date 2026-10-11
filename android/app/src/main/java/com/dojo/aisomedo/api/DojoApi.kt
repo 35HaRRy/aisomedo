@@ -96,6 +96,13 @@ class DojoApi(private val origin: String, private val token: String?, private va
         catch (_: SerializationException) { throw SerializationException("Invalid server response") }
     }
     suspend fun preview(path: String): ByteArray = bytes("GET", path)
+    suspend fun mediaEditor(): ActiveEditorOut = decode(request("GET", "/api/packages/active/editor"))
+    suspend fun orderMedia(folder: String, order: List<String>) = request("PUT", "/api/packages/active/order",
+        json.encodeToJsonElement(OrderIn(expectedFolderName = folder, order = order)))
+    suspend fun selectVideoRanges(folder: String, selections: Map<String, List<VideoRangeOut>>) = request("PUT", "/api/packages/active/selections",
+        json.encodeToJsonElement(SelectionIn(expectedFolderName = folder, selections = selections)))
+    suspend fun removeMedia(folder: String, id: String) = request("POST", "/api/packages/active/media/${segment(id)}/remove?expected_folder_name=${segment(folder)}")
+    suspend fun restoreMedia(folder: String, id: String) = request("POST", "/api/packages/active/media/${segment(id)}/restore?expected_folder_name=${segment(folder)}")
     suspend fun uploadLimits(): UploadLimitsOut = decode(request("GET", "/api/media/upload-limits"))
     suspend fun startUpload(body: UploadInitIn): UploadOut = decode(request("POST", "/api/media/uploads", json.encodeToJsonElement(body)))
     suspend fun uploadStatus(id: String): UploadOut = decode(request("GET", "/api/media/uploads/${segment(id)}"))

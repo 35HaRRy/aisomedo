@@ -11,6 +11,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.*
@@ -32,6 +35,8 @@ import com.dojo.aisomedo.uploads.UploadRuntime
     DojoTheme {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val wide = maxWidth >= 600.dp
+            val scroll = rememberScrollState()
+            var viewport by remember { mutableStateOf(Rect.Zero) }
             val ready = state.phase == Phase.READY
             BackHandler(ready && (state.step != null || state.destination != Destination.DASHBOARD)) {
                 if (state.step != null) model.closeSetup() else model.navigate(Destination.DASHBOARD)
@@ -50,7 +55,7 @@ import com.dojo.aisomedo.uploads.UploadRuntime
                             selected = item == state.destination, onClick = { model.navigate(item) },
                             icon = { NavigationIcon(item) }, label = { Text(stringResource(destinationLabel(item))) }) }
                     }
-                    Column(Modifier.weight(1f).fillMaxHeight().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
+                    Column(Modifier.weight(1f).fillMaxHeight().imePadding().onGloballyPositioned { viewport = it.boundsInRoot() }.verticalScroll(scroll).padding(24.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite })
                         state.issue?.let { Text(stringResource(issueLabel(it)), color = MaterialTheme.colorScheme.error,
@@ -61,6 +66,8 @@ import com.dojo.aisomedo.uploads.UploadRuntime
                             Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup)
                             Destination.PACKAGE -> {
                                 Heading(R.string.active_package); PackageSummary(state.dashboard)
+                                MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
+                                    model::removeMedia, model::restoreMedia, model::editRanges, model::saveMediaTrims, model::discardMediaTrims)
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val issue by uploads.issue.collectAsStateWithLifecycle()

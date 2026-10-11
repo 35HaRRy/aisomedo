@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
 import com.dojo.aisomedo.auth.SessionStore
 import com.dojo.aisomedo.uploads.UploadIssue
+import com.dojo.aisomedo.editor.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -49,6 +50,9 @@ class AppViewModelTest {
             bodies["/api/setup/consent"] = """{"accepted_at":null,"text":"Politika metni","version":1}"""
             bodies["/api/setup/consent/accept"] = """{"accepted_at":"2026-10-05T12:00:00Z","version":1}"""
             bodies["/api/meta/status"] = """{"health":"not_connected"}"""
+            bodies["/api/packages/active/editor"] = editorJson()
+            bodies["/api/packages/active/order"] = "{}"
+            bodies["/api/packages/active/selections"] = "{}"
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     seen.add("${request.method} ${request.path}")
@@ -74,8 +78,141 @@ class AppViewModelTest {
         override fun close() { owner.clear(); server.shutdown(); dir.deleteRecursively() }
     }
 
+    @Test fun openingPackageReadsEditorWithoutCreatingPackage() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE)
+            repeat(30) { main.scheduler.runCurrent(); Thread.sleep(10) }
+            assertTrue("Package screen must load authoritative editor", "GET /api/packages/active/editor" in f.seen)
+            assertTrue(f.seen.none { it.startsWith("POST /api/packages") })
+        }
+    }
+
     @Test fun noOriginRequiresAddressWithoutNetwork() = runTest(main.scheduler) {
         Fixture(configure = false).use { f -> f.await { it.phase == Phase.ADDRESS }; assertEquals(0, f.server.requestCount) }
+    }
+    @Test fun packageOrderAndRemovalUseLoadedFolderAndReadBackAfterWrite() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
+            f.bodies["/api/packages/active/editor"] = editorJson(order = "\"b\",\"c\",\"a\"")
+            f.model.reorderMedia(listOf("b", "c", "a")); f.await { !it.busy }
+            assertEquals(listOf("b", "c", "a"), f.model.state.value.editor.snapshot!!.montage.order)
+            f.bodies["/api/packages/active/editor"] = editorJson(order = "\"b\",\"c\"", aStatus = "removed")
+            f.model.removeMedia("a"); f.await { !it.busy }
+            assertEquals("removed", f.model.state.value.editor.snapshot!!.media.first().status)
+            assertEquals(listOf("b", "c"), f.model.state.value.editor.snapshot!!.montage.order)
+            f.bodies["/api/packages/active/editor"] = editorJson()
+            f.model.restoreMedia("a"); f.await { !it.busy }
+            assertEquals("finalized", f.model.state.value.editor.snapshot!!.media.first().status)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val put = requests.single { it.method == "PUT" }
+            assertEquals("/api/packages/active/order", put.path)
+            assertEquals(kotlinx.serialization.json.Json.parseToJsonElement("""{"order":["b","c","a"],"expected_folder_name":"active"}"""),
+                kotlinx.serialization.json.Json.parseToJsonElement(put.body.readUtf8()))
+            val post = requests.single { it.path?.contains("/remove?") == true }
+            assertEquals("active", post.requestUrl!!.queryParameter("expected_folder_name"))
+            assertEquals("/api/packages/active/media/a/remove?expected_folder_name=active", post.path)
+            assertEquals("Bearer DEVICE", post.getHeader("Authorization"))
+            assertEquals("/api/packages/active/media/a/restore?expected_folder_name=active", requests.single { it.path?.contains("/restore?") == true }.path)
+        }
+    }
+    @Test fun trimSavePreservesOtherVideoSectionsAndInvalidDraftNeverTransfers() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
+            val count = f.server.requestCount
+            f.model.editRanges("a", listOf(RangeInput("", "3")))
+            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            assertEquals(count, f.server.requestCount)
+            f.model.editRanges("a", listOf(RangeInput("1", "3")))
+            f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":1,\"end\":3}],\"c\":[{\"start\":1,\"end\":3},{\"start\":7,\"end\":9}]")
+            f.model.saveMediaTrims(); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.dirty)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val put = requests.single { it.method == "PUT" }
+            val payload = kotlinx.serialization.json.Json.parseToJsonElement(put.body.readUtf8()).toString()
+            assertTrue(payload.contains("\"expected_folder_name\":\"active\""))
+            assertTrue(payload.contains("\"c\":[{\"end\":3.0,\"start\":1.0},{\"end\":9.0,\"start\":7.0}]"))
+        }
+    }
+    @Test fun failedPackageWriteRetainsDraftAndRequiresExplicitReadBeforeRetry() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
+            f.model.editRanges("a", listOf(RangeInput("1", "3")))
+            f.codes["/api/packages/active/selections"] = 500
+            f.model.saveMediaTrims(); f.await { !it.busy }
+            assertTrue(f.model.state.value.editor.readRequired)
+            assertEquals("1", f.model.state.value.editor.inputs["a"]!!.first().start)
+            val count = f.server.requestCount
+            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            assertEquals(count, f.server.requestCount)
+            f.model.refreshEditor(); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.readRequired)
+            assertTrue(f.model.state.value.editor.dirty)
+        }
+    }
+    @Test fun automaticRefreshDoesNotAuthorizeOverwritingConcurrentMontageChanges() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
+            f.model.editRanges("a", listOf(RangeInput("1", "3")))
+            f.bodies["/api/packages/active/editor"] = editorJson(order = "\"b\",\"a\",\"c\"")
+            f.model.refresh(); f.await { !it.busy }
+            assertTrue(f.model.state.value.editor.readRequired)
+            f.model.refreshEditor(); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.readRequired)
+            assertEquals("1", f.model.state.value.editor.inputs["a"]!!.first().start)
+        }
+    }
+    @Test fun editorReadFailureBlocksWritesAndRevocationClearsEditor() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
+            f.codes["/api/packages/active/editor"] = 503
+            f.model.refreshEditor(); f.await { !it.busy }
+            assertTrue(f.model.state.value.editor.readRequired)
+            val count = f.server.requestCount
+            f.model.removeMedia("a"); main.scheduler.runCurrent()
+            assertEquals(count, f.server.requestCount)
+            f.codes["/api/packages/active/editor"] = 401
+            f.model.refreshEditor(); f.await { it.phase == Phase.PAIRING }
+            assertNull(f.model.state.value.editor.snapshot)
+            assertNull(f.store.readToken(f.origin))
+        }
+    }
+    @Test fun orderingWithUnsavedRangesPreservesDraftAfterAcknowledgedReadBack() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
+            f.model.editRanges("a", listOf(RangeInput("1", "3")))
+            f.bodies["/api/packages/active/editor"] = editorJson(order = "\"b\",\"a\",\"c\"")
+            f.model.reorderMedia(listOf("b", "a", "c")); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.readRequired)
+            assertTrue(f.model.state.value.editor.canSave)
+            assertEquals("1", f.model.state.value.editor.inputs["a"]!!.first().start)
+        }
+    }
+    @Test fun discardingDraftCannotBypassFailedWriteReadBackGuard() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
+            f.model.editRanges("a", listOf(RangeInput("1", "3")))
+            f.codes["/api/packages/active/editor"] = 503
+            f.model.saveMediaTrims(); f.await { !it.busy }
+            assertTrue(f.model.state.value.editor.readRequired)
+            f.model.discardMediaTrims()
+            assertFalse(f.model.state.value.editor.dirty)
+            val count = f.server.requestCount
+            f.model.editRanges("c", listOf(RangeInput("2", "3")))
+            f.model.saveMediaTrims(); f.model.removeMedia("a"); main.scheduler.runCurrent()
+            assertEquals("Discard must not authorize a write from unverified snapshot", count, f.server.requestCount)
+            assertTrue(f.model.state.value.editor.readRequired)
+            f.codes["/api/packages/active/editor"] = 200
+            f.model.refreshEditor(); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.readRequired)
+        }
     }
     @Test fun backgroundAuthFailureReturnsToPairing() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->

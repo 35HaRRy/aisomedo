@@ -136,6 +136,7 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
                 "max_file_bytes", "max_package_bytes", "declared_size_bytes",
                 "received_bytes", "received_ranges",
             }
+            wide = wide or key == "size_bytes"
             kind = convert(value, wide)
             default = ""
             if key not in required:
@@ -230,6 +231,7 @@ def main() -> None:
         "BrandingDefaultsOut", "BrandingAssetOut", "StatusOut", "StartIn", "StartOut",
         "AttemptOut", "SelectIn",
         "UploadLimitsOut", "UploadInitIn", "UploadOut",
+        "ActiveEditorOut", "SelectionIn", "OrderIn",
     ]))
     ANDROID_TARGET.parent.mkdir(parents=True, exist_ok=True)
     ANDROID_TARGET.write_text("\n".join(kt_lines), encoding="utf-8")

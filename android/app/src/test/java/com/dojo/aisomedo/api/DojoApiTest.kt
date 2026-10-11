@@ -11,6 +11,24 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class DojoApiTest {
+    @Test fun mediaMutationsEncodeIdentityAndNeverUseUnguardedLegacyTrims() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient())
+            repeat(3) { server.enqueue(MockResponse().setBody("{}")) }
+            api.removeMedia("folder +/", "id/+?")
+            api.restoreMedia("folder +/", "id/+?")
+            api.selectVideoRanges("folder +/", mapOf("id/+?" to listOf(VideoRangeOut(start = 1.0, end = 2.0))))
+            val remove = server.takeRequest()
+            assertEquals("/api/packages/active/media/id%2F%2B%3F/remove", remove.requestUrl!!.encodedPath)
+            assertEquals("folder +/", remove.requestUrl!!.queryParameter("expected_folder_name"))
+            assertEquals("Bearer SYNTHETIC", remove.getHeader("Authorization"))
+            assertEquals("5", remove.getHeader("X-Android-Version-Code"))
+            assertEquals("/api/packages/active/media/id%2F%2B%3F/restore", server.takeRequest().requestUrl!!.encodedPath)
+            val selections = server.takeRequest()
+            assertEquals("/api/packages/active/selections", selections.path)
+            assertEquals(Json.parseToJsonElement("""{"expected_folder_name":"folder +/","selections":{"id/+?":[{"start":1.0,"end":2.0}]}}"""), Json.parseToJsonElement(selections.body.readUtf8()))
+        }
+    }
     private val upload = """{"upload_id":"saved","declared_size_bytes":2147483648,"received_bytes":2147483648,"received_ranges":[[0,2147483648]],"status":"receiving","conflicts":[{"media_id":"target","size_bytes":3,"preview":{"ready":true}}]}"""
     @Test fun uploadMethodsPreserveLargeOffsetsAndCancellation() = runBlocking {
         MockWebServer().use { server ->

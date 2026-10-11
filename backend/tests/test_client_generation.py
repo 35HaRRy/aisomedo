@@ -102,6 +102,22 @@ def test_kotlin_preserves_required_null_and_defaults():
     assert output.index("class Child") < output.index("class Root")
 
 
+def test_android_editor_generation_emits_nested_selections_and_large_media(tmp_path):
+    from backend.main import create_app
+
+    module = generator()
+    module.ROOT = tmp_path
+    module.WEB_TARGET = tmp_path / "web.ts"
+    module.ANDROID_TARGET = tmp_path / "client.kt"
+    (tmp_path / "openapi.json").write_text(json.dumps(create_app().openapi()), encoding="utf-8")
+    module.main()
+    kotlin = module.ANDROID_TARGET.read_text(encoding="utf-8")
+    assert "val montage: MontageOut" in kotlin
+    assert "val selections: Map<String, List<VideoRangeOut>>" in kotlin
+    assert "val expectedFolderName: String" in kotlin
+    assert "val sizeBytes: Long" in kotlin
+
+
 @pytest.mark.parametrize("bad", [
     {"allOf": [{"type": "string"}, {"type": "integer"}]},
     {"anyOf": [{"type": "string"}, {"type": "integer"}]},
