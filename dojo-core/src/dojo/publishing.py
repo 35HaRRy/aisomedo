@@ -38,6 +38,8 @@ from dojo.exceptions import (
     MontageOrderInvalid,
     MontageTrimInvalid,
     NoActivePackage,
+    OccurrenceChanged,
+    OccurrenceNotFound,
     PackageChanged,
     PackageCompleted,
     PackageLimitExceeded,
@@ -2440,6 +2442,80 @@ class DojoPublishing:
 
     def create_review(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
+
+    def _require_empty_occurrence(
+        self, occurrence_id: int, expected_folder_name: str,
+    ) -> YayinZamani:
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("publication must be reconciled first")
+        occurrence = next((o for o in self._schedule.list_all() if o.id == occurrence_id), None)
+        if occurrence is None:
+            raise OccurrenceNotFound(f"occurrence {occurrence_id} not found")
+        package = self._packages.get_active()
+        if (occurrence.status != "pending" or occurrence.due_at > self._clock.now()
+                or package is None or package.folder_name != expected_folder_name
+                or self._reviews.has_for_occurrence(occurrence_id)
+                or self._finalized_in_order(self._load_manifest(package))):
+            raise OccurrenceChanged("empty occurrence changed; refresh before deciding")
+        return occurrence
+
+    @_package_operation
+    def skip_empty_occurrence(
+        self, occurrence_id: int, expected_folder_name: str, *, confirmed: bool,
+        requester: str | None = None,
+    ) -> dict[str, object]:
+        if not confirmed:
+            raise SkipRequiresConfirmation("skip requires explicit confirmation")
+        with self._schedule.emission_transaction():
+            occurrence = self._require_empty_occurrence(occurrence_id, expected_folder_name)
+            self._resolve_occurrence(occurrence.id, self._clock.now())
+            return self._empty_decision_result(
+                occurrence.id, expected_folder_name, "skipped", requester=requester,
+            )
+
+    @_package_operation
+    def reschedule_empty_occurrence(
+        self, occurrence_id: int, expected_folder_name: str, new_due_at: datetime, *,
+        requester: str | None = None,
+    ) -> dict[str, object]:
+        if new_due_at.tzinfo is None:
+            new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
+        if new_due_at <= self._clock.now():
+            raise RescheduleTimeInvalid("reschedule time must be in the future")
+        with self._schedule.emission_transaction():
+            occurrence = self._require_empty_occurrence(occurrence_id, expected_folder_name)
+            now = self._clock.now()
+            if occurrence.kind == "oneoff":
+                oneoff = self._schedule.update(replace(occurrence, due_at=new_due_at))
+            else:
+                self._resolve_occurrence(occurrence.id, now)
+                oneoff = self._schedule.create(YayinZamani(
+                    id=0, kind="oneoff", due_at=new_due_at, status="pending", created_at=now,
+                ))
+            return self._empty_decision_result(
+                occurrence.id, expected_folder_name, "rescheduled", requester=requester,
+                oneoff=oneoff,
+            )
+
+    def _empty_decision_result(
+        self, occurrence_id: int, folder: str, status: str, *, requester: str | None,
+        oneoff: YayinZamani | None = None,
+    ) -> dict[str, object]:
+        now = self._clock.now()
+        regular = self._schedule.next_regular_after(now)
+        result: dict[str, object] = {
+            "occurrence_id": occurrence_id, "package_folder": folder, "status": status,
+            "next_regular_at": regular.due_at if regular else None,
+            "oneoff_occurrence_id": oneoff.id if oneoff else None,
+            "new_due_at": oneoff.due_at if oneoff else None,
+        }
+        self._audit.append(AuditEvent(
+            action=f"occurrence.{status}", actor=requester or "system", occurred_at=now,
+            details={**result,
+                     "next_regular_at": regular.due_at.isoformat() if regular else None,
+                     "new_due_at": oneoff.due_at.isoformat() if oneoff else None},
+        ))
+        return result
 
     @_package_operation
     def approve(

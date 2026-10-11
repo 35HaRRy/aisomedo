@@ -70,6 +70,8 @@ export const API_PATHS: readonly string[] = [
   "/api/pairing/me",
   "/api/pairing/me/push-token",
   "/api/pairing/validate",
+  "/api/reviews/occurrences/{occurrence_id}/reschedule",
+  "/api/reviews/occurrences/{occurrence_id}/skip",
   "/api/reviews/pending",
   "/api/reviews/{review_id}",
   "/api/reviews/{review_id}/approve",
@@ -260,6 +262,16 @@ export type EditorMediaOut = {
   "uploaded_at": string;
 };
 
+export type EmptyRescheduleIn = {
+  "expected_folder_name": string;
+  "new_due_at": string;
+};
+
+export type EmptySkipIn = {
+  "confirmed"?: boolean;
+  "expected_folder_name": string;
+};
+
 export type MetaCandidateOut = {
   "ig_user_id": string;
   "ig_username": string;
@@ -287,6 +299,15 @@ export type MontageOut = {
   "required_action": string | null;
   "selections": Record<string, Array<VideoRangeOut>>;
   "trims": Record<string, VideoRangeOut>;
+};
+
+export type OccurrenceDecisionOut = {
+  "new_due_at": string | null;
+  "next_regular_at": string | null;
+  "occurrence_id": number;
+  "oneoff_occurrence_id": number | null;
+  "package_folder": string;
+  "status": string;
 };
 
 export type PackageArtifactOut = {

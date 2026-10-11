@@ -546,6 +546,9 @@ class InMemoryStore:
             None,
         )
 
+    def has_for_occurrence(self, occurrence_id: int) -> bool:
+        return any(r.occurrence_id == occurrence_id for r in self._reviews)
+
     def list_pending(self) -> list[YayinIncelemesi]:
         return [r for r in self._reviews if r.status == "pending"]
 

@@ -1,11 +1,42 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 
 import pytest
 from dojo.adapters.stubs import StubReelRenderer
 from dojo.testing import FIXED_AT
 from test_package_editor_api import app
+
+
+@pytest.mark.parametrize("action", ["skip", "reschedule"])
+def test_empty_decisions_require_pairing_and_exact_folder(tmp_path, action):
+    client, publishing, pairing, cid, _ = app(tmp_path, kind="device", finalize=False)
+    folder = publishing.get_or_create_active_package().folder_name
+    occ = publishing.manual_publish()
+    path = f"/api/reviews/occurrences/{occ.id}/{action}"
+    body = {"expected_folder_name": folder, "confirmed": True,
+            "new_due_at": (FIXED_AT + timedelta(days=1)).isoformat()}
+    before = publishing._schedule.list_all()
+    bad = body | {"expected_folder_name": "old-package"}
+    assert client.post(path, json=bad).status_code == 409
+    assert publishing._schedule.list_all() == before
+    if action == "skip":
+        assert client.post(path, json=body | {"confirmed": False}).status_code == 400
+    else:
+        past = body | {"new_due_at": FIXED_AT.isoformat()}
+        assert client.post(path, json=past).status_code == 400
+    assert client.post(path.replace(str(occ.id), "999"), json=body).status_code == 404
+    response = client.post(path, json=body)
+    assert response.status_code == 200
+    assert response.json()["status"] == ("skipped" if action == "skip" else "rescheduled")
+    assert response.json()["package_folder"] == folder
+    assert response.json()["occurrence_id"] == occ.id
+    assert publishing.list_audit()[0].actor == str(cid)
+    assert client.post(path, json=body).status_code == 409
+    pairing.revoke_client(client_id=cid, requester="cli")
+    assert client.post(path, json=body).status_code == 401
+
 
 
 def ready_review(tmp_path):

@@ -39,6 +39,11 @@ data class ActiveEditorOut(
 )
 
 @Serializable
+data class ApproveIn(
+    @SerialName("version") val version: Int,
+)
+
+@Serializable
 data class AttemptOut(
     @SerialName("candidates") val candidates: List<MetaCandidateOut>,
     @SerialName("id") val id: String,
@@ -144,6 +149,18 @@ data class EditorMediaOut(
 )
 
 @Serializable
+data class EmptyRescheduleIn(
+    @SerialName("expected_folder_name") val expectedFolderName: String,
+    @SerialName("new_due_at") val newDueAt: String,
+)
+
+@Serializable
+data class EmptySkipIn(
+    @SerialName("confirmed") val confirmed: Boolean = false,
+    @SerialName("expected_folder_name") val expectedFolderName: String,
+)
+
+@Serializable
 data class MetaCandidateOut(
     @SerialName("ig_user_id") val igUserId: String,
     @SerialName("ig_username") val igUsername: String,
@@ -173,6 +190,16 @@ data class MontageOut(
     @SerialName("required_action") val requiredAction: String?,
     @SerialName("selections") val selections: Map<String, List<VideoRangeOut>>,
     @SerialName("trims") val trims: Map<String, VideoRangeOut>,
+)
+
+@Serializable
+data class OccurrenceDecisionOut(
+    @SerialName("new_due_at") val newDueAt: String?,
+    @SerialName("next_regular_at") val nextRegularAt: String?,
+    @SerialName("occurrence_id") val occurrenceId: Int,
+    @SerialName("oneoff_occurrence_id") val oneoffOccurrenceId: Int?,
+    @SerialName("package_folder") val packageFolder: String,
+    @SerialName("status") val status: String,
 )
 
 @Serializable
@@ -232,11 +259,54 @@ data class ProcessedMetadataOut(
 )
 
 @Serializable
+data class PushTokenIn(
+    @SerialName("token") val token: String,
+)
+
+@Serializable
+data class RenderIn(
+    @SerialName("expected_folder_name") val expectedFolderName: String,
+    @SerialName("retry") val retry: Boolean = false,
+)
+
+@Serializable
+data class RenderOut(
+    @SerialName("render_revision") val renderRevision: String,
+    @SerialName("stale") val stale: Boolean,
+)
+
+@Serializable
+data class RescheduleIn(
+    @SerialName("new_due_at") val newDueAt: String,
+    @SerialName("version") val version: Int,
+)
+
+@Serializable
 data class ResolveConflictIn(
     @SerialName("apply_to_all") val applyToAll: Boolean = false,
     @SerialName("confirmed_overwrite") val confirmedOverwrite: Boolean = false,
     @SerialName("decision") val decision: String,
     @SerialName("target_media_id") val targetMediaId: String? = null,
+)
+
+@Serializable
+data class ReviewDetailOut(
+    @SerialName("next_regular_at") val nextRegularAt: String?,
+    @SerialName("preview_url") val previewUrl: String?,
+    @SerialName("render_ready") val renderReady: Boolean,
+    @SerialName("review") val review: ReviewOut,
+)
+
+@Serializable
+data class ReviewOut(
+    @SerialName("caption") val caption: String?,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("id") val id: Int,
+    @SerialName("occurrence_id") val occurrenceId: Int,
+    @SerialName("package_folder") val packageFolder: String,
+    @SerialName("revision_digest") val revisionDigest: String,
+    @SerialName("status") val status: String,
+    @SerialName("version") val version: Int,
 )
 
 @Serializable
@@ -263,6 +333,12 @@ data class SetupItemOut(
 data class SetupOut(
     @SerialName("checklist") val checklist: List<SetupItemOut>,
     @SerialName("ready") val ready: Boolean,
+)
+
+@Serializable
+data class SkipIn(
+    @SerialName("confirmed") val confirmed: Boolean = false,
+    @SerialName("version") val version: Int,
 )
 
 @Serializable
