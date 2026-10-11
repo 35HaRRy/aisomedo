@@ -15,6 +15,22 @@ import org.junit.Test
 
 class ReviewNotificationsTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
+    @Test fun authoritativeReconciliationRemovesResolvedAndReplacedTargetsButKeepsUploads() {
+        UploadDeviceFixture().use { fixture ->
+            val manager = context.getSystemService(NotificationManager::class.java)
+            val renderer = ReviewNotifications(context)
+            val dashboard = kotlinx.serialization.json.Json.decodeFromString<com.dojo.aisomedo.api.DashboardOut>("""{"generated_at":"now","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}""")
+            try {
+                renderer.show(NotificationTarget("review_required", "active", 7, 3), "Review", "body", fixture.binding)
+                renderer.show(NotificationTarget("empty_package", "active", occurrenceId = 2, action = ReviewAction.UPLOAD), "Empty", "body", fixture.binding)
+                manager.notify(3301, UploadNotifications(context).build(null))
+                assertTrue(manager.activeNotifications.any { it.tag == "review:7" })
+                renderer.reconcile(dashboard, fixture.origin, fixture.binding)
+                assertTrue(manager.activeNotifications.none { it.tag == "review:7" || it.tag == "occurrence:2" })
+                assertTrue(manager.activeNotifications.any { it.id == 3301 })
+            } finally { renderer.clear(); manager.cancel(3301) }
+        }
+    }
     @Test fun shortcutsAreExplicitImmutableAndDistinct() {
         val renderer = ReviewNotifications(context)
         val target = NotificationTarget("review_required", "active", 7, 3)

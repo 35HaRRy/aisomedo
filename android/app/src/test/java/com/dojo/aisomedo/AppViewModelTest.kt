@@ -431,6 +431,113 @@ class AppViewModelTest {
     private fun Fixture.uploadRow(phase: UploadPhase, binding: String = store.readSession(origin)!!.bindingId) =
         UploadRecord("synthetic", origin, binding, "content://synthetic/clip", "clip.mp4", "video/mp4", 1, phase = phase)
 
+    @Test fun continuationSelectionRejectsStaleTargetAndReplacementDuringPicker() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            val packageId = f.model.reviewUploadPackageId!!
+            var selections = 0
+            f.pendingDashboard(folder = "replacement")
+            f.model.enqueueReviewUploads(packageId) { selections++ }
+            f.await { !it.review.busy }
+            assertEquals(0, selections)
+            assertNull(f.model.reviewUploadPackageId)
+            f.model.enqueueReviewUploads(packageId) { selections++ }
+            main.scheduler.runCurrent()
+            assertEquals(0, selections)
+        }
+    }
+    @Test fun preparingHistoricalReviewDoesNotStealContinuationFromReadySuccessor() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            f.pendingDashboard("preparing", 7)
+            f.bodies["/api/reviews/7"] = reviewJson(ready = false)
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertNull(f.model.state.value.review.target!!.reviewId)
+            assertEquals(ReviewAction.UPLOAD, f.model.state.value.review.target!!.action)
+            f.pendingDashboard("review_ready", 8)
+            val dashboard = kotlinx.serialization.json.Json.parseToJsonElement(f.bodies["/api/dashboard"]!!).jsonObject
+            val old = kotlinx.serialization.json.Json.parseToJsonElement("""{"due_at":"now","occurrence_id":2,"package_folder":"active","review_id":7,"state":"preparing","version":3}""")
+            f.bodies["/api/dashboard"] = kotlinx.serialization.json.JsonObject(dashboard + ("pending_actions" to kotlinx.serialization.json.JsonArray(listOf(old) + dashboard["pending_actions"]!!.jsonArray))).toString()
+            f.bodies["/api/reviews/8"] = reviewJson(id = 8)
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertEquals(8, f.model.state.value.review.target!!.reviewId)
+            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+        }
+    }
+    @Test fun failedGlobalRefreshBlocksAllReviewMutationsUntilRecovery() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.codes["/api/compat"] = 503
+            f.model.refresh(); f.await { !it.busy }
+            assertTrue(f.model.state.value.stale)
+            f.model.approveReview()
+            f.await { !it.review.busy }
+            f.model.requestReviewAction(ReviewAction.SKIP); f.model.skipReview()
+            f.await { !it.review.busy }
+            f.model.requestReviewAction(ReviewAction.RESCHEDULE)
+            f.model.rescheduleReview(java.time.LocalDate.of(2099, 10, 19), java.time.LocalTime.NOON)
+            f.await { !it.review.busy }
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+            f.codes.remove("/api/compat")
+            f.model.refresh(); f.await { !it.busy && !it.review.busy }
+            assertFalse(f.model.state.value.stale)
+        }
+    }
+    @Test fun conflictReadbackRefreshesHandledInboxWithoutReplay() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.pendingDashboard("review_ready", 7)
+            f.openPreparedReview()
+            f.codes["/api/reviews/7/approve"] = 409
+            f.bodies["/api/reviews/7"] = reviewJson(status = "approved", version = 4)
+            f.pendingDashboard(includeOriginal = false)
+            f.model.approveReview(); f.await { !it.review.busy }
+            assertEquals(ReviewIssue.ALREADY_HANDLED, f.model.state.value.review.issue)
+            f.model.closeReview()
+            assertTrue(f.model.state.value.dashboard!!.pendingActions.isEmpty())
+            assertEquals(1, f.seen.count { it == "POST /api/reviews/7/approve" })
+        }
+    }
+    @Test fun foregroundReceiptRefreshesInboxOnlyForCurrentSession() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.pendingDashboard("review_ready", 7)
+            val binding = f.store.readSession(f.origin)!!.bindingId
+            f.model.observePushReceipt(PushReceipt(f.origin, "old"))
+            main.scheduler.runCurrent()
+            assertTrue(f.model.state.value.dashboard!!.pendingActions.isEmpty())
+            f.model.observePushReceipt(PushReceipt(f.origin, binding))
+            f.await { !it.busy }
+            assertEquals(7, f.model.state.value.dashboard!!.pendingActions.single().reviewId)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun receiptDuringActiveRefreshQueuesAuthoritativeFollowup() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val reads = f.seen.count { it == "GET /api/dashboard" }
+            f.delayPath = "/api/dashboard"
+            f.model.refresh()
+            f.await { f.seen.count { path -> path == "GET /api/dashboard" } > reads }
+            f.pendingDashboard("review_ready", 7)
+            f.model.observePushReceipt(PushReceipt(f.origin, f.store.readSession(f.origin)!!.bindingId))
+            f.delayPath = null
+            f.await { !it.busy }
+            assertEquals(7, f.model.state.value.dashboard!!.pendingActions.singleOrNull()?.reviewId)
+            assertEquals(reads + 2, f.seen.count { it == "GET /api/dashboard" })
+        }
+    }
+    @Test fun explicitSuccessfulRefreshAdvancesAuthoritativeDashboardEvenIfPayloadUnchanged() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val first = f.model.state.value.dashboardRevision
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals(first + 1, f.model.state.value.dashboardRevision)
+            f.codes["/api/dashboard"] = 503
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals(first + 1, f.model.state.value.dashboardRevision)
+        }
+    }
+
     @Test fun unresolvedLocalUploadsCannotRenderAndForeignSessionRowsDoNotBlock() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.openEmptyContinuation()

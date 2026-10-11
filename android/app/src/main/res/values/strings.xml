@@ -1,4 +1,5 @@
 <resources>
+    <string name="push_registering">Bildirim kaydı doğrulanıyor</string>
     <string name="review_continue_title">Bekleyen Yayın Zamanı</string>
     <string name="review_continue_help">Aşağıdan medya yükleyin ve montajı düzenleyin. Aynı Yayın Zamanı için Reel hazırlanacak.</string>
     <string name="review_continue_waiting">Reel hazırlanıyor. Hazır olduğunda aynı Yayın Zamanının incelemesi açılır.</string>

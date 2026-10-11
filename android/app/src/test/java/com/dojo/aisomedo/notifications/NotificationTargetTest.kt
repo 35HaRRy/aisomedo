@@ -5,6 +5,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NotificationTargetTest {
+    @Test fun dashboardReconciliationRequiresExactFolderVersionAndReadyState() {
+        val dashboard = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString<com.dojo.aisomedo.api.DashboardOut>("""{"generated_at":"now","package":null,"next_slot":null,"pending_actions":[{"due_at":"now","occurrence_id":2,"package_folder":"active","review_id":7,"state":"review_ready","version":3},{"due_at":"now","occurrence_id":4,"package_folder":"empty","review_id":null,"state":"empty_package","version":null}],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}""")
+        val review = NotificationTarget("review_required", "active", 7, 3)
+        assertTrue(review.isPendingIn(dashboard))
+        assertFalse(review.copy(reviewVersion = 2).isPendingIn(dashboard))
+        assertFalse(review.copy(packageFolder = "replacement").isPendingIn(dashboard))
+        assertFalse(review.copy(reviewId = 8).isPendingIn(dashboard))
+        assertFalse(review.isPendingIn(dashboard.copy(pendingActions = emptyList())))
+        val empty = NotificationTarget("empty_package", "empty", occurrenceId = 4, action = ReviewAction.UPLOAD)
+        assertTrue(empty.isPendingIn(dashboard))
+        assertFalse(empty.copy(packageFolder = "old").isPendingIn(dashboard))
+        assertFalse(empty.isPendingIn(dashboard.copy(pendingActions = dashboard.pendingActions.map { it.copy(state = "preparing") })))
+        assertTrue(NotificationTarget("publication_confirmed", "completed").isPendingIn(dashboard))
+    }
     private val review = mapOf("type" to "review_required", "review_id" to "7", "review_version" to "3", "package_folder" to "active")
     @Test fun validReviewEmptyAndOutcomesRouteWithoutAnApproveAction() {
         assertEquals(NotificationTarget("review_required", "active", 7, 3), parseNotificationTarget(review))

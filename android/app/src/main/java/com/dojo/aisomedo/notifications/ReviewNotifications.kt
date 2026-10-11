@@ -3,9 +3,11 @@ package com.dojo.aisomedo.notifications
 import android.app.*
 import android.content.*
 import android.net.Uri
+import android.os.Bundle
 import androidx.core.app.NotificationCompat
 import com.dojo.aisomedo.MainActivity
 import com.dojo.aisomedo.R
+import com.dojo.aisomedo.api.DashboardOut
 import com.dojo.aisomedo.reviews.ReviewAction
 import com.dojo.aisomedo.uploads.UploadRuntime
 
@@ -35,6 +37,10 @@ class ReviewNotifications(private val context: Context) {
         val builder = NotificationCompat.Builder(context, channel).setSmallIcon(R.drawable.ic_review)
             .setContentTitle(title.take(256)).setContentText(body.take(2048)).setStyle(NotificationCompat.BigTextStyle().bigText(body.take(2048)))
             .setAutoCancel(true).setContentIntent(pendingIntent(target, origin, bindingId))
+            .addExtras(Bundle().apply {
+                target.data().forEach { (key, value) -> putString(key, value) }
+                putString("notification_origin", origin); putString("notification_binding", bindingId)
+            })
         if (actionable) for (action in listOf(target.action, ReviewAction.SKIP, ReviewAction.RESCHEDULE).distinct()) {
             val label = when (action) { ReviewAction.SKIP -> R.string.review_skip; ReviewAction.RESCHEDULE -> R.string.review_reschedule
                 ReviewAction.UPLOAD -> R.string.review_upload; else -> R.string.review_open }
@@ -45,5 +51,14 @@ class ReviewNotifications(private val context: Context) {
     }
     fun cancelReview(id: Int) { manager.cancel("review:$id", 3601) }
     fun cancelOccurrence(id: Int) { manager.cancel("occurrence:$id", 3601) }
+    fun reconcile(dashboard: DashboardOut, origin: String, bindingId: String) {
+        manager.activeNotifications.filter { it.id == 3601 }.forEach { item ->
+            val extras = item.notification.extras
+            val data = extras.keySet().mapNotNull { key -> (extras.get(key) as? String)?.let { key to it } }.toMap()
+            val target = parseNotificationTarget(data)
+            if (data["notification_origin"] != origin || data["notification_binding"] != bindingId ||
+                target == null || !target.isPendingIn(dashboard)) manager.cancel(item.tag, item.id)
+        }
+    }
     fun clear() { manager.activeNotifications.filter { it.id == 3601 || it.notification.channelId == "dojo-publications" }.forEach { manager.cancel(it.tag, it.id) } }
 }

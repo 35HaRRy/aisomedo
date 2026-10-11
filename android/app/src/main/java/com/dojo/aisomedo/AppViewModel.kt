@@ -32,6 +32,7 @@ data class AppUiState(
     val client: ClientOut? = null,
     val compat: CompatInfo? = null,
     val dashboard: DashboardOut? = null,
+    val dashboardRevision: Long = 0,
     val setup: SetupOut? = null,
     val destination: Destination = Destination.DASHBOARD,
     val step: String? = null,
@@ -71,6 +72,7 @@ class AppViewModel(
     private var prompted = false
     private var reviewJob: Job? = null
     private var reviewEpoch = 0
+    private var pendingPushRefresh = false
 
     init {
         mutable.update { it.copy(
@@ -94,7 +96,10 @@ class AppViewModel(
             try { action(current) }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (generation == current) failure(e, pairing) }
-            finally { if (generation == current) mutable.update { it.copy(busy = false) } }
+            finally { if (generation == current) {
+                mutable.update { it.copy(busy = false) }
+                if (pendingPushRefresh) { pendingPushRefresh = false; if (state.value.phase == Phase.READY) refresh() }
+            } }
         }
     }
 
@@ -179,7 +184,7 @@ class AppViewModel(
             step = saved.get<String>("step") ?: if (!setup.ready) setup.checklist.firstOrNull { it.required && !it.complete }?.key else null
         }
         val destination = Destination.entries.firstOrNull { it.name == saved.get<String>("destination") } ?: state.value.destination
-        mutable.update { it.copy(phase = Phase.READY, client = client, setup = setup, dashboard = dashboard, step = step, destination = destination, stale = false) }
+        mutable.update { it.copy(phase = Phase.READY, client = client, setup = setup, dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, step = step, destination = destination, stale = false) }
         if (step != null) loadConfiguration(current)
         checkKnownAttempt(current)
         if (state.value.destination == Destination.PACKAGE) loadEditor(current)
@@ -238,7 +243,7 @@ class AppViewModel(
             else -> Unit
         }
     }
-    private fun cancelWork() { generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null; clearNotificationSaved() }
+    private fun cancelWork() { generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null; pendingPushRefresh = false; clearNotificationSaved() }
     private fun checkSession(current: Int) {
         if (generation != current) throw CancellationException("Session changed")
     }
@@ -611,6 +616,14 @@ class AppViewModel(
             runCatching { store.readSession(failure.origin)?.bindingId }.getOrNull() != failure.bindingId) return
         if (failure.status in setOf(401, 426)) failure(ApiFailure(failure.status, failure.updateUrl))
     }
+    val currentBindingId: String? get() = bindingId?.takeIf {
+        runCatching { store.readSession(state.value.origin)?.bindingId == it }.getOrDefault(false)
+    }
+    fun observePushReceipt(receipt: PushReceipt) {
+        if (receipt.origin == state.value.origin && receipt.bindingId == currentBindingId && state.value.phase == Phase.READY) {
+            if (state.value.busy) pendingPushRefresh = true else refresh()
+        }
+    }
 
     private fun saveReviewTarget(target: ReviewTarget) {
         saved["review_id"] = target.reviewId
@@ -658,7 +671,7 @@ class AppViewModel(
         }
     }
     private fun reviewWork(mutation: Boolean = false, action: suspend (Int, Int) -> Unit) {
-        if (state.value.phase != Phase.READY || state.value.review.busy || state.value.review.target == null || mutation && state.value.busy) return
+        if (state.value.phase != Phase.READY || state.value.review.busy || state.value.review.target == null || mutation && (state.value.busy || state.value.stale)) return
         val current = generation
         val epoch = reviewEpoch
         mutable.update { it.copy(review = it.review.copy(busy = true)) }
@@ -715,6 +728,13 @@ class AppViewModel(
             require(detail.review.id > 0 && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank() &&
                 detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "approved", "skipped", "rescheduled"))
             saved.get<Int>("review_source_occurrence")?.let { require(detail.review.occurrenceId == it) }
+            val source = saved.get<Int>("review_source_occurrence")
+            if (source != null && detail.review.status == "pending" && !detail.renderReady) {
+                val next = ReviewTarget(occurrenceId = source, packageFolder = target.packageFolder, action = ReviewAction.UPLOAD)
+                saveReviewTarget(next); saved["review_continuing"] = true
+                mutable.update { it.copy(review = ReviewState(target = next, busy = true, continuing = true)) }
+                loadReview(current, epoch); return
+            }
             val issue = when {
                 detail.review.id != target.reviewId || target.packageFolder != null && target.packageFolder != detail.review.packageFolder -> ReviewIssue.STALE
                 detail.review.status != "pending" -> ReviewIssue.ALREADY_HANDLED
@@ -735,24 +755,32 @@ class AppViewModel(
         } else {
             val dashboard = transport.dashboard()
             checkReview(current, epoch)
-            val pending = dashboard.pendingActions.find { it.occurrenceId == target.occurrenceId }
+            val matches = dashboard.pendingActions.filter { it.occurrenceId == target.occurrenceId }
+            val pending = matches.find { it.packageFolder == target.packageFolder && it.state == "review_ready" } ?: matches.firstOrNull()
             val issue = when {
                 pending == null -> ReviewIssue.ALREADY_HANDLED
                 pending.packageFolder != target.packageFolder || dashboard.`package`?.folderName != target.packageFolder -> ReviewIssue.PACKAGE_CHANGED
                 pending.state !in setOf("empty_package", "preparing", "review_ready") -> ReviewIssue.STALE
                 else -> null
             }
-            mutable.update { it.copy(dashboard = dashboard, review = it.review.copy(readRequired = issue != null || pending?.state != "empty_package",
+            mutable.update { it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, review = it.review.copy(readRequired = issue != null || pending?.state != "empty_package",
                 issue = issue, continuing = it.review.continuing && issue == null,
                 nextRegularAt = it.review.nextRegularAt ?: dashboard.nextSlot?.takeIf { slot -> slot.kind == "regular" }?.dueAt)) }
             if (issue != null) { saved["review_continuing"] = false; return }
-            if (pending?.reviewId != null) {
-                saved["review_source_occurrence"] = target.occurrenceId
-                val next = ReviewTarget(reviewId = pending.reviewId, packageFolder = target.packageFolder, expectedVersion = pending.version)
-                saveReviewTarget(next); saved["review_continuing"] = false
-                mutable.update { it.copy(review = ReviewState(target = next, busy = true)) }
-                loadReview(current, epoch)
-            } else if (target.action == ReviewAction.UPLOAD || state.value.review.continuing) {
+            if (pending?.reviewId != null && pending.state == "review_ready") {
+                val detail = transport.review(pending.reviewId)
+                checkReview(current, epoch)
+                if (detail.renderReady && detail.review.status == "pending" && detail.review.id == pending.reviewId &&
+                    detail.review.occurrenceId == target.occurrenceId && detail.review.packageFolder == target.packageFolder &&
+                    detail.review.version == pending.version && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank()) {
+                    saved["review_source_occurrence"] = target.occurrenceId
+                    val next = ReviewTarget(reviewId = pending.reviewId, packageFolder = target.packageFolder, expectedVersion = pending.version)
+                    saveReviewTarget(next); saved["review_continuing"] = false
+                    mutable.update { it.copy(review = ReviewState(target = next, detail = detail, busy = true, nextRegularAt = detail.nextRegularAt)) }
+                    return
+                }
+            }
+            if (target.action == ReviewAction.UPLOAD || state.value.review.continuing) {
                 val snapshot = transport.mediaEditor()
                 checkReview(current, epoch)
                 if (snapshot.`package`.folderName != target.packageFolder || snapshot.`package`.status != "active") {
@@ -760,7 +788,7 @@ class AppViewModel(
                     mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.PACKAGE_CHANGED, readRequired = true, continuing = false)) }
                 } else {
                     val failed = snapshot.renderStatus == "failed"
-                    mutable.update { it.copy(editor = it.editor.accept(snapshot), review = it.review.copy(issue = if (failed) ReviewIssue.RENDER_FAILED else null,
+                    mutable.update { it.copy(editor = it.editor.accept(snapshot), review = it.review.copy(uploadPackageId = snapshot.`package`.id, issue = if (failed) ReviewIssue.RENDER_FAILED else null,
                         continuing = it.review.continuing && !failed)) }
                     if (failed) saved["review_continuing"] = false
                 }
@@ -775,6 +803,23 @@ class AppViewModel(
         saveReviewTarget(updated)
         mutable.update { it.copy(review = it.review.copy(target = updated)) }
         if (action == ReviewAction.UPLOAD && target.occurrenceId != null) navigate(Destination.PACKAGE)
+    }
+    val reviewUploadPackageId: Int? get() {
+        val current = state.value
+        val review = current.review
+        if (current.phase != Phase.READY || current.stale || current.busy || review.busy ||
+            review.target?.action != ReviewAction.UPLOAD || review.target.occurrenceId == null ||
+            review.issue !in setOf(null, ReviewIssue.MEDIA_REQUIRED, ReviewIssue.UPLOAD_PENDING, ReviewIssue.RENDER_FAILED)) return null
+        return review.uploadPackageId
+    }
+    fun enqueueReviewUploads(expectedPackageId: Int, enqueue: (Int) -> Unit) {
+        if (reviewUploadPackageId != expectedPackageId) return
+        reviewWork { current, epoch ->
+            loadReview(current, epoch)
+            val review = state.value.review
+            if (!state.value.stale && review.target?.action == ReviewAction.UPLOAD &&
+                review.uploadPackageId == expectedPackageId && review.issue in setOf(null, ReviewIssue.RENDER_FAILED)) enqueue(expectedPackageId)
+        }
     }
     fun continueReview(uploadRows: List<UploadRecord>, retry: Boolean = false) {
         val review = state.value.review
@@ -857,18 +902,29 @@ class AppViewModel(
                 checkReview(current, epoch)
                 mutable.update { it.copy(review = it.review.copy(readRequired = true, publication = result?.get("publication") as? JsonObject)) }
                 loadReview(current, epoch)
-                val dashboard = transport.dashboard()
-                checkReview(current, epoch)
-                mutable.update { it.copy(dashboard = dashboard) }
+                refreshReviewDashboard(current, epoch)
             } catch (e: ApiFailure) {
                 checkReview(current, epoch)
                 if (e.status == 409) {
                     loadReview(current, epoch)
                     mutable.update { it.copy(review = it.review.copy(readRequired = true,
                         issue = if (it.review.detail?.review?.status?.let { status -> status != "pending" } == true)
-                            ReviewIssue.ALREADY_HANDLED else ReviewIssue.STALE)) }
+                             ReviewIssue.ALREADY_HANDLED else ReviewIssue.STALE)) }
+                    refreshReviewDashboard(current, epoch)
                 } else throw e
             }
+        }
+    }
+    private suspend fun refreshReviewDashboard(current: Int, epoch: Int) {
+        try {
+            val dashboard = api().dashboard()
+            checkReview(current, epoch)
+            mutable.update { it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, stale = false) }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            checkReview(current, epoch)
+            if (e is ApiFailure && e.status in setOf(401, 426)) throw e
+            mutable.update { it.copy(stale = true, issue = UiIssue.NETWORK) }
         }
     }
 }

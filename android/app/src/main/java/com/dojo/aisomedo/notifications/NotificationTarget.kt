@@ -1,6 +1,7 @@
 package com.dojo.aisomedo.notifications
 
 import com.dojo.aisomedo.reviews.ReviewAction
+import com.dojo.aisomedo.api.DashboardOut
 
 data class NotificationTarget(val type: String, val packageFolder: String, val reviewId: Int? = null,
     val reviewVersion: Int? = null, val occurrenceId: Int? = null, val action: ReviewAction = ReviewAction.REVIEW) {
@@ -30,5 +31,21 @@ fun parseNotificationTarget(data: Map<String, String>): NotificationTarget? {
     }
 }
 
-enum class PushAvailability { UNCONFIGURED, SERVICES_UNAVAILABLE, PERMISSION_DENIED, AVAILABLE, REGISTRATION_FAILED }
+enum class PushAvailability { UNCONFIGURED, SERVICES_UNAVAILABLE, PERMISSION_DENIED, REGISTERING, AVAILABLE, REGISTRATION_FAILED }
 data class PushFailure(val origin: String, val bindingId: String, val status: Int, val updateUrl: String? = null)
+data class PushReceipt(val origin: String, val bindingId: String)
+
+internal fun registrationAvailability(base: PushAvailability, ready: Boolean, failure: PushFailure?): PushAvailability = when {
+    base != PushAvailability.AVAILABLE -> base
+    failure != null -> PushAvailability.REGISTRATION_FAILED
+    ready -> PushAvailability.AVAILABLE
+    else -> PushAvailability.REGISTERING
+}
+
+internal fun NotificationTarget.isPendingIn(dashboard: DashboardOut): Boolean = when (type) {
+    "review_required" -> dashboard.pendingActions.any { it.reviewId == reviewId && it.version == reviewVersion &&
+        it.packageFolder == packageFolder && it.state == "review_ready" }
+    "empty_package" -> dashboard.pendingActions.any { it.occurrenceId == occurrenceId &&
+        it.packageFolder == packageFolder && it.state == "empty_package" }
+    else -> true // Publication outcomes are history, not pending decisions.
+}

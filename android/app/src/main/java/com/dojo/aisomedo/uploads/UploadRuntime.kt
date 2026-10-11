@@ -64,16 +64,17 @@ class UploadRuntime private constructor(private val context: Context) {
         publishRows()
         if (store.rows.value.any { it.bindingId == credential.bindingId && eligible(it) }) schedule(credential.bindingId)
     }
-    suspend fun select(uris: List<Uri>) = withContext(Dispatchers.IO) {
+    suspend fun select(uris: List<Uri>, expectedPackageId: Int? = null, expectedBindingId: String? = null) = withContext(Dispatchers.IO) {
         actions.withLock { safely {
             val binding = attached ?: return@safely
+            if (expectedBindingId != null && binding.third != expectedBindingId) return@safely
             if (sessionStore.readSession(binding.first)?.bindingId != binding.third || binding.third in blocked) return@safely
             currentIssue.value = null
             for (uri in uris) {
                 try {
                     val document = source.retain(uri)
                     if (document.size == 0L) throw UploadFailure(UploadIssue.OVERSIZE)
-                    store.put(UploadRecord(UUID.randomUUID().toString(), binding.first, binding.third, document.uri, document.filename, document.contentType, binding.second, document.size))
+                    store.put(UploadRecord(UUID.randomUUID().toString(), binding.first, binding.third, document.uri, document.filename, document.contentType, binding.second, document.size, expectedPackageId = expectedPackageId))
                 } catch (e: UploadFailure) { currentIssue.value = e.issue; releaseUnused(uri.toString()) }
             }
             publishRows()
@@ -81,6 +82,10 @@ class UploadRuntime private constructor(private val context: Context) {
         } }
     }
     fun enqueue(uris: List<Uri>) { scope.launch { select(uris) } }
+    fun enqueue(uris: List<Uri>, expectedPackageId: Int) {
+        val binding = attached?.third ?: return
+        scope.launch { select(uris, expectedPackageId, binding) }
+    }
     private fun schedule(binding: String) {
         if (binding in blocked) return
         if (!UploadNotifications(context).visible()) currentIssue.value = UploadIssue.NOTIFICATIONS

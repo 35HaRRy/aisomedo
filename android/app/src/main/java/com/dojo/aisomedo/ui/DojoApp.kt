@@ -80,7 +80,7 @@ import kotlinx.coroutines.delay
                         state.issue?.let { Text(stringResource(issueLabel(it)), color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }) }
                         if (!ready) StartupScreen(state, model, openUrl)
-                        else if (state.review.target != null && state.review.target?.action != ReviewAction.UPLOAD) ReviewScreen(state.review, !state.busy,
+                        else if (state.review.target != null && state.review.target?.action != ReviewAction.UPLOAD) ReviewScreen(state.review, !state.busy && !state.stale,
                             model::requestReviewAction, model::approveReview, model::skipReview, model::rescheduleReview,
                             model::refreshReview, model::closeReview) { detail ->
                                 ReviewPreview(detail, model::downloadReviewPreview, model::markReviewPreviewReady)
@@ -91,7 +91,7 @@ import kotlinx.coroutines.delay
                             Destination.PACKAGE -> {
                                 if (state.review.target?.action == ReviewAction.UPLOAD) {
                                     val continuationRows = uploads?.rows?.collectAsStateWithLifecycle()?.value.orEmpty()
-                                    ReviewContinuation(state.review, !state.busy, continuationRows, model::continueReview,
+                                    ReviewContinuation(state.review, !state.busy && !state.stale, continuationRows, model::continueReview,
                                         model::requestReviewAction, model::refreshReview, model::closeReview)
                                 }
                                 Heading(R.string.active_package); PackageSummary(state.dashboard)
@@ -101,8 +101,14 @@ import kotlinx.coroutines.delay
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val issue by uploads.issue.collectAsStateWithLifecycle()
                                     val resolving by uploads.resolvingId.collectAsStateWithLifecycle()
-                                    UploadPanel(rows, issue, uploads::enqueue, uploads::pause, uploads::resume, uploads::retry, uploads::dismiss,
-                                        resolving, uploads::resolve, uploads::refresh, uploads::preview)
+                                     UploadPanel(rows, issue, uploads::enqueue, uploads::pause, uploads::resume, uploads::retry, uploads::dismiss,
+                                        resolving, uploads::resolve, uploads::refresh, uploads::preview,
+                                        selectionEnabled = state.review.target?.action != ReviewAction.UPLOAD || model.reviewUploadPackageId != null,
+                                        selectionPackageId = model.reviewUploadPackageId,
+                                        onSelectPackage = { uris, expected ->
+                                            if (expected != null) model.enqueueReviewUploads(expected) { uploads.enqueue(uris, it) }
+                                            else if (state.review.target?.action != ReviewAction.UPLOAD) uploads.enqueue(uris)
+                                        })
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
                             }
@@ -119,6 +125,7 @@ import kotlinx.coroutines.delay
                                         PushAvailability.SERVICES_UNAVAILABLE -> R.string.push_services_unavailable
                                         PushAvailability.PERMISSION_DENIED -> R.string.push_denied
                                         PushAvailability.REGISTRATION_FAILED -> R.string.push_registration_failed
+                                        PushAvailability.REGISTERING -> R.string.push_registering
                                         PushAvailability.AVAILABLE -> R.string.push_available
                                     }))
                                     OutlinedButton(onClick = onNotificationPermission) { Text(stringResource(R.string.push_enable)) }

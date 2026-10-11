@@ -11,6 +11,30 @@ import java.util.concurrent.TimeUnit
 import javax.crypto.KeyGenerator
 
 class PushRegistrationTest {
+    @Test fun repeatedSameFailureCannotReportAvailableUntilSuccessfulRegistration() = runBlocking {
+        Fixture().use { f ->
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val registration = PushRegistration(f.store, OkHttpClient(), 5, scope)
+            try {
+                repeat(2) {
+                    f.server.enqueue(MockResponse().setResponseCode(503).setBody("{}"))
+                    registration.refresh("SAME")
+                    withTimeout(5000) { while (registration.busy) delay(10) }
+                    assertEquals(PushAvailability.REGISTRATION_FAILED,
+                        registrationAvailability(PushAvailability.AVAILABLE, registration.ready.value, registration.failure.value))
+                }
+                f.server.enqueue(MockResponse().setBody("{}"))
+                registration.refresh("SAME")
+                assertEquals(PushAvailability.REGISTRATION_FAILED,
+                    registrationAvailability(PushAvailability.AVAILABLE, registration.ready.value, registration.failure.value))
+                withTimeout(5000) { while (registration.busy) delay(10) }
+                assertEquals(PushAvailability.AVAILABLE,
+                    registrationAvailability(PushAvailability.AVAILABLE, registration.ready.value, registration.failure.value))
+                assertEquals(PushAvailability.PERMISSION_DENIED,
+                    registrationAvailability(PushAvailability.PERMISSION_DENIED, registration.ready.value, registration.failure.value))
+            } finally { scope.cancel() }
+        }
+    }
     private class Fixture : AutoCloseable {
         val directory = Files.createTempDirectory("push-session").toFile()
         val key = KeyGenerator.getInstance("AES").generateKey()

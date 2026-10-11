@@ -24,6 +24,7 @@ data class ReviewTarget(
 enum class ReviewIssue { NETWORK, INVALID_TIME, INVALID_RESPONSE, STALE, ALREADY_HANDLED, NOT_FOUND, UNCERTAIN, PREVIEW, RENDER_FAILED, PACKAGE_CHANGED, UPLOAD_PENDING, MEDIA_REQUIRED }
 
 data class ReviewState(
+    val uploadPackageId: Int? = null,
     val target: ReviewTarget? = null,
     val detail: ReviewDetailOut? = null,
     val busy: Boolean = false,

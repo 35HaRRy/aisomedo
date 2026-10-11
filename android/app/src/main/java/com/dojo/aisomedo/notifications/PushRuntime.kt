@@ -20,15 +20,17 @@ class PushRuntime private constructor(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val http = OkHttpClient()
     private val mutableAvailability = MutableStateFlow(PushAvailability.UNCONFIGURED)
-    val availability = mutableAvailability.asStateFlow()
     private val registration = PushRegistration(store, http, BuildConfig.VERSION_CODE, scope)
     val failure = registration.failure
+    val availability = combine(mutableAvailability, registration.ready, failure, ::registrationAvailability)
+        .stateIn(scope, SharingStarted.Eagerly, PushAvailability.UNCONFIGURED)
+    private val mutableReceipts = MutableSharedFlow<PushReceipt>(extraBufferCapacity = 1)
+    val receipts = mutableReceipts.asSharedFlow()
     private var epoch = 0
     private var session: Pair<String, SessionCredential>? = null
     private var latestToken: String? = null
     init {
         context.cacheDir.resolve("review-previews").listFiles()?.filter { it.isFile }?.forEach { it.delete() }
-        scope.launch { failure.collect { if (it != null) mutableAvailability.value = PushAvailability.REGISTRATION_FAILED } }
     }
     private fun captured(): Pair<String, SessionCredential>? = runCatching {
         val origin = store.origin ?: return null
@@ -71,6 +73,7 @@ class PushRuntime private constructor(private val context: Context) {
         val (origin, credential) = captured() ?: return
         if (!matches(origin, credential.bindingId)) return
         notifications.show(target, data["title"].orEmpty(), data["body"].orEmpty(), credential.bindingId)
+        mutableReceipts.tryEmit(PushReceipt(origin, credential.bindingId))
     }
     @Synchronized fun stopSession() {
         epoch++; registration.stopSession()

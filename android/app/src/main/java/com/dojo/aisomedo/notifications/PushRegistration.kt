@@ -11,6 +11,8 @@ internal class PushRegistration(private val store: SessionStore, private val htt
     private val versionCode: Int, private val scope: CoroutineScope) {
     private val mutableFailure = MutableStateFlow<PushFailure?>(null)
     val failure = mutableFailure.asStateFlow()
+    private val mutableReady = MutableStateFlow(false)
+    val ready = mutableReady.asStateFlow()
     private var session: Pair<String, SessionCredential>? = null
     private var registered: Triple<String, String, String>? = null
     private var latestToken: String? = null
@@ -31,13 +33,14 @@ internal class PushRegistration(private val store: SessionStore, private val htt
         val (origin, credential) = next
         val identity = Triple(origin, credential.bindingId, token)
         if (registered == identity || busy) return
+        mutableReady.value = false
         val current = epoch
         job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 if (!matches(origin, credential.bindingId)) return@launch
                 DojoApi(origin, credential.token, versionCode, http).registerPushToken(token)
                 synchronized(this@PushRegistration) {
-                    if (epoch == current && matches(origin, credential.bindingId)) { registered = identity; mutableFailure.value = null }
+                    if (epoch == current && matches(origin, credential.bindingId)) { registered = identity; mutableFailure.value = null; mutableReady.value = true }
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { synchronized(this@PushRegistration) {
@@ -61,6 +64,6 @@ internal class PushRegistration(private val store: SessionStore, private val htt
         previous?.let { old -> scope.launch { runCatching {
             withTimeout(5000) { DojoApi(old.first, old.second.token, versionCode, http).removePushToken() }
         } } }
-        session = null; registered = null; latestToken = null; mutableFailure.value = null
+        session = null; registered = null; latestToken = null; mutableFailure.value = null; mutableReady.value = false
     }
 }

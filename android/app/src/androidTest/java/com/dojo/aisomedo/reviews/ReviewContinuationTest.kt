@@ -12,6 +12,12 @@ import org.junit.Test
 
 class ReviewContinuationTest {
     @get:Rule val compose = createComposeRule()
+    @Test fun unvalidatedContinuationLeavesPickerVisibleButDisabled() {
+        compose.setContent { DojoTheme {
+            UploadPanel(emptyList(), null, {}, {}, { _, _ -> }, { _, _ -> }, {}, selectionEnabled = false)
+        } }
+        compose.onNodeWithText("Fotoğraf / video seç").assertIsNotEnabled()
+    }
     @Test fun bannerKeepsUploadControlsVisibleAndOnlyExplicitContinueCallsRenderCallback() {
         var requests = 0
         compose.setContent { DojoTheme { Column {

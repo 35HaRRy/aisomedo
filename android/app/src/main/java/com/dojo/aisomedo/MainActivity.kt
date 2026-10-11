@@ -45,13 +45,20 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
         lifecycleScope.launch { repeatOnLifecycle(Lifecycle.State.STARTED) {
             launch {
-                var attached: Pair<String, Int>? = null
+                var attached: Triple<String, String, Long>? = null
+                val notifications = ReviewNotifications(this@MainActivity)
                 model.state.collect { state ->
                 if (state.phase == Phase.READY) {
                     state.client?.let { uploads.attach(state.origin, it.id) }
                     if (packageRequested) { packageRequested = false; model.navigate(Destination.PACKAGE) }
-                    val next = state.origin to (state.client?.id ?: 0)
-                    if (attached != next) { attached = next; push.refresh() }
+                    val binding = model.currentBindingId
+                    if (!state.busy && !state.stale && binding != null) {
+                        val next = Triple(state.origin, binding, state.dashboardRevision)
+                        if (attached != next) {
+                            attached = next; push.refresh()
+                            state.dashboard?.let { notifications.reconcile(it, state.origin, binding) }
+                        }
+                    }
                     if (state.review.issue == com.dojo.aisomedo.reviews.ReviewIssue.ALREADY_HANDLED) {
                         state.review.target?.reviewId?.let { ReviewNotifications(this@MainActivity).cancelReview(it) }
                         state.review.target?.occurrenceId?.let { ReviewNotifications(this@MainActivity).cancelOccurrence(it) }
@@ -60,6 +67,7 @@ class MainActivity : ComponentActivity() {
             } }
             launch { uploads.issue.collect { issue -> if (issue != null) model.observeSessionFailure(issue, uploads.failureBinding) } }
             launch { push.failure.collect { failure -> failure?.let(model::observePushFailure) } }
+            launch { push.receipts.collect(model::observePushReceipt) }
             launch {
                 var observed = emptySet<String>()
                 combine(uploads.rows, model.state) { rows, state -> rows to state }.collect { (rows, state) ->
