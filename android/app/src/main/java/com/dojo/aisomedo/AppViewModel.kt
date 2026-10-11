@@ -8,6 +8,7 @@ import com.dojo.aisomedo.auth.*
 import com.dojo.aisomedo.uploads.UploadIssue
 import com.dojo.aisomedo.editor.*
 import com.dojo.aisomedo.reviews.*
+import com.dojo.aisomedo.notifications.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
@@ -48,6 +49,7 @@ data class AppUiState(
     val pendingAssets: Map<String, BrandingAssetOut> = emptyMap(),
     val editor: MediaEditorState = MediaEditorState(),
     val review: ReviewState = ReviewState(),
+    val outcomePackage: String? = null,
 )
 
 class AppViewModel(
@@ -181,6 +183,7 @@ class AppViewModel(
         if (state.value.destination == Destination.PACKAGE) loadEditor(current)
         restoreReviewTarget()
         if (state.value.review.target != null) refreshReview()
+        consumeNotification()
     }
 
     private fun failure(error: Exception, pairing: Boolean = false) {
@@ -233,7 +236,7 @@ class AppViewModel(
             else -> Unit
         }
     }
-    private fun cancelWork() { generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null }
+    private fun cancelWork() { generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null; clearNotificationSaved() }
     private fun checkSession(current: Int) {
         if (generation != current) throw CancellationException("Session changed")
     }
@@ -572,6 +575,40 @@ class AppViewModel(
         mediaMutation(snapshot.copy(montage = snapshot.montage.copy(selections = removedSelections + selections)), savedTrims = true) { api, folder -> api.selectVideoRanges(folder, selections) }
     }
     fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
+    private fun clearNotificationSaved() { saved.keys().filter { it.startsWith("notification_") }.forEach { saved.remove<Any>(it) } }
+    fun openNotification(target: NotificationTarget, origin: String, bindingId: String) {
+        if (parseNotificationTarget(target.data()) != target || origin != state.value.origin || bindingId.isBlank() ||
+            runCatching { store.readSession(origin)?.bindingId }.getOrNull() != bindingId) return
+        saved["notification_data"] = JsonObject(target.data().mapValues { JsonPrimitive(it.value) }).toString()
+        saved["notification_origin"] = origin
+        saved["notification_binding"] = bindingId
+        consumeNotification()
+    }
+    private fun consumeNotification() {
+        if (state.value.phase != Phase.READY) return
+        val raw = saved.get<String>("notification_data") ?: return
+        val origin = saved.get<String>("notification_origin")
+        val binding = saved.get<String>("notification_binding")
+        val target = runCatching { parseNotificationTarget(Json.parseToJsonElement(raw).jsonObject.mapValues { it.value.jsonPrimitive.content }) }.getOrNull()
+        clearNotificationSaved()
+        if (target == null || origin != state.value.origin || binding != bindingId ||
+            runCatching { store.readSession(state.value.origin)?.bindingId }.getOrNull() != binding) return
+        if (target.type.startsWith("publication_")) {
+            closeReview(); navigate(Destination.ACTIVITY)
+            mutable.update { it.copy(outcomePackage = target.packageFolder) }
+            refresh()
+        } else {
+            closeSetup()
+            openReview(ReviewTarget(reviewId = target.reviewId, occurrenceId = target.occurrenceId,
+                packageFolder = target.packageFolder, expectedVersion = target.reviewVersion, action = target.action))
+        }
+    }
+    fun observePushFailure(failure: PushFailure) {
+        if (failure.origin != state.value.origin || failure.bindingId != bindingId ||
+            state.value.phase !in setOf(Phase.READY, Phase.LOADING) ||
+            runCatching { store.readSession(failure.origin)?.bindingId }.getOrNull() != failure.bindingId) return
+        if (failure.status in setOf(401, 426)) failure(ApiFailure(failure.status, failure.updateUrl))
+    }
 
     private fun saveReviewTarget(target: ReviewTarget) {
         saved["review_id"] = target.reviewId

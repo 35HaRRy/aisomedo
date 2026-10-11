@@ -1,4 +1,14 @@
 <resources>
+    <string name="review_channel">Yayın incelemeleri</string>
+    <string name="publication_channel">Paylaşım sonuçları</string>
+    <string name="publication_context">Paylaşım bildirimi: %1$s. Güncel bilgiler sunucudan yenilenir.</string>
+    <string name="push_unconfigured">Bildirim yapılandırması yok. Onay kutusu kullanılabilir.</string>
+    <string name="push_services_unavailable">Google Play hizmetleri kullanılamıyor. Onay kutusunu kontrol edin.</string>
+    <string name="push_denied">Bildirim izni kapalı. Bekleyen işlemler Onay kutusunda görünür.</string>
+    <string name="push_registration_failed">Bildirim kaydı başarısız. Sonraki yenilemede tekrar denenecek.</string>
+    <string name="push_available">Bildirimler açık</string>
+    <string name="push_enable">Bildirimlere izin ver</string>
+    <string name="push_settings">Bildirim ayarlarını aç</string>
     <string name="close">Kapat</string>
     <string name="review_title">Yayın incelemesi</string>
     <string name="approval_inbox">Onay kutusu</string>

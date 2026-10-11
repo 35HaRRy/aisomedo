@@ -7,6 +7,7 @@ import com.dojo.aisomedo.auth.SessionStore
 import com.dojo.aisomedo.uploads.UploadIssue
 import com.dojo.aisomedo.editor.*
 import com.dojo.aisomedo.reviews.*
+import com.dojo.aisomedo.notifications.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -360,6 +361,52 @@ class AppViewModelTest {
             f.model.pollReview(); main.scheduler.runCurrent()
             assertEquals(reads, f.seen.count { it == "GET /api/reviews/7" })
             assertTrue(f.model.state.value.review.readRequired)
+        }
+    }
+
+    @Test fun notificationShortcutOpensFormWithoutPostingAndRejectsOldBinding() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/reviews/7"] = reviewJson()
+            val target = NotificationTarget("review_required", "active", 7, 3, action = ReviewAction.SKIP)
+            f.model.openNotification(target, f.origin, "old")
+            main.scheduler.runCurrent(); assertNull(f.model.state.value.review.target)
+            f.model.openNotification(target, f.origin, f.store.readSession(f.origin)!!.bindingId)
+            f.await { it.review.detail != null && !it.review.busy }
+            assertEquals(ReviewAction.SKIP, f.model.state.value.review.target!!.action)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun notificationDuringStartupRestoresAfterRecreationWithoutSubmitting() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.model.openNotification(NotificationTarget("review_required", "active", 7, 3, action = ReviewAction.RESCHEDULE), f.origin, f.store.readSession(f.origin)!!.bindingId)
+            f.recreate()
+            f.await { it.phase == Phase.READY && !it.busy && it.review.detail != null && !it.review.busy }
+            assertEquals(ReviewAction.RESCHEDULE, f.model.state.value.review.target!!.action)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun publicationLaunchShowsNamedActivityContextWithoutMutation() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.openNotification(NotificationTarget("publication_confirmed", "completed-folder"), f.origin, f.store.readSession(f.origin)!!.bindingId)
+            f.await { !it.busy }
+            assertEquals(Destination.ACTIVITY, f.model.state.value.destination)
+            assertEquals("completed-folder", f.model.state.value.outcomePackage)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun pushAuthAndVersionFailuresOnlyAffectCapturedCurrentBinding() = runTest(main.scheduler) {
+        for (code in listOf(401, 426)) Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val binding = f.store.readSession(f.origin)!!.bindingId
+            f.model.observePushFailure(PushFailure(f.origin, "old", code))
+            assertEquals(Phase.READY, f.model.state.value.phase)
+            f.model.observePushFailure(PushFailure("https://other.example", binding, code))
+            assertEquals(Phase.READY, f.model.state.value.phase)
+            f.model.observePushFailure(PushFailure(f.origin, binding, code))
+            assertEquals(if (code == 401) Phase.PAIRING else Phase.UPDATE_REQUIRED, f.model.state.value.phase)
         }
     }
 

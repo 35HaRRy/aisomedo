@@ -10,6 +10,7 @@ val signingInputs = listOf(
     "ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD",
 ).associateWith { providers.environmentVariable(it) }
 val releaseVersion = providers.environmentVariable("ANDROID_RELEASE_VERSION")
+if (file("google-services.json").exists()) apply(plugin = "com.google.gms.google-services")
 
 android {
     namespace = "com.dojo.aisomedo"
@@ -75,6 +76,11 @@ tasks.configureEach {
 }
 
 dependencies {
+    constraints {
+        implementation("androidx.fragment:fragment:1.3.0") { because("FCM brings 1.1.0; Activity Result permission APIs require 1.3.0") }
+    }
+    implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
+    implementation("com.google.firebase:firebase-messaging")
     implementation("androidx.core:core-ktx:1.13.1")
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)

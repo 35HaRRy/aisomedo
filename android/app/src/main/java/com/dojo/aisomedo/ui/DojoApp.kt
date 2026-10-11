@@ -25,6 +25,7 @@ import com.dojo.aisomedo.R
 import com.dojo.aisomedo.onboarding.OnboardingScreen
 import com.dojo.aisomedo.uploads.UploadRuntime
 import com.dojo.aisomedo.reviews.*
+import com.dojo.aisomedo.notifications.*
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -35,7 +36,8 @@ import kotlinx.coroutines.delay
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun DojoApp(model: AppViewModel, uploads: UploadRuntime? = null, openUrl: (String) -> Unit) {
+@Composable fun DojoApp(model: AppViewModel, uploads: UploadRuntime? = null, push: PushRuntime? = null,
+    onNotificationPermission: () -> Unit = {}, onNotificationSettings: () -> Unit = {}, openUrl: (String) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle, state.phase, state.review.target?.reviewId, state.review.target?.occurrenceId) {
@@ -99,8 +101,25 @@ import kotlinx.coroutines.delay
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
                             }
-                            Destination.ACTIVITY -> ApprovalInbox(state.dashboard, state.stale, model::refresh, onPending)
-                            Destination.SETTINGS -> SettingsScreen(state, model)
+                            Destination.ACTIVITY -> {
+                                state.outcomePackage?.let { Text(stringResource(R.string.publication_context, it)) }
+                                ApprovalInbox(state.dashboard, state.stale, model::refresh, onPending)
+                            }
+                            Destination.SETTINGS -> {
+                                SettingsScreen(state, model)
+                                if (push != null) {
+                                    val availability by push.availability.collectAsStateWithLifecycle()
+                                    Text(stringResource(when (availability) {
+                                        PushAvailability.UNCONFIGURED -> R.string.push_unconfigured
+                                        PushAvailability.SERVICES_UNAVAILABLE -> R.string.push_services_unavailable
+                                        PushAvailability.PERMISSION_DENIED -> R.string.push_denied
+                                        PushAvailability.REGISTRATION_FAILED -> R.string.push_registration_failed
+                                        PushAvailability.AVAILABLE -> R.string.push_available
+                                    }))
+                                    OutlinedButton(onClick = onNotificationPermission) { Text(stringResource(R.string.push_enable)) }
+                                    TextButton(onClick = onNotificationSettings) { Text(stringResource(R.string.push_settings)) }
+                                }
+                            }
                         }
                     }
                 }
