@@ -180,6 +180,14 @@ class ReviewNotFound(DojoError):
     pass
 
 
+class OccurrenceNotFound(DojoError):
+    pass
+
+
+class OccurrenceChanged(DojoError):
+    pass
+
+
 class ReminderPolicyInvalid(DojoError):
     pass
 

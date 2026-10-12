@@ -171,7 +171,7 @@ data class ConflictSelection(
     }
     image?.let { Image(it.asImageBitmap(), contentDescription = label, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)) }
     video?.let { file -> key(file) {
-        ConflictVideo(file, label, { loading = false; ready(true) }, { file.delete(); failed = true; loading = false; video = null; ready(false) })
+        NativeVideo(file, label, { loading = false; ready(true) }, { file.delete(); failed = true; loading = false; video = null; ready(false) })
     } }
     if (loading) Text(stringResource(R.string.conflict_preview_loading), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     if (failed) {
@@ -180,7 +180,7 @@ data class ConflictSelection(
     }
 }
 
-@Composable private fun ConflictVideo(file: File, label: String, onReady: () -> Unit, onError: () -> Unit) {
+@Composable internal fun NativeVideo(file: File, label: String, onReady: () -> Unit, onError: () -> Unit) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var player: VideoView? by remember { mutableStateOf(null) }
     val ready by rememberUpdatedState(onReady)

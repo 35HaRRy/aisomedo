@@ -1153,6 +1153,43 @@
         "title": "EditorMediaOut",
         "type": "object"
       },
+      "EmptyRescheduleIn": {
+        "properties": {
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "new_due_at": {
+            "format": "date-time",
+            "title": "New Due At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_folder_name",
+          "new_due_at"
+        ],
+        "title": "EmptyRescheduleIn",
+        "type": "object"
+      },
+      "EmptySkipIn": {
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_folder_name"
+        ],
+        "title": "EmptySkipIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1329,6 +1366,67 @@
           "duration_complete"
         ],
         "title": "MontageOut",
+        "type": "object"
+      },
+      "OccurrenceDecisionOut": {
+        "properties": {
+          "new_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Due At"
+          },
+          "next_regular_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Regular At"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          },
+          "oneoff_occurrence_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oneoff Occurrence Id"
+          },
+          "package_folder": {
+            "title": "Package Folder",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "occurrence_id",
+          "package_folder",
+          "status",
+          "next_regular_at",
+          "oneoff_occurrence_id",
+          "new_due_at"
+        ],
+        "title": "OccurrenceDecisionOut",
         "type": "object"
       },
       "OccurrenceOut": {
@@ -4491,6 +4589,110 @@
         "summary": "Validate",
         "tags": [
           "pairing"
+        ]
+      }
+    },
+    "/api/reviews/occurrences/{occurrence_id}/reschedule": {
+      "post": {
+        "operationId": "reschedule_empty_occurrence_api_reviews_occurrences__occurrence_id__reschedule_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRescheduleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OccurrenceDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reschedule Empty Occurrence",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/reviews/occurrences/{occurrence_id}/skip": {
+      "post": {
+        "operationId": "skip_empty_occurrence_api_reviews_occurrences__occurrence_id__skip_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptySkipIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OccurrenceDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Skip Empty Occurrence",
+        "tags": [
+          "reviews"
         ]
       }
     },

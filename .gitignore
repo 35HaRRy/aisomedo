@@ -43,6 +43,7 @@ gradle/
 gradlew
 gradlew.bat
 local.properties
+google-services.json
 !/android/gradlew
 !/android/gradlew.bat
 !/android/gradle/
@@ -59,3 +60,5 @@ local.properties
 /.verify-prod-health.env
 /.verify-monitoring-*/
 /.ci-monitoring.env
+
+fcm_credentials.json

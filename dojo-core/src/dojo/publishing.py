@@ -38,6 +38,8 @@ from dojo.exceptions import (
     MontageOrderInvalid,
     MontageTrimInvalid,
     NoActivePackage,
+    OccurrenceChanged,
+    OccurrenceNotFound,
     PackageChanged,
     PackageCompleted,
     PackageLimitExceeded,
@@ -63,6 +65,8 @@ from dojo.exceptions import (
 )
 from dojo.model import (
     CONFLICT_DECISIONS,
+    EMPTY_PACKAGE_BODY,
+    EMPTY_PACKAGE_TITLE,
     KEEP_BOTH,
     KEEP_SELECTED,
     KEEP_TARGET,
@@ -133,6 +137,7 @@ REMINDER_INTERVAL_KEY = "reminders.interval_minutes"
 REMINDER_START_KEY = "reminders.delivery_start"
 REMINDER_END_KEY = "reminders.delivery_end"
 REMINDER_TZ_KEY = "reminders.timezone"
+EMPTY_REMINDERS_KEY = "reminders.empty_occurrences"
 
 
 def merge_ranges(existing: list[list[int]], new_start: int, new_end: int) -> list[list[int]]:
@@ -1501,14 +1506,35 @@ class DojoPublishing:
         logger = logging.getLogger(__name__)
         policy = self.get_reminder_policy()
         now = self._clock.now()
+        package = self._packages.get_active()
+        folder = package.folder_name if package else None
+        empty = (self._schedule.list_due(now) if package is not None
+                 and not self._finalized_in_order(self._load_manifest(package))
+                 and self._get_publishing_package() is None else [])
+        empty = [o for o in empty if not self._reviews.has_for_occurrence(o.id)]
+        raw_cadence = self._settings.get(EMPTY_REMINDERS_KEY)
+        cadence: dict[str, dict[str, str]] = {}
+        for occurrence in empty:
+            entry = raw_cadence.get(str(occurrence.id)) if isinstance(raw_cadence, dict) else None
+            if not isinstance(entry, dict) or entry.get("package_folder") != folder:
+                continue
+            try:
+                at = datetime.fromisoformat(entry["last_reminded_at"])
+                if at.tzinfo is not None and at <= now:
+                    cadence[str(occurrence.id)] = {
+                        "package_folder": str(folder), "last_reminded_at": at.isoformat(),
+                    }
+            except (KeyError, TypeError, ValueError):
+                continue
+        # Prune stale/corrupt identities even outside quiet hours or without devices.
+        if raw_cadence is not None and raw_cadence != cadence:
+            self._settings.set(EMPTY_REMINDERS_KEY, cadence, updated_at=now)
         now_local = now.astimezone(ISTANBUL)
         if not self._in_delivery_window(
             now_local.time(), policy.delivery_start, policy.delivery_end
         ):
             return
         pending = self._reviews.list_pending()
-        if not pending:
-            return
         # select eligible by interval
         eligible: list[YayinIncelemesi] = []
         interval = timedelta(minutes=policy.interval_minutes)
@@ -1517,14 +1543,13 @@ class DojoPublishing:
                 eligible.append(review)
             elif now - review.last_reminded_at >= interval:
                 eligible.append(review)
-        if not eligible:
-            return
         regs = self._push_regs.list_active_device_tokens()
         if not regs:
             return
         tokens = [r.token for r in regs]
+        notifications: list[tuple[Notification, YayinIncelemesi | None]] = []
         for review in eligible:
-            notification = Notification(
+            notifications.append((Notification(
                 title=REVIEW_REQUIRED_TITLE,
                 body=REVIEW_REQUIRED_BODY,
                 data={
@@ -1533,17 +1558,33 @@ class DojoPublishing:
                     "review_version": str(review.version),
                     "package_folder": review.package_folder,
                 },
-            )
+            ), review))
+        for occurrence in empty:
+            entry = cadence.get(str(occurrence.id))
+            if entry and now - datetime.fromisoformat(entry["last_reminded_at"]) < interval:
+                continue
+            notifications.append((Notification(
+                title=EMPTY_PACKAGE_TITLE, body=EMPTY_PACKAGE_BODY,
+                data={"type": "empty_package", "occurrence_id": str(occurrence.id),
+                      "package_folder": str(folder)},
+            ), None))
+        for notification, target_review in notifications:
+            if not tokens:
+                break
+            identity: dict[str, object] = ({"review_id": target_review.id} if target_review else {
+                "occurrence_id": int(str(notification.data["occurrence_id"])),
+                "package": folder,
+            })
             try:
                 result = self._notifier.send(notification, tokens)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("reminder send failed for review %s", review.id)
+                logger.exception("reminder send failed for %s", identity)
                 self._audit.append(
                     AuditEvent(
                         action="notification.failed",
                         actor="worker",
                         occurred_at=now,
-                        details={"review_id": review.id, "error": str(exc)},
+                        details={**identity, "error": str(exc)},
                     )
                 )
                 continue
@@ -1553,6 +1594,7 @@ class DojoPublishing:
                     self._push_regs.remove_by_token(tok)
                 except Exception:  # noqa: BLE001
                     logger.exception("failed to remove invalid token")
+            tokens = [tok for tok in tokens if tok not in getattr(result, "invalid_tokens", [])]
             # audit sent
             delivered = len(getattr(result, "delivered", []))
             invalid = len(getattr(result, "invalid_tokens", []))
@@ -1563,7 +1605,7 @@ class DojoPublishing:
                     actor="worker",
                     occurred_at=now,
                     details={
-                        "review_id": review.id,
+                        **identity,
                         "delivered": delivered,
                         "invalid": invalid,
                         "transient": transient,
@@ -1572,14 +1614,15 @@ class DojoPublishing:
             )
             # persist timestamp after completed batch
             try:
-                if hasattr(self._reviews, "update_last_reminded_at"):
-                    self._reviews.update_last_reminded_at(review.id, now)  # type: ignore[attr-defined]
+                if target_review is None:
+                    cadence[str(notification.data["occurrence_id"])] = {
+                        "package_folder": str(folder), "last_reminded_at": now.isoformat(),
+                    }
+                    self._settings.set(EMPTY_REMINDERS_KEY, dict(cadence), updated_at=now)
                 else:
-                    # fallback via generic update
-                    updated = replace(review, last_reminded_at=now)
-                    self._reviews.update(updated)
+                    self._reviews.update_last_reminded_at(target_review.id, now)
             except Exception:  # noqa: BLE001
-                logger.exception("failed to persist last_reminded_at for %s", review.id)
+                logger.exception("failed to persist last_reminded_at for %s", identity)
 
     def add_media(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
@@ -2440,6 +2483,80 @@ class DojoPublishing:
 
     def create_review(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
+
+    def _require_empty_occurrence(
+        self, occurrence_id: int, expected_folder_name: str,
+    ) -> YayinZamani:
+        if self._get_publishing_package() is not None:
+            raise PublicationInProgress("publication must be reconciled first")
+        occurrence = next((o for o in self._schedule.list_all() if o.id == occurrence_id), None)
+        if occurrence is None:
+            raise OccurrenceNotFound(f"occurrence {occurrence_id} not found")
+        package = self._packages.get_active()
+        if (occurrence.status != "pending" or occurrence.due_at > self._clock.now()
+                or package is None or package.folder_name != expected_folder_name
+                or self._reviews.has_for_occurrence(occurrence_id)
+                or self._finalized_in_order(self._load_manifest(package))):
+            raise OccurrenceChanged("empty occurrence changed; refresh before deciding")
+        return occurrence
+
+    @_package_operation
+    def skip_empty_occurrence(
+        self, occurrence_id: int, expected_folder_name: str, *, confirmed: bool,
+        requester: str | None = None,
+    ) -> dict[str, object]:
+        if not confirmed:
+            raise SkipRequiresConfirmation("skip requires explicit confirmation")
+        with self._schedule.emission_transaction():
+            occurrence = self._require_empty_occurrence(occurrence_id, expected_folder_name)
+            self._resolve_occurrence(occurrence.id, self._clock.now())
+            return self._empty_decision_result(
+                occurrence.id, expected_folder_name, "skipped", requester=requester,
+            )
+
+    @_package_operation
+    def reschedule_empty_occurrence(
+        self, occurrence_id: int, expected_folder_name: str, new_due_at: datetime, *,
+        requester: str | None = None,
+    ) -> dict[str, object]:
+        if new_due_at.tzinfo is None:
+            new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
+        if new_due_at <= self._clock.now():
+            raise RescheduleTimeInvalid("reschedule time must be in the future")
+        with self._schedule.emission_transaction():
+            occurrence = self._require_empty_occurrence(occurrence_id, expected_folder_name)
+            now = self._clock.now()
+            if occurrence.kind == "oneoff":
+                oneoff = self._schedule.update(replace(occurrence, due_at=new_due_at))
+            else:
+                self._resolve_occurrence(occurrence.id, now)
+                oneoff = self._schedule.create(YayinZamani(
+                    id=0, kind="oneoff", due_at=new_due_at, status="pending", created_at=now,
+                ))
+            return self._empty_decision_result(
+                occurrence.id, expected_folder_name, "rescheduled", requester=requester,
+                oneoff=oneoff,
+            )
+
+    def _empty_decision_result(
+        self, occurrence_id: int, folder: str, status: str, *, requester: str | None,
+        oneoff: YayinZamani | None = None,
+    ) -> dict[str, object]:
+        now = self._clock.now()
+        regular = self._schedule.next_regular_after(now)
+        result: dict[str, object] = {
+            "occurrence_id": occurrence_id, "package_folder": folder, "status": status,
+            "next_regular_at": regular.due_at if regular else None,
+            "oneoff_occurrence_id": oneoff.id if oneoff else None,
+            "new_due_at": oneoff.due_at if oneoff else None,
+        }
+        self._audit.append(AuditEvent(
+            action=f"occurrence.{status}", actor=requester or "system", occurred_at=now,
+            details={**result,
+                     "next_regular_at": regular.due_at.isoformat() if regular else None,
+                     "new_due_at": oneoff.due_at.isoformat() if oneoff else None},
+        ))
+        return result
 
     @_package_operation
     def approve(

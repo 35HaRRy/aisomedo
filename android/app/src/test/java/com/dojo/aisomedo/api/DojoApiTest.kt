@@ -12,6 +12,121 @@ import java.util.concurrent.TimeUnit
 import java.nio.file.Files
 
 class DojoApiTest {
+    @Test fun reviewPreviewIsAuthenticatedBoundedAndNeverFollowsRedirects() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            val directory = Files.createTempDirectory("review-preview").toFile()
+            val file = directory.resolve("exact.mp4")
+            val path = "/api/packages/active/render/preview?expected_folder_name=active&revision=exact"
+            try {
+                server.enqueue(MockResponse().setBody("preview"))
+                api.downloadReviewPreview(path, file, 10)
+                assertEquals("preview", file.readText())
+                val request = server.takeRequest()
+                assertEquals("Bearer DEVICE", request.getHeader("Authorization"))
+                assertEquals("1", request.getHeader("X-Android-Version-Code"))
+                assertEquals(path, request.path)
+                server.enqueue(MockResponse().setBody("too large"))
+                assertEquals(413, (runCatching { api.downloadReviewPreview(path, file, 2) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(file.exists())
+                server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "https://evil.example/"))
+                assertEquals(302, (runCatching { api.downloadReviewPreview(path, file, 10) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(file.exists())
+                assertEquals(3, server.requestCount)
+            } finally { directory.deleteRecursively() }
+        }
+    }
+
+    @Test fun cancelledReviewTransferRemovesItsPartialFile() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            val file = Files.createTempFile("review-cancel", ".mp4").toFile()
+            try {
+                server.enqueue(MockResponse().setBody("preview").setBodyDelay(2, TimeUnit.SECONDS))
+                val pending = async { api.downloadReviewPreview("/api/packages/active/render/preview?revision=exact", file, 10) }
+                withContext(Dispatchers.IO) { server.takeRequest() }
+                pending.cancelAndJoin()
+                withTimeout(3000) { while (file.exists()) delay(10) }
+                assertEquals(1, server.requestCount)
+            } finally { file.delete() }
+        }
+    }
+
+    @Test fun cacheWriteFailureDoesNotDeleteParentOrSiblingFiles() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            val parent = Files.createTempFile("review-no-directory", ".owned").toFile()
+            val destination = parent.resolve("preview.mp4")
+            try {
+                server.enqueue(MockResponse().setBody("preview"))
+                assertEquals(0, (runCatching { api.downloadReviewPreview("/api/packages/active/render/preview?revision=exact", destination, 10) }.exceptionOrNull() as ApiFailure).status)
+                assertFalse(destination.exists())
+                assertTrue(parent.exists())
+            } finally { parent.delete() }
+        }
+    }
+    @Test fun reviewActionsUseDisplayedIdentityAndExplicitBodies() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            repeat(3) { server.enqueue(MockResponse().setBody("{}")) }
+            api.approveReview(7, 3)
+            api.skipReview(7, 3)
+            api.rescheduleReview(7, 3, "2099-10-11T10:00:00+03:00")
+            val approve = server.takeRequest()
+            assertEquals("/api/reviews/7/approve", approve.path)
+            assertEquals("POST", approve.method)
+            assertEquals("{\"version\":3}", approve.body.readUtf8())
+            assertEquals("Bearer DEVICE", approve.getHeader("Authorization"))
+            assertEquals("1", approve.getHeader("X-Android-Version-Code"))
+            val skip = server.takeRequest()
+            assertEquals("/api/reviews/7/skip", skip.path)
+            assertEquals(Json.parseToJsonElement("""{"version":3,"confirmed":true}"""), Json.parseToJsonElement(skip.body.readUtf8()))
+            val reschedule = server.takeRequest()
+            assertEquals("/api/reviews/7/reschedule", reschedule.path)
+            assertEquals("2099-10-11T10:00:00+03:00", Json.parseToJsonElement(reschedule.body.readUtf8()).jsonObject["new_due_at"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test fun emptyActionsRenderAndPushUseExistingTypedContracts() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            val result = """{"occurrence_id":2,"package_folder":"active","status":"skipped","next_regular_at":null,"oneoff_occurrence_id":null,"new_due_at":null}"""
+            server.enqueue(MockResponse().setBody(result))
+            assertEquals(2, api.skipEmptyOccurrence(2, EmptySkipIn(expectedFolderName = "active", confirmed = true)).occurrenceId)
+            assertEquals("/api/reviews/occurrences/2/skip", server.takeRequest().path)
+            server.enqueue(MockResponse().setBody(result.replace("skipped", "rescheduled")))
+            api.rescheduleEmptyOccurrence(2, EmptyRescheduleIn("active", "2099-10-11T10:00:00+03:00"))
+            val reschedule = server.takeRequest()
+            assertEquals("/api/reviews/occurrences/2/reschedule", reschedule.path)
+            assertEquals("active", Json.parseToJsonElement(reschedule.body.readUtf8()).jsonObject["expected_folder_name"]!!.jsonPrimitive.content)
+            server.enqueue(MockResponse().setBody("""{"render_revision":"exact","stale":true}"""))
+            assertEquals("exact", api.renderPackage("active").renderRevision)
+            val render = server.takeRequest()
+            assertEquals("/api/packages/active/render", render.path)
+            assertEquals("active", Json.parseToJsonElement(render.body.readUtf8()).jsonObject["expected_folder_name"]!!.jsonPrimitive.content)
+            repeat(2) { server.enqueue(MockResponse().setBody("{}")) }
+            api.registerPushToken("SYNTHETIC_FCM")
+            api.removePushToken()
+            val put = server.takeRequest()
+            assertEquals("PUT", put.method)
+            assertEquals("/api/pairing/me/push-token", put.path)
+            assertEquals("{\"token\":\"SYNTHETIC_FCM\"}", put.body.readUtf8())
+            assertEquals("DELETE", server.takeRequest().method)
+        }
+    }
+
+    @Test fun reviewReadKeepsExactCaptionAndRejectsMalformedActionResponse() = runBlocking {
+        MockWebServer().use { server ->
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())
+            server.enqueue(MockResponse().setBody("""{"next_regular_at":null,"preview_url":null,"render_ready":false,"review":{"caption":"Exact caption\n#dojo","created_at":"2026-10-11T10:00:00+03:00","id":7,"occurrence_id":2,"package_folder":"active","revision_digest":"exact","status":"pending","version":3}}"""))
+            assertEquals("Exact caption\n#dojo", api.review(7).review.caption)
+            assertEquals("/api/reviews/7", server.takeRequest().path)
+            server.enqueue(MockResponse().setBody("[]"))
+            assertTrue(runCatching { api.approveReview(7, 3) }.exceptionOrNull() is SerializationException)
+            assertEquals(2, server.requestCount)
+        }
+    }
+
     @Test fun mediaMutationsEncodeIdentityAndNeverUseUnguardedLegacyTrims() = runBlocking {
         MockWebServer().use { server ->
             val api = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient())
@@ -28,6 +143,8 @@ class DojoApiTest {
             val selections = server.takeRequest()
             assertEquals("/api/packages/active/selections", selections.path)
             assertEquals(Json.parseToJsonElement("""{"expected_folder_name":"folder +/","selections":{"id/+?":[{"start":1.0,"end":2.0}]}}"""), Json.parseToJsonElement(selections.body.readUtf8()))
+        }
+    }
     @Test fun skippedUploadLookupPaginatesAuditAndDoesNotGuessFromOtherUploads() = runBlocking {
         MockWebServer().use { server ->
             val api = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient())

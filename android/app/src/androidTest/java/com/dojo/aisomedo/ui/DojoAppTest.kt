@@ -62,7 +62,7 @@ class DojoAppTest {
         compose.onNodeWithText("Paket", useUnmergedTree = true).performClick()
         compose.onNodeWithText("Henüz aktif paket yok").assertExists()
         compose.onNodeWithText("Hareketler", useUnmergedTree = true).performClick()
-        compose.onNodeWithText("Hareket geçmişi sonraki sürümde sunulacak.").assertExists()
+        compose.onNodeWithText("Onay kutusu").assertExists()
         androidx.test.espresso.Espresso.pressBack()
         compose.onNodeWithText("Bekleyen işlemler").assertExists()
         compose.onNodeWithText("Ayarlar", useUnmergedTree = true).performClick()
@@ -70,6 +70,20 @@ class DojoAppTest {
         compose.onNodeWithText("Bu cihazın yeniden eşleştirilmesi gerekecek.").assertExists()
         compose.onNodeWithText("Vazgeç").performClick()
         Assert.assertTrue(paths.none { it.startsWith("POST /api/packages") })
+    }
+    @Test fun backClosesFocusedReviewToOwningActivityWithoutSubmitting() {
+        compose.setContent { DojoApp(model) {} }
+        compose.waitUntil(5000) { model.state.value.phase == Phase.READY && !model.state.value.busy }
+        compose.runOnIdle {
+            model.navigate(Destination.ACTIVITY)
+            model.openReview(com.dojo.aisomedo.reviews.ReviewTarget(reviewId = 7))
+        }
+        compose.onNodeWithText("Yayın incelemesi").assertExists()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithText("Onay kutusu").assertExists()
+        Assert.assertEquals(Destination.ACTIVITY, model.state.value.destination)
+        Assert.assertNull(model.state.value.review.target)
+        Assert.assertTrue(paths.none { it.contains("/approve") || it.contains("/skip") || it.contains("/reschedule") })
     }
     @Test fun switchesAtExactly600Dp() {
         val width = mutableStateOf(599)

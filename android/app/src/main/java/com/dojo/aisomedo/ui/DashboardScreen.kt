@@ -8,25 +8,19 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.dojo.aisomedo.R
 import com.dojo.aisomedo.api.*
+import com.dojo.aisomedo.reviews.ReviewAction
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-@Composable fun DashboardScreen(dashboard: DashboardOut?, setup: SetupOut?, stale: Boolean, wide: Boolean, onRefresh: () -> Unit, onSetup: () -> Unit) {
+@Composable fun DashboardScreen(dashboard: DashboardOut?, setup: SetupOut?, stale: Boolean, wide: Boolean, onRefresh: () -> Unit, onSetup: () -> Unit, onPending: (DashboardActionOut, ReviewAction) -> Unit = { _, _ -> }) {
     Heading(R.string.dashboard)
     TextButton(onClick = onRefresh) { Text(stringResource(R.string.refresh)) }
     if (dashboard == null) { Text(stringResource(R.string.dashboard_unavailable)); return }
     if (stale) Text(stringResource(R.string.stale, formattedTime(dashboard.generatedAt)))
     SectionHeading(R.string.pending)
-    if (dashboard.pendingActions.isEmpty()) Text(stringResource(R.string.no_pending))
-    dashboard.pendingActions.forEach { action ->
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(statusLabel(action.state)), style = MaterialTheme.typography.titleMedium)
-            Text(formattedTime(action.dueAt)); action.packageFolder?.let { Text(it) }
-            Text(stringResource(R.string.pending_read_only)); HorizontalDivider()
-        }
-    }
+    PendingRows(dashboard, !stale, onPending)
     if (wide) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) { PublishingSummary(dashboard) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) { HealthSummary(dashboard) }
@@ -34,6 +28,28 @@ import java.util.Locale
     HorizontalDivider()
     Text(stringResource(if (setup?.ready == true) R.string.setup_ready else R.string.setup_incomplete))
     Button(onClick = onSetup) { Text(stringResource(R.string.open_setup)) }
+}
+@Composable fun ApprovalInbox(dashboard: DashboardOut?, stale: Boolean, onRefresh: () -> Unit, onPending: (DashboardActionOut, ReviewAction) -> Unit) {
+    Heading(R.string.approval_inbox)
+    TextButton(onClick = onRefresh) { Text(stringResource(R.string.refresh)) }
+    if (dashboard == null) { Text(stringResource(R.string.dashboard_unavailable)); return }
+    if (stale) Text(stringResource(R.string.stale, formattedTime(dashboard.generatedAt)))
+    PendingRows(dashboard, !stale, onPending)
+}
+@Composable private fun PendingRows(dashboard: DashboardOut, enabled: Boolean, onPending: (DashboardActionOut, ReviewAction) -> Unit) {
+    if (dashboard.pendingActions.isEmpty()) Text(stringResource(R.string.no_pending))
+    dashboard.pendingActions.forEach { action ->
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(statusLabel(action.state)), style = MaterialTheme.typography.titleMedium)
+            Text(formattedTime(action.dueAt)); action.packageFolder?.let { Text(it) }
+            Button(onClick = { onPending(action, if (action.state == "empty_package") ReviewAction.UPLOAD else ReviewAction.REVIEW) }, enabled = enabled) { Text(stringResource(if (action.state == "empty_package") R.string.review_upload else R.string.review_open)) }
+            if (action.state == "empty_package" && action.packageFolder != null) {
+                TextButton(onClick = { onPending(action, ReviewAction.SKIP) }, enabled = enabled) { Text(stringResource(R.string.review_skip)) }
+                TextButton(onClick = { onPending(action, ReviewAction.RESCHEDULE) }, enabled = enabled) { Text(stringResource(R.string.review_reschedule)) }
+            }
+            HorizontalDivider()
+        }
+    }
 }
 @Composable fun PackageSummary(dashboard: DashboardOut?) {
     val value = dashboard?.`package`

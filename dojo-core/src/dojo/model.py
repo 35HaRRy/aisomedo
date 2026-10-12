@@ -402,6 +402,8 @@ class NotificationResult:
 
 
 REVIEW_REQUIRED_TITLE = "Yayın İncelemesi Bekliyor"
+EMPTY_PACKAGE_TITLE = "Dojo Paylaşım Paketi Boş"
+EMPTY_PACKAGE_BODY = "Yayın Zamanı geldi. Medya yükleyin, atlayın veya yeniden zamanlayın."
 REVIEW_REQUIRED_BODY = (
     "Paketiniz incelemeyi bekliyor. Lütfen onaylayın, atlayın veya yeniden planlayın."
 )
