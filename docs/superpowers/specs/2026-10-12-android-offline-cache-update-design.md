@@ -5,7 +5,7 @@ Date: 2026-10-12
 Source: [issue #37](https://github.com/35HaRRy/aisomedo/issues/37), part of #1.
 Prerequisites #32 and #33 are closed.
 
-Status: design direction approved on 2026-10-12; written specification awaits review.
+Status: written specification approved on 2026-10-12; implementation plan awaits review.
 
 ## Intent and scope
 
@@ -194,6 +194,6 @@ notes with observed results and remaining manual checks alongside implementation
 - [x] Inspect issue, adjacent scope, and existing seams.
 - [x] Approve design direction.
 - [x] Write and self-review this specification.
-- [ ] User approves the written specification.
+- [x] User approves the written specification.
 - [ ] Write implementation plan; user selects execution method.
 - [ ] Implement test-first and verify acceptance evidence.
