@@ -60,3 +60,5 @@ google-services.json
 /.verify-prod-health.env
 /.verify-monitoring-*/
 /.ci-monitoring.env
+
+fcm_credentials.json
