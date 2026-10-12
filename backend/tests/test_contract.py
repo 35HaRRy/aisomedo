@@ -12,6 +12,18 @@ from backend.main import create_app
 UPDATE_URL = "https://example.com/dojo-latest.apk"
 
 
+def test_empty_occurrence_contract_requires_folder_and_typed_result(tmp_path):
+    schema = make_contract_app(tmp_path).app.openapi()
+    models = schema["components"]["schemas"]
+    assert models["EmptySkipIn"]["required"] == ["expected_folder_name"]
+    assert models["EmptyRescheduleIn"]["required"] == ["expected_folder_name", "new_due_at"]
+    for action in ["skip", "reschedule"]:
+        operation = schema["paths"][f"/api/reviews/occurrences/{{occurrence_id}}/{action}"]["post"]
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/OccurrenceDecisionOut",
+        }
+
+
 def make_contract_app(tmp_path: Path) -> TestClient:
     store = InMemoryStore()
     publishing = DojoPublishing(

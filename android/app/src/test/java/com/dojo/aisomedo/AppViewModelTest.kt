@@ -1,10 +1,17 @@
 package com.dojo.aisomedo
+import kotlinx.coroutines.async
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModelStore
 import com.dojo.aisomedo.auth.SessionStore
 import com.dojo.aisomedo.uploads.UploadIssue
 import com.dojo.aisomedo.editor.*
+import com.dojo.aisomedo.reviews.*
+import com.dojo.aisomedo.notifications.*
+import com.dojo.aisomedo.uploads.UploadRecord
+import com.dojo.aisomedo.uploads.UploadPhase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -35,7 +42,8 @@ class AppViewModelTest {
         var delayPath: String? = null
         val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
         val origin: String
-        val model: AppViewModel
+        var model: AppViewModel
+        val saved = SavedStateHandle()
         var stopped = 0
         var tokenAtStop: String? = null
         private val owner = ViewModelStore()
@@ -65,7 +73,7 @@ class AppViewModelTest {
             origin = server.url("/").toString().trimEnd('/')
             if (configure) store.setOrigin(origin)
             if (paired) store.saveToken(origin, "DEVICE")
-            model = AppViewModel(store, OkHttpClient(), 1, true, SavedStateHandle()) {
+            model = AppViewModel(store, OkHttpClient(), 1, true, saved) {
                 stopped++
                 tokenAtStop = store.readToken(origin)
             }
@@ -75,7 +83,556 @@ class AppViewModelTest {
             repeat(500) { main.scheduler.runCurrent(); if (predicate(model.state.value)) return; Thread.sleep(10) }
             fail("State did not arrive: ${model.state.value}")
         }
+        fun recreate() {
+            owner.clear()
+            model = AppViewModel(store, OkHttpClient(), 1, true, saved)
+            owner.put("model", model)
+        }
         override fun close() { owner.clear(); server.shutdown(); dir.deleteRecursively() }
+    }
+
+    private fun reviewJson(id: Int = 7, status: String = "pending", version: Int = 3, revision: String = "exact", ready: Boolean = true) =
+        """{"next_regular_at":"2099-10-19T10:00:00+03:00","preview_url":"/api/packages/active/render/preview?revision=$revision","render_ready":$ready,"review":{"caption":"Exact caption\n#dojo","created_at":"2026-10-11T10:00:00+03:00","id":$id,"occurrence_id":2,"package_folder":"active","revision_digest":"$revision","status":"$status","version":$version}}"""
+
+    private fun Fixture.openPreparedReview() {
+        await { it.phase == Phase.READY && !it.busy }
+        bodies["/api/reviews/7"] = reviewJson()
+        model.openReview(ReviewTarget(reviewId = 7))
+        await { it.review.detail != null && !it.review.busy }
+        model.markReviewPreviewReady(7, "exact", true)
+        assertTrue(model.state.value.review.canApprove)
+    }
+
+    @Test fun preparedPreviewSurvivesSameRevisionRefresh() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertTrue(f.model.state.value.review.canApprove)
+            f.bodies["/api/reviews/7"] = reviewJson(revision = "new", ready = false)
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertFalse(f.model.state.value.review.canApprove)
+            f.model.markReviewPreviewReady(7, "exact", true)
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun oldTargetReadCannotReplaceNewReviewOrAuthorizeItsPreview() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.bodies["/api/reviews/8"] = reviewJson(id = 8, revision = "other")
+            f.delayPath = "/api/reviews/7"
+            f.model.openReview(ReviewTarget(reviewId = 7))
+            repeat(500) { main.scheduler.runCurrent(); if ("GET /api/reviews/7" !in f.seen) Thread.sleep(10) }
+            f.model.openReview(ReviewTarget(reviewId = 8))
+            f.await { it.review.detail?.review?.id == 8 && !it.review.busy }
+            f.model.markReviewPreviewReady(7, "exact", true)
+            assertFalse(f.model.state.value.review.canApprove)
+            f.model.markReviewPreviewReady(8, "other", true)
+            assertTrue(f.model.state.value.review.canApprove)
+            assertEquals(8, f.model.state.value.review.detail!!.review.id)
+        }
+    }
+
+    @Test fun explicitApprovePostsOnceWithDisplayedVersionAndReadsBackOutcome() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.bodies["/api/reviews/7/approve"] = """{"publication":{"state":"confirmed"}}"""
+            f.bodies["/api/reviews/7"] = reviewJson(status = "approved", version = 4)
+            f.model.approveReview(); f.model.approveReview()
+            f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/reviews/7/approve" })
+            assertEquals("approved", f.model.state.value.review.detail!!.review.status)
+            assertEquals("confirmed", f.model.state.value.review.publication!!["state"]!!.toString().trim('"'))
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun openingDecisionFormNeverPostsAndSkipRequiresItsForm() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.model.skipReview(); main.scheduler.runCurrent()
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+            f.model.requestReviewAction(ReviewAction.SKIP)
+            main.scheduler.runCurrent()
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+            f.bodies["/api/reviews/7/skip"] = "{}"
+            f.bodies["/api/reviews/7"] = reviewJson(status = "skipped", version = 4)
+            f.model.skipReview(); f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/reviews/7/skip" })
+        }
+    }
+
+    @Test fun conflictReadsBackHandledVersusStaleAndNeverAutomaticallyRepeats() = runTest(main.scheduler) {
+        for (handled in listOf(false, true)) Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.codes["/api/reviews/7/approve"] = 409
+            if (handled) f.bodies["/api/reviews/7"] = reviewJson(status = "skipped", version = 4)
+            f.model.approveReview(); f.await { !it.review.busy }
+            assertEquals(if (handled) ReviewIssue.ALREADY_HANDLED else ReviewIssue.STALE, f.model.state.value.review.issue)
+            assertTrue(f.model.state.value.review.readRequired)
+            f.model.approveReview(); main.scheduler.runCurrent()
+            assertEquals(1, f.seen.count { it == "POST /api/reviews/7/approve" })
+        }
+    }
+
+    @Test fun ambiguousMutationRequiresExplicitReadBeforeRetry() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.bodies["/api/reviews/7/approve"] = "[]"
+            f.model.approveReview(); f.await { !it.review.busy }
+            assertEquals(ReviewIssue.UNCERTAIN, f.model.state.value.review.issue)
+            assertTrue(f.model.state.value.review.readRequired)
+            f.model.approveReview(); main.scheduler.runCurrent()
+            assertEquals(1, f.seen.count { it == "POST /api/reviews/7/approve" })
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertFalse(f.model.state.value.review.readRequired)
+            assertTrue(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun reviewReadFailuresRespectMissingAuthAndVersionGates() = runTest(main.scheduler) {
+        for (code in listOf(404, 401, 426, 503)) Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.codes["/api/reviews/7"] = code
+            f.model.openReview(ReviewTarget(reviewId = 7))
+            f.await { !it.review.busy }
+            when (code) {
+                401 -> { assertEquals(Phase.PAIRING, f.model.state.value.phase); assertNull(f.store.readToken(f.origin)) }
+                426 -> assertEquals(Phase.UPDATE_REQUIRED, f.model.state.value.phase)
+                404 -> assertEquals(ReviewIssue.NOT_FOUND, f.model.state.value.review.issue)
+                503 -> assertEquals(ReviewIssue.NETWORK, f.model.state.value.review.issue)
+            }
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun oldSessionOrClosedReviewCannotApplyDelayedRead() = runTest(main.scheduler) {
+        for (switchServer in listOf(false, true)) Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.delayPath = "/api/reviews/7"
+            f.model.openReview(ReviewTarget(reviewId = 7)); main.scheduler.runCurrent()
+            if (switchServer) f.model.changeServer() else f.model.closeReview()
+            repeat(120) { main.scheduler.runCurrent(); Thread.sleep(10) }
+            assertNull(f.model.state.value.review.target)
+            assertNull(f.model.state.value.review.detail)
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun notificationVersionOrPackageMismatchCannotAuthorizeAnotherReview() = runTest(main.scheduler) {
+        for (target in listOf(ReviewTarget(reviewId = 7, packageFolder = "old", expectedVersion = 3),
+            ReviewTarget(reviewId = 7, packageFolder = "active", expectedVersion = 2))) {
+            Fixture(paired = true).use { f ->
+                f.await { it.phase == Phase.READY && !it.busy }
+                f.bodies["/api/reviews/7"] = reviewJson()
+                f.model.openReview(target); f.await { !it.review.busy }
+                assertEquals(ReviewIssue.STALE, f.model.state.value.review.issue)
+                f.model.markReviewPreviewReady(7, "exact", true)
+                assertFalse(f.model.state.value.review.canApprove)
+            }
+        }
+    }
+
+    @Test fun recreationReloadsDurableInboxAndSavedTargetWithoutSubmitting() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.model.requestReviewAction(ReviewAction.RESCHEDULE)
+            f.recreate()
+            f.await { it.phase == Phase.READY && !it.busy && it.review.detail != null && !it.review.busy }
+            assertEquals(ReviewAction.RESCHEDULE, f.model.state.value.review.target!!.action)
+            assertFalse(f.model.state.value.review.canApprove)
+            assertTrue(f.seen.count { it == "GET /api/dashboard" } >= 2)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+            assertTrue(f.saved.keys().none { it.contains("token") })
+        }
+    }
+
+    @Test fun invalidRescheduleTimeCanBeCorrectedWithoutReopeningForm() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.model.requestReviewAction(ReviewAction.RESCHEDULE)
+            f.model.rescheduleReview(java.time.LocalDate.of(2020, 1, 1), java.time.LocalTime.NOON)
+            assertEquals(ReviewIssue.INVALID_TIME, f.model.state.value.review.issue)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+            f.bodies["/api/reviews/7/reschedule"] = "{}"
+            f.bodies["/api/reviews/7"] = reviewJson(status = "rescheduled", version = 4)
+            f.model.rescheduleReview(java.time.LocalDate.of(2099, 10, 11), java.time.LocalTime.NOON)
+            f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/reviews/7/reschedule" })
+        }
+    }
+
+    @Test fun rotatedBindingCannotSubmitWithOldReviewCredentials() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.store.saveToken(f.origin, "REPLACEMENT_DEVICE")
+            f.model.approveReview(); f.await { !it.review.busy }
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+            assertNull(f.model.state.value.review.detail)
+            assertEquals("REPLACEMENT_DEVICE", f.store.readToken(f.origin))
+        }
+    }
+
+    @Test fun rotatedBindingCannotAcceptOldDelayedReviewRead() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.delayPath = "/api/reviews/7"
+            f.model.openReview(ReviewTarget(reviewId = 7))
+            repeat(500) { main.scheduler.runCurrent(); if ("GET /api/reviews/7" !in f.seen) Thread.sleep(10) }
+            assertTrue("GET /api/reviews/7" in f.seen)
+            f.store.saveToken(f.origin, "REPLACEMENT_DEVICE")
+            f.await { !it.review.busy }
+            assertNull(f.model.state.value.review.detail)
+            assertEquals("REPLACEMENT_DEVICE", f.store.readToken(f.origin))
+        }
+    }
+
+    @Test fun refreshingReplacementSessionDiscardsPreviouslyPreparedReview() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.store.saveToken(f.origin, "REPLACEMENT_DEVICE")
+            f.model.refresh(); f.await { !it.busy }
+            assertNull(f.model.state.value.review.target)
+            assertFalse(f.model.state.value.review.canApprove)
+            assertTrue(f.saved.keys().none { it.startsWith("review_") })
+            assertEquals("REPLACEMENT_DEVICE", f.store.readToken(f.origin))
+        }
+    }
+
+    @Test fun previewTransferRequiresExactIdentityAndDoesNotPreparePlayerByItself() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.model.openReview(ReviewTarget(reviewId = 7)); f.await { !it.review.busy }
+            val path = "/api/packages/active/render/preview?revision=exact"
+            f.bodies[path] = "preview"
+            val file = f.dir.resolve("private-review.mp4")
+            val transfer = async { f.model.downloadReviewPreview(7, "exact", file) }
+            f.await { transfer.isCompleted }
+            transfer.await()
+            assertEquals("preview", file.readText())
+            assertFalse(f.model.state.value.review.canApprove)
+            val rejected = async { runCatching { f.model.downloadReviewPreview(7, "old", file) } }
+            f.await { rejected.isCompleted }
+            assertTrue(rejected.await().isFailure)
+            assertFalse(file.exists())
+            assertEquals(1, f.seen.count { it == "GET $path" })
+        }
+    }
+
+    @Test fun sessionSwitchRejectsPreviewAndDeletesOwnedFile() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            val path = "/api/packages/active/render/preview?revision=exact"
+            f.bodies[path] = "preview"
+            f.delayPath = path
+            val file = f.dir.resolve("private-review.mp4")
+            val transfer = async { runCatching { f.model.downloadReviewPreview(7, "exact", file) } }
+            repeat(500) { main.scheduler.runCurrent(); if ("GET $path" !in f.seen) Thread.sleep(10) }
+            assertTrue("GET $path" in f.seen)
+            f.model.changeServer()
+            f.await { transfer.isCompleted }
+            assertTrue(transfer.await().isFailure)
+            assertFalse(file.exists())
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun previewDisposalRevokesReadinessEvenDuringUncertainMutation() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.bodies["/api/reviews/7/approve"] = "[]"
+            f.model.approveReview(); f.await { !it.review.busy }
+            f.model.markReviewPreviewReady(7, "exact", false)
+            assertFalse(f.model.state.value.review.previewReady)
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun pollingDoesNotResolveUncertainCommandOrOverwriteActionDraft() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.model.requestReviewAction(ReviewAction.RESCHEDULE)
+            f.model.pollReview(); f.await { !it.review.busy }
+            assertEquals(ReviewAction.RESCHEDULE, f.model.state.value.review.target!!.action)
+            f.bodies["/api/reviews/7/approve"] = "[]"
+            f.model.approveReview(); f.await { !it.review.busy }
+            val reads = f.seen.count { it == "GET /api/reviews/7" }
+            f.model.pollReview(); main.scheduler.runCurrent()
+            assertEquals(reads, f.seen.count { it == "GET /api/reviews/7" })
+            assertTrue(f.model.state.value.review.readRequired)
+        }
+    }
+
+    @Test fun notificationShortcutOpensFormWithoutPostingAndRejectsOldBinding() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/reviews/7"] = reviewJson()
+            val target = NotificationTarget("review_required", "active", 7, 3, action = ReviewAction.SKIP)
+            f.model.openNotification(target, f.origin, "old")
+            main.scheduler.runCurrent(); assertNull(f.model.state.value.review.target)
+            f.model.openNotification(target, f.origin, f.store.readSession(f.origin)!!.bindingId)
+            f.await { it.review.detail != null && !it.review.busy }
+            assertEquals(ReviewAction.SKIP, f.model.state.value.review.target!!.action)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun notificationDuringStartupRestoresAfterRecreationWithoutSubmitting() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.model.openNotification(NotificationTarget("review_required", "active", 7, 3, action = ReviewAction.RESCHEDULE), f.origin, f.store.readSession(f.origin)!!.bindingId)
+            f.recreate()
+            f.await { it.phase == Phase.READY && !it.busy && it.review.detail != null && !it.review.busy }
+            assertEquals(ReviewAction.RESCHEDULE, f.model.state.value.review.target!!.action)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun publicationLaunchShowsNamedActivityContextWithoutMutation() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.openNotification(NotificationTarget("publication_confirmed", "completed-folder"), f.origin, f.store.readSession(f.origin)!!.bindingId)
+            f.await { !it.busy }
+            assertEquals(Destination.ACTIVITY, f.model.state.value.destination)
+            assertEquals("completed-folder", f.model.state.value.outcomePackage)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun pushAuthAndVersionFailuresOnlyAffectCapturedCurrentBinding() = runTest(main.scheduler) {
+        for (code in listOf(401, 426)) Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val binding = f.store.readSession(f.origin)!!.bindingId
+            f.model.observePushFailure(PushFailure(f.origin, "old", code))
+            assertEquals(Phase.READY, f.model.state.value.phase)
+            f.model.observePushFailure(PushFailure("https://other.example", binding, code))
+            assertEquals(Phase.READY, f.model.state.value.phase)
+            f.model.observePushFailure(PushFailure(f.origin, binding, code))
+            assertEquals(if (code == 401) Phase.PAIRING else Phase.UPDATE_REQUIRED, f.model.state.value.phase)
+        }
+    }
+
+    private fun Fixture.pendingDashboard(state: String = "empty_package", review: Int? = null, folder: String = "active", includeOriginal: Boolean = true) {
+        val base = kotlinx.serialization.json.Json.parseToJsonElement(bodies["/api/dashboard"]!!).jsonObject
+        val pkg = kotlinx.serialization.json.Json.parseToJsonElement(editorJson(folder = folder)).jsonObject["package"]!!
+        val original = """{"due_at":"2026-08-03T10:00:00+03:00","occurrence_id":2,"package_folder":"$folder","review_id":${review ?: "null"},"state":"$state","version":${if (review != null) 3 else "null"}}"""
+        val actions = kotlinx.serialization.json.Json.parseToJsonElement(if (includeOriginal) "[$original]" else "[]")
+        bodies["/api/dashboard"] = kotlinx.serialization.json.JsonObject(base + mapOf("package" to pkg, "pending_actions" to actions)).toString()
+    }
+    private fun Fixture.openEmptyContinuation() {
+        await { it.phase == Phase.READY && !it.busy }
+        pendingDashboard()
+        bodies["/api/packages/active/render"] = """{"render_revision":"exact","stale":true}"""
+        model.openReview(ReviewTarget(occurrenceId = 2, packageFolder = "active", action = ReviewAction.UPLOAD))
+        await { !it.review.busy && !it.busy }
+    }
+    private fun Fixture.uploadRow(phase: UploadPhase, binding: String = store.readSession(origin)!!.bindingId) =
+        UploadRecord("synthetic", origin, binding, "content://synthetic/clip", "clip.mp4", "video/mp4", 1, phase = phase)
+
+    @Test fun continuationSelectionRejectsStaleTargetAndReplacementDuringPicker() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            val packageId = f.model.reviewUploadPackageId!!
+            var selections = 0
+            f.pendingDashboard(folder = "replacement")
+            f.model.enqueueReviewUploads(packageId) { selections++ }
+            f.await { !it.review.busy }
+            assertEquals(0, selections)
+            assertNull(f.model.reviewUploadPackageId)
+            f.model.enqueueReviewUploads(packageId) { selections++ }
+            main.scheduler.runCurrent()
+            assertEquals(0, selections)
+        }
+    }
+    @Test fun preparingHistoricalReviewDoesNotStealContinuationFromReadySuccessor() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            f.pendingDashboard("preparing", 7)
+            f.bodies["/api/reviews/7"] = reviewJson(ready = false)
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertNull(f.model.state.value.review.target!!.reviewId)
+            assertEquals(ReviewAction.UPLOAD, f.model.state.value.review.target!!.action)
+            f.pendingDashboard("review_ready", 8)
+            val dashboard = kotlinx.serialization.json.Json.parseToJsonElement(f.bodies["/api/dashboard"]!!).jsonObject
+            val old = kotlinx.serialization.json.Json.parseToJsonElement("""{"due_at":"now","occurrence_id":2,"package_folder":"active","review_id":7,"state":"preparing","version":3}""")
+            f.bodies["/api/dashboard"] = kotlinx.serialization.json.JsonObject(dashboard + ("pending_actions" to kotlinx.serialization.json.JsonArray(listOf(old) + dashboard["pending_actions"]!!.jsonArray))).toString()
+            f.bodies["/api/reviews/8"] = reviewJson(id = 8)
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertEquals(8, f.model.state.value.review.target!!.reviewId)
+            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+        }
+    }
+    @Test fun failedGlobalRefreshBlocksAllReviewMutationsUntilRecovery() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            f.codes["/api/compat"] = 503
+            f.model.refresh(); f.await { !it.busy }
+            assertTrue(f.model.state.value.stale)
+            f.model.approveReview()
+            f.await { !it.review.busy }
+            f.model.requestReviewAction(ReviewAction.SKIP); f.model.skipReview()
+            f.await { !it.review.busy }
+            f.model.requestReviewAction(ReviewAction.RESCHEDULE)
+            f.model.rescheduleReview(java.time.LocalDate.of(2099, 10, 19), java.time.LocalTime.NOON)
+            f.await { !it.review.busy }
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+            f.codes.remove("/api/compat")
+            f.model.refresh(); f.await { !it.busy && !it.review.busy }
+            assertFalse(f.model.state.value.stale)
+        }
+    }
+    @Test fun conflictReadbackRefreshesHandledInboxWithoutReplay() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.pendingDashboard("review_ready", 7)
+            f.openPreparedReview()
+            f.codes["/api/reviews/7/approve"] = 409
+            f.bodies["/api/reviews/7"] = reviewJson(status = "approved", version = 4)
+            f.pendingDashboard(includeOriginal = false)
+            f.model.approveReview(); f.await { !it.review.busy }
+            assertEquals(ReviewIssue.ALREADY_HANDLED, f.model.state.value.review.issue)
+            f.model.closeReview()
+            assertTrue(f.model.state.value.dashboard!!.pendingActions.isEmpty())
+            assertEquals(1, f.seen.count { it == "POST /api/reviews/7/approve" })
+        }
+    }
+    @Test fun foregroundReceiptRefreshesInboxOnlyForCurrentSession() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.pendingDashboard("review_ready", 7)
+            val binding = f.store.readSession(f.origin)!!.bindingId
+            f.model.observePushReceipt(PushReceipt(f.origin, "old"))
+            main.scheduler.runCurrent()
+            assertTrue(f.model.state.value.dashboard!!.pendingActions.isEmpty())
+            f.model.observePushReceipt(PushReceipt(f.origin, binding))
+            f.await { !it.busy }
+            assertEquals(7, f.model.state.value.dashboard!!.pendingActions.single().reviewId)
+            assertTrue(f.seen.none { it.startsWith("POST /api/reviews") })
+        }
+    }
+    @Test fun receiptDuringActiveRefreshQueuesAuthoritativeFollowup() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val reads = f.seen.count { it == "GET /api/dashboard" }
+            f.delayPath = "/api/dashboard"
+            f.model.refresh()
+            f.await { f.seen.count { path -> path == "GET /api/dashboard" } > reads }
+            f.pendingDashboard("review_ready", 7)
+            f.model.observePushReceipt(PushReceipt(f.origin, f.store.readSession(f.origin)!!.bindingId))
+            f.delayPath = null
+            f.await { !it.busy }
+            assertEquals(7, f.model.state.value.dashboard!!.pendingActions.singleOrNull()?.reviewId)
+            assertEquals(reads + 2, f.seen.count { it == "GET /api/dashboard" })
+        }
+    }
+    @Test fun explicitSuccessfulRefreshAdvancesAuthoritativeDashboardEvenIfPayloadUnchanged() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val first = f.model.state.value.dashboardRevision
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals(first + 1, f.model.state.value.dashboardRevision)
+            f.codes["/api/dashboard"] = 503
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals(first + 1, f.model.state.value.dashboardRevision)
+        }
+    }
+
+    @Test fun unresolvedLocalUploadsCannotRenderAndForeignSessionRowsDoNotBlock() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            for (phase in listOf(UploadPhase.QUEUED, UploadPhase.PROCESSING, UploadPhase.CONFLICT, UploadPhase.FAILED, UploadPhase.WAITING, UploadPhase.RETRYABLE)) {
+                f.model.continueReview(listOf(f.uploadRow(phase)))
+                main.scheduler.runCurrent()
+                assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+            }
+            f.pendingDashboard("preparing")
+            f.model.continueReview(listOf(f.uploadRow(UploadPhase.CONFLICT, "old-binding")))
+            f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+        }
+    }
+    @Test fun finalizedUploadsRenderOnceThenBindExactOccurrenceNotUnrelatedReview() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            assertEquals(Destination.PACKAGE, f.model.state.value.destination)
+            f.pendingDashboard("preparing")
+            f.model.continueReview(listOf(f.uploadRow(UploadPhase.FINALIZED)))
+            f.await { !it.review.busy }
+            assertTrue(f.model.state.value.review.continuing)
+            f.model.continueReview(listOf(f.uploadRow(UploadPhase.FINALIZED)))
+            main.scheduler.runCurrent()
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+            f.pendingDashboard("review_ready", 7)
+            val dashboard = kotlinx.serialization.json.Json.parseToJsonElement(f.bodies["/api/dashboard"]!!).jsonObject
+            val other = kotlinx.serialization.json.Json.parseToJsonElement("""{"due_at":"now","occurrence_id":99,"package_folder":"active","review_id":8,"state":"review_ready","version":3}""")
+            f.bodies["/api/dashboard"] = kotlinx.serialization.json.JsonObject(dashboard + ("pending_actions" to kotlinx.serialization.json.JsonArray(listOf(other) + dashboard["pending_actions"]!!.jsonArray))).toString()
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertEquals(7, f.model.state.value.review.target!!.reviewId)
+            assertEquals(2, f.model.state.value.review.detail!!.review.occurrenceId)
+            assertFalse(f.model.state.value.review.previewReady)
+            assertTrue(f.seen.none { it.contains("manual-publish") || it == "GET /api/reviews/8" })
+            f.model.closeReview()
+            assertEquals(Destination.DASHBOARD, f.model.state.value.destination)
+        }
+    }
+    @Test fun workerFirstRenderAndReviewRequireNoRenderPost() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            f.pendingDashboard("review_ready", 7)
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.model.continueReview(emptyList()); f.await { !it.review.busy }
+            assertEquals(7, f.model.state.value.review.target!!.reviewId)
+            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+        }
+    }
+    @Test fun failedRenderNeedsExplicitRetryAndRecreationNeverReplaysIt() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            f.pendingDashboard("preparing")
+            f.bodies["/api/packages/active/editor"] = editorJson().dropLast(1) + ",\"render_status\":\"failed\"}"
+            f.model.continueReview(emptyList()); f.await { !it.review.busy }
+            assertEquals(ReviewIssue.RENDER_FAILED, f.model.state.value.review.issue)
+            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+            f.model.continueReview(emptyList(), retry = true); f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+            f.recreate(); f.await { it.phase == Phase.READY && !it.review.busy && !it.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+        }
+    }
+    @Test fun resolvedOrReplacedEmptyOccurrenceCannotRenderNewPackage() = runTest(main.scheduler) {
+        for (resolved in listOf(false, true)) Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            if (resolved) f.pendingDashboard(includeOriginal = false) else f.pendingDashboard(folder = "replacement")
+            f.model.continueReview(emptyList()); f.await { !it.review.busy }
+            assertEquals(if (resolved) ReviewIssue.ALREADY_HANDLED else ReviewIssue.PACKAGE_CHANGED, f.model.state.value.review.issue)
+            assertFalse(f.model.state.value.review.continuing)
+            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+        }
+    }
+    @Test fun serverRejectingReplacementBetweenRenderTapAndResponseStopsContinuation() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation(); f.pendingDashboard("preparing")
+            f.codes["/api/packages/active/render"] = 409
+            f.model.continueReview(emptyList()); f.await { !it.review.busy }
+            assertFalse(f.model.state.value.review.continuing)
+            assertTrue(f.model.state.value.review.readRequired)
+            assertEquals(ReviewIssue.PACKAGE_CHANGED, f.model.state.value.review.issue)
+        }
+    }
+    @Test fun independentReviewAfterContinuationDoesNotInheritPreviousOccurrenceGuard() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            f.pendingDashboard("review_ready", 7)
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.model.refreshReview(); f.await { !it.review.busy }
+            f.bodies["/api/reviews/8"] = reviewJson(id = 8).replace("\"occurrence_id\":2", "\"occurrence_id\":99")
+            f.model.openReview(ReviewTarget(reviewId = 8)); f.await { !it.review.busy }
+            assertEquals(8, f.model.state.value.review.detail?.review?.id)
+            assertNull(f.model.state.value.review.issue)
+            assertFalse(f.model.state.value.review.continuing)
+        }
     }
 
     @Test fun openingPackageReadsEditorWithoutCreatingPackage() = runTest(main.scheduler) {

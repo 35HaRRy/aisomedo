@@ -32,7 +32,9 @@ class DojoApi(private val origin: String, private val token: String?, private va
         val builder = Request.Builder().url(url).header("X-Android-Version-Code", versionCode.toString())
         if (authenticated && token != null) builder.header("Authorization", "Bearer $token")
         builder.method(method, body ?: if (method == "POST" || method == "PUT" || method == "PATCH") ByteArray(0).toRequestBody() else null)
-        val call = client.newCall(builder.build())
+        val transport = if (method == "POST" && path.startsWith("/api/reviews/") && path.endsWith("/approve"))
+            client.newBuilder().readTimeout(120, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build() else client
+        val call = transport.newCall(builder.build())
         return suspendCancellableCoroutine { continuation ->
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
@@ -98,6 +100,21 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun me(): ClientOut = decode(request("GET", "/api/pairing/me"))
     suspend fun dashboard(): DashboardOut = decode(request("GET", "/api/dashboard"))
     suspend fun setup(): SetupOut = decode(request("GET", "/api/setup"))
+    suspend fun review(id: Int): ReviewDetailOut = decode(request("GET", "/api/reviews/$id"))
+    private suspend fun reviewDecision(id: Int, action: String, body: JsonElement): JsonObject =
+        request("POST", "/api/reviews/$id/$action", body) as? JsonObject ?: throw SerializationException("Invalid review response")
+    suspend fun approveReview(id: Int, version: Int): JsonObject = reviewDecision(id, "approve", json.encodeToJsonElement(ApproveIn(version)))
+    suspend fun skipReview(id: Int, version: Int): JsonObject = reviewDecision(id, "skip", json.encodeToJsonElement(SkipIn(confirmed = true, version = version)))
+    suspend fun rescheduleReview(id: Int, version: Int, newDueAt: String): JsonObject = reviewDecision(id, "reschedule", json.encodeToJsonElement(RescheduleIn(newDueAt, version)))
+    suspend fun skipEmptyOccurrence(id: Int, body: EmptySkipIn): OccurrenceDecisionOut = decode(request("POST", "/api/reviews/occurrences/$id/skip", json.encodeToJsonElement(body)))
+    suspend fun rescheduleEmptyOccurrence(id: Int, body: EmptyRescheduleIn): OccurrenceDecisionOut = decode(request("POST", "/api/reviews/occurrences/$id/reschedule", json.encodeToJsonElement(body)))
+    suspend fun renderPackage(folder: String, retry: Boolean = false): RenderOut = decode(request("POST", "/api/packages/active/render", json.encodeToJsonElement(RenderIn(expectedFolderName = folder, retry = retry))))
+    suspend fun registerPushToken(token: String) { request("PUT", "/api/pairing/me/push-token", json.encodeToJsonElement(PushTokenIn(token))) }
+    suspend fun removePushToken() { request("DELETE", "/api/pairing/me/push-token") }
+    suspend fun downloadReviewPreview(path: String, destination: File, limit: Long = 512L * 1024 * 1024) {
+        try { bytes("GET", path, destination = destination, limit = limit) }
+        catch (e: Exception) { destination.delete(); throw e }
+    }
     suspend fun consent(): ConsentOut = decode(request("GET", "/api/setup/consent"))
     suspend fun acceptConsent(version: Int): AcceptanceOut = decode(request("POST", "/api/setup/consent/accept", buildJsonObject { put("version", version) }))
     suspend fun plan(): PlanOut = decode(request("GET", "/api/settings/plan"))

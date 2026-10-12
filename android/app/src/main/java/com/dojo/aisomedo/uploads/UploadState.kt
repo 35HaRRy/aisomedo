@@ -21,6 +21,7 @@ enum class QueueOutcome { IDLE, RETRY, AUTH_REQUIRED, UPDATE_REQUIRED }
     val issue: UploadIssue? = null, val diagnostic: String? = null,
     val revision: Long = 0, val failures: Int = 0, val retryAtMillis: Long? = null,
     val pendingDecision: String? = null,
+    val expectedPackageId: Int? = null,
 )
 
 val conflictDecisions = setOf("keep_both", "keep_selected", "keep_target")

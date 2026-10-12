@@ -1217,6 +1217,12 @@ class PostgresStore:
             ).all()
             return [self._occ_from_row(r) for r in rows]
 
+    def has_for_occurrence(self, occurrence_id: int) -> bool:
+        with self._session() as session:
+            return session.scalar(select(YayinIncelemesiRow.id).where(
+                YayinIncelemesiRow.occurrence_id == occurrence_id,
+            ).limit(1)) is not None
+
     def list_all(self) -> list[YayinZamani]:
         with self._session() as session:
             rows = session.scalars(select(YayinZamaniRow).order_by(YayinZamaniRow.id)).all()

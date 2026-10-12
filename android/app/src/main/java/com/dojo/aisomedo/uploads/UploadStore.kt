@@ -58,6 +58,7 @@ class UploadStore(private val directory: File) {
             require(row.filename.isNotBlank() && row.filename.length <= 1024 && row.contentType.length in 1..256)
             require(row.size == null || row.size > 0)
             require(row.revision >= 0 && row.failures in 0..5 && (row.retryAtMillis == null || row.retryAtMillis >= 0))
+            require(row.expectedPackageId == null || row.expectedPackageId > 0)
             row.identity?.let {
                 require(row.size == it.size && it.size > 0 && it.chunkHashes.size.toLong() == (it.size - 1) / CHUNK_BYTES + 1)
                 require((it.chunkHashes + it.fingerprint).all { hash -> hash.matches(Regex("[a-f0-9]{64}")) })

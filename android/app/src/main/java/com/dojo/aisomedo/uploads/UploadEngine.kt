@@ -207,12 +207,13 @@ class UploadEngine(
                     operation = "limits"
                     val limits = remote.uploadLimits()
                     if (limits.maxFileBytes <= 0 || limits.maxPackageBytes <= 0 || limits.activePackageId == null || limits.activePackageId < 0) throw UploadFailure(UploadIssue.INVALID_RESPONSE)
+                    if (row.expectedPackageId != null && row.expectedPackageId != limits.activePackageId) throw UploadFailure(UploadIssue.PACKAGE_CHANGED)
                     save { it.copy(phase = UploadPhase.PREPARING, issue = null) }
                     val identity = prepareFile({ open(row.uri) }, row.size, limits.maxFileBytes) { fence() }
                     save { it.copy(identity = identity, size = identity.size) }
                     fence()
                     operation = "init"
-                    accept(remote.startUpload(UploadInitIn(row.contentType, identity.size, limits.activePackageId, row.filename)))
+                    accept(remote.startUpload(UploadInitIn(row.contentType, identity.size, row.expectedPackageId ?: limits.activePackageId, row.filename)))
                 } else {
                     operation = "status"
                     accept(remote.uploadStatus(row.status!!.uploadId))

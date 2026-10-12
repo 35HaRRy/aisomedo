@@ -25,6 +25,9 @@ class UploadEngineTest {
         var status = "receiving"
         var error = 0
         var initError = 0
+        var initDetail = "package limit exceeded"
+        var activePackageId = 0
+        val initBodies = CopyOnWriteArrayList<String>()
         var max = 2L * CHUNK_BYTES
         var losePut = false
         var loseComplete = false
@@ -78,10 +81,11 @@ class UploadEngineTest {
                         }
                     }
                     if (request.method == "GET" && path.startsWith("/api/media/uploads/") && statusError != 0) return MockResponse().setResponseCode(statusError)
-                    if (path.endsWith("upload-limits")) return MockResponse().setBody("""{"max_file_bytes":$max,"max_package_bytes":$max,"active_package_id":0}""")
+                    if (path.endsWith("upload-limits")) return MockResponse().setBody("""{"max_file_bytes":$max,"max_package_bytes":$max,"active_package_id":$activePackageId}""")
                     if (request.method == "POST" && path.endsWith("uploads")) {
                         initializations++
-                        if (initError != 0) return MockResponse().setResponseCode(initError).setBody("""{"detail":"package limit exceeded"}""")
+                        initBodies.add(request.body.readUtf8())
+                        if (initError != 0) return MockResponse().setResponseCode(initError).setBody("""{"detail":"$initDetail"}""")
                     }
                     if (request.method == "PUT") {
                         val offset = request.requestUrl!!.queryParameter("offset")!!.toLong()
@@ -128,6 +132,30 @@ class UploadEngineTest {
             assertEquals(0, f.initializations)
             assertEquals("saved", f.store.rows.value.single().status!!.uploadId)
             assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun boundQueuedUploadCannotInitializeReplacementPackage() = runBlocking {
+        Fixture(ByteArray(8) { 7 }).use { f ->
+            val row = f.add(known = false)
+            f.store.mutate(row.id) { it.copy(expectedPackageId = 1) }
+            f.activePackageId = 2
+            f.engine.run {}
+            assertEquals(0, f.initializations)
+            assertEquals(UploadIssue.PACKAGE_CHANGED, f.store.rows.value.single().issue)
+        }
+    }
+    @Test fun capturedPackageGuardSurvivesQueueReloadAndInitializationRace() = runBlocking {
+        Fixture(ByteArray(8) { 7 }).use { f ->
+            val row = f.add(known = false)
+            f.store.mutate(row.id) { it.copy(expectedPackageId = 1) }
+            f.activePackageId = 1; f.initError = 409; f.initDetail = "active package changed"
+            val reloaded = UploadStore(f.directory)
+            val engine = UploadEngine(reloaded, { f.content.inputStream() }, { f.credential },
+                { record, auth -> DojoApi(record.origin, auth.token, 5, OkHttpClient()) }, { f.clock })
+            engine.run {}
+            assertEquals(1, f.initializations)
+            assertEquals(1, Json.parseToJsonElement(f.initBodies.single()).jsonObject["expected_package_id"]!!.jsonPrimitive.int)
+            assertEquals(UploadIssue.PACKAGE_CHANGED, reloaded.rows.value.single().issue)
         }
     }
     @Test fun conflictRefreshRecoversDecisionMadeOnAnotherClient() = runBlocking {

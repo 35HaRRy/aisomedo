@@ -41,19 +41,22 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
     onPause: (String) -> Unit, onResume: (String, Uri?) -> Unit, onRetry: (String, Uri?) -> Unit, onDismiss: (String) -> Unit,
     resolvingId: String? = null, onResolve: (String, ResolveConflictIn) -> Unit = { _, _ -> }, onRefresh: suspend () -> Unit = {},
     onPreview: suspend (String, ConflictTarget, File) -> Unit = { _, _, _ -> throw UploadFailure(UploadIssue.FILE_ACCESS) },
+    selectionEnabled: Boolean = true, selectionPackageId: Int? = null,
+    onSelectPackage: (List<Uri>, Int?) -> Unit = { uris, _ -> onSelect(uris) },
 ) {
     val context = LocalContext.current
     var pendingUris by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
     var replacementId by rememberSaveable { mutableStateOf<String?>(null) }
     var pickerIssue by remember { mutableStateOf<UploadIssue?>(null) }
+    var pickerPackageId by rememberSaveable { mutableStateOf<Int?>(null) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        onSelect(pendingUris.map(Uri::parse)); pendingUris = arrayListOf()
+        onSelectPackage(pendingUris.map(Uri::parse), pickerPackageId); pendingUris = arrayListOf()
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) {
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 pendingUris = ArrayList(uris.map(Uri::toString)); permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-            } else onSelect(uris)
+            } else onSelectPackage(uris, pickerPackageId)
         }
     }
     val original = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -62,7 +65,8 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
         if (id != null && uri != null) onResume(id, uri)
     }
     Column(Modifier.widthIn(max = 640.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Button(enabled = resolvingId == null, onClick = {
+        Button(enabled = resolvingId == null && selectionEnabled, onClick = {
+            pickerPackageId = selectionPackageId
             try { picker.launch(arrayOf("image/*", "video/*")); pickerIssue = null }
             catch (_: Exception) { pickerIssue = UploadIssue.FILE_ACCESS }
         }) { Text(stringResource(R.string.upload_select)) }

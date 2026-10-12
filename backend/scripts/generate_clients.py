@@ -201,6 +201,7 @@ def main() -> None:
         "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "MontageOut",
         "ClearPackageIn", "ClearPackageOut", "RenderIn", "RenderOut",
         "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn",
+        "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut",
     ]))
     WEB_TARGET.parent.mkdir(parents=True, exist_ok=True)
     WEB_TARGET.write_text("\n".join(ts_lines), encoding="utf-8")
@@ -232,6 +233,8 @@ def main() -> None:
         "AttemptOut", "SelectIn",
         "UploadLimitsOut", "UploadInitIn", "UploadOut",
         "ActiveEditorOut", "SelectionIn", "OrderIn", "ResolveConflictIn",
+        "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn", "RenderIn", "RenderOut",
+        "PushTokenIn", "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut",
     ]))
     ANDROID_TARGET.parent.mkdir(parents=True, exist_ok=True)
     ANDROID_TARGET.write_text("\n".join(kt_lines), encoding="utf-8")
