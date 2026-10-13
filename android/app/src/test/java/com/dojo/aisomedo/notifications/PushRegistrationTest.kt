@@ -1,6 +1,7 @@
 package com.dojo.aisomedo.notifications
 
 import com.dojo.aisomedo.auth.SessionStore
+import com.dojo.aisomedo.offline.SnapshotStore
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.*
@@ -8,9 +9,64 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.KeyGenerator
 
 class PushRegistrationTest {
+    @Test fun disconnectedOrUnsupportedAccessCannotRegisterOrRemoveToken() = runBlocking {
+        Fixture().use { f ->
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val registration = PushRegistration(f.store, OkHttpClient(), 5, scope, allowed = { _, _ -> false })
+            try {
+                f.server.enqueue(MockResponse().setBody("{}"))
+                registration.refresh("TOKEN")
+                withTimeout(5000) { while (registration.busy) delay(10) }
+                registration.stopSession()
+                assertNull(withContext(Dispatchers.IO) { f.server.takeRequest(300, TimeUnit.MILLISECONDS) })
+            } finally { scope.cancel() }
+        }
+    }
+    @Test fun backgroundVersionRejectionPersistsBeforeFailureSignal() = runBlocking {
+        Fixture().use { f ->
+            val snapshots = SnapshotStore(f.directory.resolve("offline"))
+            snapshots.update(f.origin) { it.copy(updateUrl = "https://dojo.example/release") }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val registration = PushRegistration(f.store, OkHttpClient(), 5, scope, snapshots)
+            try {
+                f.server.enqueue(MockResponse().setResponseCode(426).setBody("{}"))
+                registration.refresh("TOKEN")
+                withTimeout(5000) { while (registration.busy) delay(10) }
+                assertEquals(426, registration.failure.value?.status)
+                val cached = snapshots.read(f.origin, f.store.readSession(f.origin)!!.bindingId)!!
+                assertEquals(5, cached.rejectedVersionCode)
+                assertEquals("https://dojo.example/release", cached.updateUrl)
+                assertFalse(registration.ready.value)
+            } finally { scope.cancel() }
+        }
+    }
+    @Test fun receivedRejectionAfterDisconnectStillStopsSessionAndPersistsUpdate() = runBlocking {
+        Fixture().use { f ->
+            val snapshots = SnapshotStore(f.directory.resolve("offline"))
+            val allowed = AtomicBoolean(true)
+            val rejected = AtomicInteger()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val registration = PushRegistration(f.store, OkHttpClient(), 5, scope, snapshots,
+                { _, _ -> allowed.get() }, { rejected.set(it.status) })
+            try {
+                f.server.enqueue(MockResponse().setResponseCode(426)
+                    .setBody("""{"update_url":"https://dojo.example/new-release"}""").setBodyDelay(200, TimeUnit.MILLISECONDS))
+                registration.refresh("TOKEN")
+                assertNotNull(withContext(Dispatchers.IO) { f.server.takeRequest(5, TimeUnit.SECONDS) })
+                allowed.set(false)
+                withTimeout(5000) { while (registration.busy) delay(10) }
+                val cached = snapshots.read(f.origin, f.store.readSession(f.origin)!!.bindingId)!!
+                assertEquals(5, cached.rejectedVersionCode)
+                assertEquals("https://dojo.example/new-release", cached.updateUrl)
+                assertEquals(426, rejected.get())
+            } finally { scope.cancel() }
+        }
+    }
     @Test fun repeatedSameFailureCannotReportAvailableUntilSuccessfulRegistration() = runBlocking {
         Fixture().use { f ->
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

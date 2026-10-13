@@ -17,6 +17,7 @@ class UploadTestDocumentsProvider : DocumentsProvider() {
         addRow(columnNames.map { values[it] }.toTypedArray())
     }
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor = MatrixCursor(projection ?: arrayOf(Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_MIME_TYPE, Document.COLUMN_SIZE, Document.COLUMN_FLAGS)).apply {
+        if (documentId.startsWith("delay_")) Thread.sleep(1200)
         val file = file(documentId)
         val values: Map<String, Any?> = mapOf(Document.COLUMN_DOCUMENT_ID to documentId, Document.COLUMN_DISPLAY_NAME to "$documentId.jpg", Document.COLUMN_MIME_TYPE to "image/jpeg", Document.COLUMN_SIZE to if (documentId.startsWith("unknown")) null else file.length(), Document.COLUMN_FLAGS to 0)
         addRow(columnNames.map { values[it] }.toTypedArray())

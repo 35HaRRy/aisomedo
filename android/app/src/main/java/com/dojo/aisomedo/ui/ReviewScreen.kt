@@ -78,10 +78,11 @@ import java.time.*
     val date = LocalDate.parse(dateText)
     val time = LocalTime.parse(timeText)
     val canSubmit = enabled && state.copy(issue = state.issue.takeUnless { it == ReviewIssue.INVALID_TIME }).canDecide
+    val access by rememberUpdatedState(canSubmit)
     Text(stringResource(R.string.timezone))
-    OutlinedButton(onClick = { DatePickerDialog(context, { _, year, month, day -> dateText = LocalDate.of(year, month + 1, day).toString() }, date.year, date.monthValue - 1, date.dayOfMonth).show() }, enabled = canSubmit, modifier = Modifier.testTag("review-date")) { Text(stringResource(R.string.review_date, dateText)) }
-    OutlinedButton(onClick = { TimePickerDialog(context, { _, hour, minute -> timeText = LocalTime.of(hour, minute).toString() }, time.hour, time.minute, true).show() }, enabled = canSubmit, modifier = Modifier.testTag("review-time")) { Text(stringResource(R.string.review_time, timeText)) }
-    Button(onClick = { onSubmit(date, time) }, enabled = canSubmit, modifier = Modifier.testTag("review-confirm-reschedule")) { Text(stringResource(R.string.review_confirm_reschedule)) }
+    OutlinedButton(onClick = { DatePickerDialog(context, { _, year, month, day -> if (access) dateText = LocalDate.of(year, month + 1, day).toString() }, date.year, date.monthValue - 1, date.dayOfMonth).show() }, enabled = canSubmit, modifier = Modifier.testTag("review-date")) { Text(stringResource(R.string.review_date, dateText)) }
+    OutlinedButton(onClick = { TimePickerDialog(context, { _, hour, minute -> if (access) timeText = LocalTime.of(hour, minute).toString() }, time.hour, time.minute, true).show() }, enabled = canSubmit, modifier = Modifier.testTag("review-time")) { Text(stringResource(R.string.review_time, timeText)) }
+    Button(onClick = { if (access) onSubmit(date, time) }, enabled = canSubmit, modifier = Modifier.testTag("review-confirm-reschedule")) { Text(stringResource(R.string.review_confirm_reschedule)) }
     TextButton(onClick = onCancel, enabled = !state.busy) { Text(stringResource(R.string.cancel)) }
 }
 

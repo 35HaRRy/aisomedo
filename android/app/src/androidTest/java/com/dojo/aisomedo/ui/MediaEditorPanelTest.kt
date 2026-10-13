@@ -23,6 +23,7 @@ class MediaEditorPanelTest {
     private val writes = mutableListOf<List<String>>()
     private var editor by mutableStateOf(MediaEditorState().accept(snapshot()))
     private var busy by mutableStateOf(false)
+    private var canMutate by mutableStateOf(true)
     private fun snapshot() = ActiveEditorOut(
         `package` = PackageOut("now", "active", 1, "active"), renderStale = true,
         media = listOf("a", "b", "c").map { id -> EditorMediaOut(
@@ -41,7 +42,7 @@ class MediaEditorPanelTest {
                 Column(Modifier.fillMaxSize().onGloballyPositioned { viewport = it.boundsInRoot() }
                     .verticalScroll(scroll).padding(16.dp)) {
                     MediaEditorPanel(editor, busy, scroll, viewport, {}, { writes.add(it) }, {}, {},
-                        { id, rows -> editor = editor.edit(id, rows) }, {}, { editor = editor.discard() })
+                        { id, rows -> editor = editor.edit(id, rows) }, {}, { editor = editor.discard() }, canMutate = canMutate)
                 }
             }
         }
@@ -82,6 +83,20 @@ class MediaEditorPanelTest {
         compose.onNodeWithTag("range-end-a-0").performScrollTo().performTextReplacement("10")
         compose.onNodeWithTag("media-save").performScrollTo().assertIsEnabled()
         compose.onNodeWithTag("media-duration").assertTextContains("21.00", substring = true)
+    }
+    @Test fun offlineEditorCannotChangeOrderRangesOrDiscard() {
+        editor = editor.edit("a", listOf(RangeInput("1", "3")))
+        canMutate = false
+        show()
+        compose.onNodeWithTag("media-down-a").assertIsNotEnabled()
+        compose.onNodeWithTag("media-remove-a").assertIsNotEnabled()
+        compose.onNodeWithTag("media-save").assertIsNotEnabled()
+        compose.onNodeWithText("Taslak değişikliklerden vazgeç").assertIsNotEnabled()
+        compose.onNodeWithTag("media-edit-a").performScrollTo().performClick()
+        compose.onNodeWithTag("range-start-a-0").assertIsNotEnabled()
+        compose.onNodeWithTag("range-end-a-0").assertIsNotEnabled()
+        compose.onNodeWithTag("media-drag-a").performScrollTo().performTouchInput { swipeDown() }
+        compose.runOnIdle { assertTrue(writes.isEmpty()); assertTrue(editor.dirty) }
     }
     @Test fun stationaryEdgeDragScrollsAndCancellationLeavesOrderUntouched() {
         val current = snapshot()

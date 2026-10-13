@@ -129,3 +129,19 @@ def test_android_editor_generation_emits_nested_selections_and_large_media(tmp_p
 def test_kotlin_rejects_unsupported_shapes(bad):
     with pytest.raises(ValueError):
         generator().kotlin_models({"components": {"schemas": {"Root": bad}}}, ["Root"])
+
+
+def test_android_activity_generation_preserves_actor_union(tmp_path):
+    from backend.main import create_app
+
+    module = generator()
+    module.ROOT = tmp_path
+    module.WEB_TARGET = tmp_path / "web.ts"
+    module.ANDROID_TARGET = tmp_path / "client.kt"
+    (tmp_path / "openapi.json").write_text(json.dumps(create_app().openapi()), encoding="utf-8")
+    module.main()
+    kotlin = module.ANDROID_TARGET.read_text(encoding="utf-8")
+    assert "data class ActivityPageOut(" in kotlin
+    assert "val actor: JsonElement" in kotlin
+    assert "data class ClientRefOut(" in kotlin
+    assert "val details: Map<String, JsonElement>" in kotlin

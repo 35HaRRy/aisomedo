@@ -39,6 +39,21 @@ data class ActiveEditorOut(
 )
 
 @Serializable
+data class ActivityEventOut(
+    @SerialName("action") val action: String,
+    @SerialName("actor") val actor: JsonElement,
+    @SerialName("details") val details: Map<String, JsonElement>,
+    @SerialName("id") val id: Int,
+    @SerialName("occurred_at") val occurredAt: String,
+)
+
+@Serializable
+data class ActivityPageOut(
+    @SerialName("events") val events: List<ActivityEventOut>,
+    @SerialName("next_cursor") val nextCursor: Int?,
+)
+
+@Serializable
 data class ApproveIn(
     @SerialName("version") val version: Int,
 )
@@ -75,6 +90,13 @@ data class ClientOut(
     @SerialName("last_seen_at") val lastSeenAt: String?,
     @SerialName("name") val name: String,
     @SerialName("revoked_at") val revokedAt: String?,
+)
+
+@Serializable
+data class ClientRefOut(
+    @SerialName("id") val id: Int,
+    @SerialName("kind") val kind: String,
+    @SerialName("name") val name: String,
 )
 
 @Serializable

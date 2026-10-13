@@ -47,6 +47,7 @@ data class ConflictSelection(
 @Composable fun ConflictControls(
     row: UploadRecord, busy: Boolean, onResolve: (String, ResolveConflictIn) -> Unit, onRefresh: suspend () -> Unit,
     onPreview: suspend (String, ConflictTarget, File) -> Unit,
+    canMutate: Boolean = true,
 ) {
     val targets = remember(row.status?.conflicts) { conflictTargets(row.status) }
     var choice by remember { mutableStateOf(ConflictSelection(targetId = targets.firstOrNull()?.mediaId)) }
@@ -54,7 +55,8 @@ data class ConflictSelection(
     var refreshing by remember { mutableStateOf(false) }
     var refreshFailed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val blocked = busy || refreshing || row.pendingDecision != null
+    val blocked = !canMutate || busy || refreshing || row.pendingDecision != null
+    LaunchedEffect(canMutate) { if (!canMutate) choice = choice.preview(false) }
     val target = targets.find { it.mediaId == choice.targetId }
     val overwrite = choice.decision == "keep_selected"
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -72,7 +74,8 @@ data class ConflictSelection(
         if (target != null) {
             Text(target.filename, style = MaterialTheme.typography.titleSmall)
             Text(stringResource(R.string.conflict_metadata, target.sizeBytes, target.uploadedAt, target.mediaId), style = MaterialTheme.typography.bodySmall)
-            if (!refreshing) key(target, refreshAttempt) { ConflictPreview(row.id, target, onPreview, { choice = choice.preview(it) }) }
+            if (!canMutate) Text(stringResource(R.string.offline_media))
+            else if (!refreshing) key(target, refreshAttempt) { ConflictPreview(row.id, target, onPreview, { choice = choice.preview(it) }) }
         } else Text(stringResource(R.string.conflict_no_target), style = MaterialTheme.typography.bodyMedium)
         Column(Modifier.selectableGroup()) {
             for ((decision, label) in listOf("keep_both" to R.string.conflict_keep_both, "keep_selected" to R.string.conflict_keep_selected,
@@ -107,7 +110,7 @@ data class ConflictSelection(
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { refreshFailed = true }
             finally { refreshAttempt++; refreshing = false }
-        } }, enabled = !busy && !refreshing) { Text(stringResource(R.string.refresh)) }
+        } }, enabled = canMutate && !busy && !refreshing) { Text(stringResource(R.string.refresh)) }
         if (refreshing) Text(stringResource(R.string.loading), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         if (refreshFailed) Text(stringResource(R.string.unknown_error), color = MaterialTheme.colorScheme.error)
         if (row.pendingDecision != null && !busy) Text(stringResource(R.string.conflict_uncertain), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })

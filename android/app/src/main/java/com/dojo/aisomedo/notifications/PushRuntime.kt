@@ -15,12 +15,16 @@ import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
 
 class PushRuntime private constructor(private val context: Context) {
-    private val store = UploadRuntime.get(context).sessionStore
+    private val uploads = UploadRuntime.get(context)
+    private val store = uploads.sessionStore
     private val notifications = ReviewNotifications(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val http = OkHttpClient()
     private val mutableAvailability = MutableStateFlow(PushAvailability.UNCONFIGURED)
-    private val registration = PushRegistration(store, http, BuildConfig.VERSION_CODE, scope)
+    private val registration = PushRegistration(store, http, BuildConfig.VERSION_CODE, scope,
+        uploads.snapshots, uploads::canRegisterPush) { failure ->
+        uploads.observePushFailure(failure.origin, failure.bindingId, failure.status, failure.updateUrl)
+    }
     val failure = registration.failure
     val availability = combine(mutableAvailability, registration.ready, failure, ::registrationAvailability)
         .stateIn(scope, SharingStarted.Eagerly, PushAvailability.UNCONFIGURED)

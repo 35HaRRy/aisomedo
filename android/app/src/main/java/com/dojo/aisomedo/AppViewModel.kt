@@ -11,6 +11,7 @@ import com.dojo.aisomedo.uploads.UploadPhase
 import com.dojo.aisomedo.editor.*
 import com.dojo.aisomedo.reviews.*
 import com.dojo.aisomedo.notifications.*
+import com.dojo.aisomedo.offline.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
@@ -53,7 +54,19 @@ data class AppUiState(
     val editor: MediaEditorState = MediaEditorState(),
     val review: ReviewState = ReviewState(),
     val outcomePackage: String? = null,
-)
+    val networkConnected: Boolean = true,
+    val authoritative: Boolean = false,
+    val configurationFresh: Set<String> = emptySet(),
+    val activity: ActivityPageOut? = null,
+    val dashboardFetchedAt: Long? = null,
+    val editorFetchedAt: Long? = null,
+    val activityFetchedAt: Long? = null,
+) {
+    val canMutate get() = phase == Phase.READY && networkConnected && authoritative && !busy
+    val canEditMedia get() = canMutate && !editor.readRequired && editor.snapshot != null &&
+        editor.snapshot.`package` == dashboard?.`package` && editor.snapshot.`package`.status != "completed"
+    fun canConfigure(step: String) = canMutate && step in configurationFresh
+}
 
 class AppViewModel(
     private val store: SessionStore,
@@ -61,18 +74,28 @@ class AppViewModel(
     private val versionCode: Int,
     private val allowHttp: Boolean,
     val saved: SavedStateHandle,
+    private val snapshots: SnapshotStore? = null,
+    private val network: StateFlow<NetworkStatus> = MutableStateFlow(NetworkStatus(true)),
+    private val now: () -> Long = System::currentTimeMillis,
     private val onSessionStopped: () -> Unit = {},
 ) : ViewModel() {
-    private val mutable = MutableStateFlow(AppUiState())
+    private val initialNetwork = network.value
+    private val mutable = MutableStateFlow(AppUiState(networkConnected = initialNetwork.connected))
     val state = mutable.asStateFlow()
     private var token: String? = null
     private var bindingId: String? = null
+    val currentBinding get() = bindingId
+    val writesAllowed get() = admit()
     private var generation = 0
     private var job: Job? = null
     private var prompted = false
     private var reviewJob: Job? = null
     private var reviewEpoch = 0
     private var pendingPushRefresh = false
+    private var refreshRequested = false
+    private var boundRevision = store.revision.value
+    private var authoritativeEpoch: Long? = null
+    private var writingSession = false
 
     init {
         mutable.update { it.copy(
@@ -84,6 +107,24 @@ class AppViewModel(
         ) }
         try { mutable.update { it.copy(origin = store.origin.orEmpty()) } }
         catch (_: Exception) { mutable.update { it.copy(issue = UiIssue.STORAGE) } }
+        viewModelScope.launch {
+            store.revision.collect { revision ->
+                if (!writingSession && bindingId != null && revision != boundRevision) invalidateSession()
+            }
+        }
+        viewModelScope.launch {
+            var observed = initialNetwork
+            network.collect { status ->
+                if (status == observed) return@collect
+                observed = status
+                authoritativeEpoch = null
+                mutable.update { it.copy(networkConnected = status.connected, authoritative = false, configurationFresh = emptySet(),
+                    stale = it.client != null, editor = it.editor.copy(readRequired = true),
+                    review = it.review.copy(readRequired = true, previewReady = false)) }
+                if (status.connected) refreshRequested = true
+                if (status.connected && !state.value.busy) { refreshRequested = false; refresh() }
+            }
+        }
         refresh()
     }
 
@@ -99,6 +140,7 @@ class AppViewModel(
             finally { if (generation == current) {
                 mutable.update { it.copy(busy = false) }
                 if (pendingPushRefresh) { pendingPushRefresh = false; if (state.value.phase == Phase.READY) refresh() }
+                if (refreshRequested) { refreshRequested = false; refresh() }
             } }
         }
     }
@@ -109,9 +151,12 @@ class AppViewModel(
         catch (_: Exception) { mutable.update { it.copy(issue = UiIssue.INVALID_SERVER) }; return }
         launch {
             onSessionStopped()
-            withContext(Dispatchers.IO) { store.setOrigin(origin) }
-            token = null
-            mutable.value = AppUiState(origin = origin, busy = true)
+            writingSession = true
+            try {
+                withContext(Dispatchers.IO) { synchronized(store) { store.setOrigin(origin); snapshots?.clear() } }
+                token = null; bindingId = null; boundRevision = store.revision.value
+            } finally { writingSession = false }
+            mutable.value = AppUiState(origin = origin, busy = true, networkConnected = network.value.connected)
             boot(it)
         }
     }
@@ -122,95 +167,197 @@ class AppViewModel(
     }
 
     private suspend fun boot(current: Int) {
-        val previous = state.value
-        val origin = ApiConfig.normalizeOrigin(previous.origin, allowHttp)
-        if (previous.client == null || previous.phase == Phase.UPDATE_REQUIRED) mutable.update { it.copy(phase = Phase.LOADING) }
+        var storageIssue = false
+        writingSession = true
+        val read = try { withContext(Dispatchers.IO) { synchronized(store) {
+            val origin = store.origin.orEmpty()
+            val before = store.revision.value
+            val credential = try { if (origin.isBlank()) null else store.readSession(origin) }
+            catch (_: CredentialUnavailable) {
+                if (generation != current || before != store.revision.value || store.origin != origin) return@synchronized null
+                store.clearToken()
+                runCatching { snapshots?.update(origin) { it.copy(data = null) } }
+                storageIssue = true
+                null
+            }
+            if (generation != current || (credential != null && before != store.revision.value)) return@synchronized null
+            val cached = if (origin.isBlank()) null else snapshots?.read(origin, credential?.bindingId)
+            Triple(origin, credential, store.revision.value) to cached
+        } } } finally { writingSession = false }
+        if (generation != current) return
+        if (read == null || read.first.third != store.revision.value) { invalidateSession(); return }
+        val (identity, cached) = read
+        val (configuredOrigin, credential, revision) = identity
+        if (configuredOrigin.isBlank()) {
+            token = null; bindingId = null; boundRevision = revision
+            mutable.value = AppUiState(networkConnected = network.value.connected)
+            return
+        }
+        val origin = ApiConfig.normalizeOrigin(configuredOrigin, allowHttp)
+        val changed = bindingId != credential?.bindingId || state.value.origin != origin
+        if (changed && state.value.client != null) {
+            clearSaved(); prompted = false; reviewEpoch++; reviewJob?.cancel()
+            mutable.update { AppUiState(origin = origin, busy = it.busy, networkConnected = network.value.connected) }
+        }
+        token = credential?.token; bindingId = credential?.bindingId; boundRevision = revision
+        mutable.update { it.copy(origin = origin, issue = if (storageIssue) UiIssue.STORAGE else it.issue) }
+        cached?.let { value ->
+            mutable.update { it.copy(compat = value.compat ?: it.compat, updateUrl = value.updateUrl ?: it.updateUrl) }
+            if (state.value.client == null) value.data?.let { data ->
+                mutable.update { it.copy(phase = Phase.READY, client = data.client, setup = data.setup, dashboard = data.dashboard,
+                    editor = (data.editor?.let { snapshot -> MediaEditorState().accept(snapshot) } ?: MediaEditorState()).copy(readRequired = true),
+                    activity = data.activity, dashboardFetchedAt = data.dashboardFetchedAt, editorFetchedAt = data.editorFetchedAt,
+                    activityFetchedAt = data.activityFetchedAt, stale = true, authoritative = false, step = null) }
+                if (!network.value.connected) prompted = true
+            }
+        }
+        if (cached?.rejectedVersionCode == versionCode || cached?.compat?.let { UpdatePolicy.isOutdated(versionCode, it.androidMinVersionCode) } == true) {
+            onSessionStopped(); mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, authoritative = false) }
+        }
+        if (!network.value.connected) {
+            mutable.update { it.copy(issue = UiIssue.NETWORK, authoritative = false,
+                phase = if (it.phase in setOf(Phase.READY, Phase.UPDATE_REQUIRED)) it.phase else Phase.CONNECTION_ERROR) }
+            return
+        }
+        val epoch = network.value.epoch
+        mutable.update { it.copy(authoritative = false) }
+        if (state.value.client == null && state.value.phase != Phase.UPDATE_REQUIRED) mutable.update { it.copy(phase = Phase.LOADING) }
         val compat = DojoApi(origin, null, versionCode, http).compat()
         require(compat.androidMinVersionCode >= 1 && compat.androidCurrentVersionCode >= compat.androidMinVersionCode)
-        if (generation != current) return
+        checkRead(current, epoch)
         mutable.update { it.copy(compat = compat, updateUrl = safeExternalUrl(compat.updateUrl)) }
+        persist(current) { it.copy(compat = compat, updateUrl = safeExternalUrl(compat.updateUrl), rejectedVersionCode = null) }
         if (UpdatePolicy.isOutdated(versionCode, compat.androidMinVersionCode)) {
             onSessionStopped()
             mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED) }; return
         }
-        val credential = try { withContext(Dispatchers.IO) { store.readSession(origin) } }
-        catch (_: CredentialUnavailable) {
-            withContext(Dispatchers.IO) { store.clearToken() }
-            mutable.update { it.copy(issue = UiIssue.STORAGE) }; null
-        }
-        if (generation != current) return
-        if (bindingId != null && bindingId != credential?.bindingId) {
-            onSessionStopped()
-            reviewEpoch++; reviewJob?.cancel(); clearReviewSaved()
-            mutable.update { it.copy(review = ReviewState()) }
-        }
-        token = credential?.token
-        bindingId = credential?.bindingId
+        if (state.value.phase == Phase.UPDATE_REQUIRED) mutable.update { it.copy(phase = Phase.LOADING) }
         if (token == null) { mutable.update { it.copy(phase = Phase.PAIRING) }; return }
-        authenticated(current)
+        authenticated(current, epoch)
     }
 
     fun pair(code: String, name: String) {
-        if (state.value.phase != Phase.PAIRING) return
+        if (state.value.phase != Phase.PAIRING || !network.value.connected) return
         if (code.isBlank() || name.isBlank()) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
         launch(pairing = true) { current ->
             val result = api().pair(code.trim(), name.trim())
             val credential = result.token
             require(result.kind == "device" && !credential.isNullOrBlank())
             if (generation != current) return@launch
-            withContext(Dispatchers.IO) { store.saveToken(state.value.origin, credential) }
-            if (generation != current) return@launch
-            token = credential
-            bindingId = withContext(Dispatchers.IO) { store.readSession(state.value.origin)?.bindingId }
+            writingSession = true
+            try {
+                val identity = withContext(Dispatchers.IO) { synchronized(store) {
+                    if (generation != current) return@synchronized null
+                    store.saveToken(state.value.origin, credential)
+                    store.readSession(state.value.origin) to store.revision.value
+                } } ?: return@launch
+                if (generation != current) return@launch
+                token = identity.first?.token; bindingId = identity.first?.bindingId; boundRevision = identity.second
+            } finally { writingSession = false }
             // A 401 after validation is revocation, not a rejected pairing code.
             try { authenticated(current) }
             catch (e: ApiFailure) { failure(e, false) }
         }
     }
 
-    private suspend fun authenticated(current: Int) {
+    private suspend fun authenticated(current: Int, epoch: Long = network.value.epoch) {
         checkSession(current)
         val client = api().me()
         if (client.kind != "device" || client.revokedAt != null) throw ApiFailure(401)
-        if (generation != current) return
+        checkRead(current, epoch)
         mutable.update { it.copy(client = client) }
         val setup = api().setup()
-        checkSession(current)
-        val dashboard = api().dashboard()
-        if (generation != current) return
+        checkRead(current, epoch)
         var step = state.value.step
         if (!prompted) {
             prompted = true
             step = saved.get<String>("step") ?: if (!setup.ready) setup.checklist.firstOrNull { it.required && !it.complete }?.key else null
         }
         val destination = Destination.entries.firstOrNull { it.name == saved.get<String>("destination") } ?: state.value.destination
-        mutable.update { it.copy(phase = Phase.READY, client = client, setup = setup, dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, step = step, destination = destination, stale = false) }
+        mutable.update { it.copy(phase = Phase.READY, client = client, setup = setup, step = step, destination = destination) }
+        readSection(current) {
+            val dashboard = api().dashboard()
+            checkRead(current, epoch)
+            authoritativeEpoch = epoch
+            mutable.update {
+                val changedPackage = it.editor.snapshot?.`package` != dashboard.`package`
+                it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, dashboardFetchedAt = now(), authoritative = true, stale = false,
+                    editor = if (changedPackage) MediaEditorState() else it.editor,
+                    editorFetchedAt = if (changedPackage) null else it.editorFetchedAt)
+            }
+            persistState(current)
+        }
+        readSection(current) {
+            val activity = api().activity()
+            checkRead(current, epoch)
+            require(activity.events.size <= 50)
+            mutable.update { it.copy(activity = activity, activityFetchedAt = now()) }
+            persistState(current)
+        }
         if (step != null) loadConfiguration(current)
         checkKnownAttempt(current)
-        if (state.value.destination == Destination.PACKAGE) loadEditor(current)
+        if (state.value.dashboard?.`package` != null || state.value.destination == Destination.PACKAGE) readSection(current) { loadEditor(current) }
+        persistState(current)
         restoreReviewTarget()
         if (state.value.review.target != null) refreshReview()
         consumeNotification()
     }
 
-    private fun failure(error: Exception, pairing: Boolean = false) {
+    private suspend fun readSection(current: Int, action: suspend () -> Unit) {
+        try { action() }
+        catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            checkSession(current)
+            if (e is ApiFailure && e.status in setOf(401, 426)) throw e
+            failure(e)
+        }
+    }
+    private suspend fun persist(current: Int, change: (CachedSnapshot) -> CachedSnapshot) {
+        val target = snapshots ?: return
+        val origin = state.value.origin; val binding = bindingId
+        try { withContext(Dispatchers.IO) {
+            synchronized(store) {
+                if (generation == current && state.value.origin == origin && store.readSession(origin)?.bindingId == binding) target.update(origin, change)
+            }
+        } } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { if (generation == current) mutable.update { it.copy(issue = UiIssue.STORAGE) } }
+    }
+    private suspend fun persistState(current: Int) {
+        val value = state.value
+        val binding = bindingId ?: return
+        val client = value.client ?: return; val setup = value.setup ?: return
+        persist(current) { it.copy(data = CachedContent(binding, client, setup, value.dashboard, value.editor.snapshot,
+            value.activity, value.dashboardFetchedAt, value.editorFetchedAt, value.activityFetchedAt)) }
+    }
+    private suspend fun failure(error: Exception, pairing: Boolean = false) {
         if (error is PolicyChanged) return
         if (error is ApiFailure && error.status in setOf(401, 426) && !pairing) {
-            val current = runCatching { store.readSession(state.value.origin) }.getOrNull()
-            if (current != null && bindingId != null && current.bindingId != bindingId) return
+            val observedGeneration = generation; val observedBinding = bindingId; val origin = state.value.origin
+            val current = withContext(Dispatchers.IO) { runCatching { store.readSession(origin) }.getOrNull() }
+            if (generation != observedGeneration || bindingId != observedBinding || state.value.origin != origin) return
+            if (current != null && observedBinding != null && current.bindingId != observedBinding) { invalidateSession(); return }
         }
         when {
             error is ApiFailure && error.status == 426 -> {
+                val current = generation
+                persist(current) { it.copy(rejectedVersionCode = versionCode, updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
+                if (generation != current) return
                 onSessionStopped()
                 cancelWork()
-                mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, busy = false, review = ReviewState(), updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
+                mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, busy = false, authoritative = false, review = ReviewState(), updateUrl = safeExternalUrl(error.updateUrl.orEmpty()) ?: it.updateUrl) }
             }
             error is ApiFailure && error.status == 401 && !pairing -> {
                 onSessionStopped()
                 cancelWork(); token = null; prompted = false; clearSaved()
-                val issue = try { bindingId?.let { store.clearTokenIfBinding(state.value.origin, it) }; null } catch (_: Exception) { UiIssue.STORAGE }
+                val current = generation
+                val origin = state.value.origin; val binding = bindingId
                 bindingId = null
-                mutable.value = AppUiState(origin = state.value.origin, compat = state.value.compat, phase = Phase.PAIRING, issue = issue)
+                mutable.value = AppUiState(origin = origin, compat = state.value.compat, phase = Phase.PAIRING, busy = true, networkConnected = network.value.connected)
+                val issue = try { withContext(NonCancellable + Dispatchers.IO) { synchronized(store) {
+                    if (generation == current && binding != null && store.clearTokenIfBinding(origin, binding)) snapshots?.update(origin) { it.copy(data = null) }
+                } }; null } catch (_: Exception) { UiIssue.STORAGE }
+                if (generation != current) return
+                mutable.value = AppUiState(origin = origin, compat = state.value.compat, phase = Phase.PAIRING, issue = issue, networkConnected = network.value.connected)
             }
             else -> {
                 val issue = when {
@@ -222,7 +369,8 @@ class AppViewModel(
                     error is ApiFailure && error.status in 502..503 -> UiIssue.PROVIDER_UNAVAILABLE
                     else -> UiIssue.UNKNOWN
                 }
-                mutable.update { it.copy(issue = issue, stale = it.dashboard != null, phase = if (it.phase == Phase.LOADING) Phase.CONNECTION_ERROR else it.phase) }
+                mutable.update { it.copy(issue = issue, stale = it.dashboard != null, authoritative = if (error is ApiFailure && error.status in setOf(0, 502, 503)) false else it.authoritative,
+                    phase = if (it.phase == Phase.LOADING) Phase.CONNECTION_ERROR else it.phase) }
             }
         }
     }
@@ -232,27 +380,60 @@ class AppViewModel(
         cancelWork(); token = null; prompted = false; clearSaved()
         bindingId = null
         val issue = try { store.setOrigin(""); null } catch (_: Exception) { UiIssue.STORAGE }
-        mutable.value = AppUiState(issue = issue)
+        viewModelScope.launch(Dispatchers.IO) { runCatching { synchronized(store) { if (store.origin == null) snapshots?.clear() } } }
+        mutable.value = AppUiState(issue = issue, networkConnected = network.value.connected)
     }
     fun observeSessionFailure(issue: UploadIssue, expectedBinding: String? = null) {
         if (expectedBinding != null && expectedBinding != bindingId) return
         if (state.value.phase != Phase.READY && state.value.phase != Phase.LOADING) return
-        when (issue) {
-            UploadIssue.AUTH -> failure(ApiFailure(401))
-            UploadIssue.UPDATE_REQUIRED -> failure(ApiFailure(426))
-            else -> Unit
+        val current = generation; val binding = bindingId; val revision = boundRevision
+        val status = when (issue) { UploadIssue.AUTH -> 401; UploadIssue.UPDATE_REQUIRED -> 426; else -> return }
+        viewModelScope.launch {
+            if (generation == current && bindingId == binding && store.revision.value == revision) failure(ApiFailure(status))
         }
     }
     private fun cancelWork() { generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null; pendingPushRefresh = false; clearNotificationSaved() }
-    private fun checkSession(current: Int) {
+    private fun invalidateSession() {
+        if (bindingId != null || state.value.client != null) onSessionStopped()
+        cancelWork(); token = null; bindingId = null; authoritativeEpoch = null; prompted = false; clearSaved()
+        mutable.value = AppUiState(origin = state.value.origin, networkConnected = network.value.connected,
+            phase = if (network.value.connected) Phase.LOADING else Phase.CONNECTION_ERROR)
+        launch { boot(it) }
+    }
+    private suspend fun checkSession(current: Int) {
         if (generation != current) throw CancellationException("Session changed")
+        val binding = bindingId
+        val revision = boundRevision
+        val origin = state.value.origin
+        val valid = withContext(Dispatchers.IO) { synchronized(store) {
+            store.revision.value == revision && store.origin == origin &&
+                (binding == null || runCatching { store.readSession(origin)?.bindingId }.getOrNull() == binding)
+        } }
+        if (generation != current) throw CancellationException("Session changed")
+        if (!valid) { invalidateSession(); throw CancellationException("Pairing changed") }
+    }
+    private suspend fun checkRead(current: Int, epoch: Long) {
+        checkSession(current)
+        if (!network.value.connected || network.value.epoch != epoch) throw CancellationException("Network changed")
+    }
+    private fun admit(step: String? = null, media: Boolean = false, busy: Boolean = true): Boolean {
+        val value = state.value
+        val status = network.value
+        return value.phase == Phase.READY && status.connected && authoritativeEpoch == status.epoch &&
+            boundRevision == store.revision.value && bindingId != null && value.authoritative && (!busy || !value.busy) &&
+            (step == null || step in value.configurationFresh) && (!media || (!value.editor.readRequired &&
+                value.editor.snapshot != null && value.editor.snapshot.`package` == value.dashboard?.`package` && value.editor.snapshot.`package`.status != "completed"))
+    }
+    private suspend fun checkWrite(current: Int, epoch: Long, step: String? = null, media: Boolean = false) {
+        checkRead(current, epoch)
+        if (!admit(step, media, busy = false)) throw CancellationException("Write authority changed")
     }
     private fun clearSaved() { saved.keys().toList().forEach { saved.remove<Any>(it) } }
     fun navigate(destination: Destination) {
         if (state.value.phase != Phase.READY) return
         saved["destination"] = destination.name
         closeSetup(); mutable.update { it.copy(destination = destination) }
-        if (destination == Destination.PACKAGE) refreshEditor()
+        if (destination == Destination.PACKAGE && network.value.connected) refreshEditor()
     }
     fun openSetup() {
         if (state.value.phase != Phase.READY) return
@@ -262,7 +443,7 @@ class AppViewModel(
     fun selectStep(key: String) {
         if (state.value.phase != Phase.READY) return
         saved["step"] = key; mutable.update { it.copy(step = key) }
-        launch { loadConfiguration(it) }
+        if (network.value.connected) launch { loadConfiguration(it) }
     }
 
     fun markDirty(step: String) {
@@ -270,7 +451,7 @@ class AppViewModel(
         saved["dirty_steps"] = ArrayList(state.value.dirtySteps)
     }
     fun setDraft(key: String, value: String, step: String) {
-        if (state.value.phase != Phase.READY) return
+        if (!admit(step, busy = false)) return
         saved["draft_$key"] = value
         saved["edited_$key"] = true
         mutable.update { it.copy(drafts = it.drafts + (key to value)) }; markDirty(step)
@@ -298,6 +479,8 @@ class AppViewModel(
         }
     }
     private suspend fun loadConfiguration(current: Int) {
+        val epoch = network.value.epoch
+        mutable.update { it.copy(configurationFresh = emptySet()) }
         suspend fun load(missingPolicy: Boolean = false, action: suspend () -> Unit) {
             checkSession(current)
             try { action() }
@@ -312,46 +495,54 @@ class AppViewModel(
         }
         load {
             val plan = api().plan()
+            checkRead(current, epoch)
             if (generation == current) {
                 remoteDrafts("schedule", mapOf("date" to plan.anchorDate.orEmpty(), "time" to plan.anchorTime.orEmpty(), "enabled" to plan.enabled.toString()), state.value.plan != null && state.value.plan != plan)
-                mutable.update { it.copy(plan = plan) }
+                mutable.update { it.copy(plan = plan, configurationFresh = it.configurationFresh + "schedule") }
             }
         }
         load {
             val branding = api().branding()
+            checkRead(current, epoch)
             if (generation == current) {
                 remoteDrafts("caption_template", mapOf("caption" to branding.captionTemplate.orEmpty()), state.value.branding != null && state.value.branding?.captionTemplate != branding.captionTemplate)
                 remoteDrafts("cards", mapOf("intro_duration" to (branding.introDuration?.toString() ?: "3"), "outro_duration" to (branding.outroDuration?.toString() ?: "3")), state.value.branding != null && state.value.branding != branding)
-                mutable.update { it.copy(branding = branding) }
+                mutable.update { it.copy(branding = branding, configurationFresh = it.configurationFresh + setOf("caption_template", "cards", "logo")) }
             }
         }
         load(missingPolicy = true) {
             val policy = api().consent()
-            if (generation == current) mutable.update { it.copy(consent = policy, consentAcknowledged = it.consentAcknowledged && it.consent?.version == policy.version && policy.acceptedAt == null) }
+            checkRead(current, epoch)
+            if (generation == current) mutable.update { it.copy(consent = policy, configurationFresh = it.configurationFresh + "consent", consentAcknowledged = it.consentAcknowledged && it.consent?.version == policy.version && policy.acceptedAt == null) }
         }
         load {
             val instagram = api().instagram()
-            if (generation == current) mutable.update { it.copy(instagram = instagram) }
+            checkRead(current, epoch)
+            if (generation == current) mutable.update { it.copy(instagram = instagram, configurationFresh = it.configurationFresh + "instagram") }
         }
     }
     fun reloadStep(step: String) {
-        if (state.value.phase != Phase.READY || state.value.busy) return
+        if (state.value.phase != Phase.READY || state.value.busy || !network.value.connected) return
         clean(step); launch { loadConfiguration(it) }
     }
     fun acknowledgeConsent(acknowledged: Boolean) {
+        if (!admit("consent")) return
         mutable.update { it.copy(consentAcknowledged = acknowledged && it.consent != null && it.consent.acceptedAt == null) }
     }
     private fun mutation(step: String, action: suspend (Int) -> Unit) {
-        if (state.value.phase != Phase.READY) return
+        if (!admit(step)) return
+        val epoch = network.value.epoch
         val submittedDrafts = state.value.drafts
         val submittingStep = state.value.step
         launch { current ->
+            checkWrite(current, epoch, step)
             action(current)
             checkSession(current)
             if (state.value.drafts == submittedDrafts) clean(step)
             val setup = api().setup()
             if (generation != current) return@launch
             mutable.update { it.copy(setup = setup) }
+            persistState(current)
             loadConfiguration(current)
             if (generation == current && submittingStep == step && state.value.step == submittingStep &&
                 step !in state.value.dirtySteps && setup.checklist.any { it.key == step && it.complete }) nextStep()
@@ -410,8 +601,10 @@ class AppViewModel(
         }
     }
     fun startOAuth(openUrl: (String) -> Unit) {
-        if (state.value.phase != Phase.READY) return
+        if (!admit("instagram")) return
+        val epoch = network.value.epoch
         launch { current ->
+            checkWrite(current, epoch, "instagram")
             val start = api().startOAuth()
             val url = safeExternalUrl(start.authUrl) ?: throw IllegalArgumentException("authorization URL")
             require(start.attemptId.isNotBlank())
@@ -422,6 +615,7 @@ class AppViewModel(
         }
     }
     private suspend fun checkKnownAttempt(current: Int) {
+        if (!network.value.connected) return
         val id = saved.get<String>("oauth_attempt") ?: return
         val attempt = try { api().oauthAttempt(id) }
         catch (e: ApiFailure) { if (e.status == 404) AttemptOut(emptyList(), id, "unknown") else throw e }
@@ -443,21 +637,22 @@ class AppViewModel(
     }
     fun uploadAsset(field: String, bytes: ByteArray) {
         require(field in listOf("logo_asset", "intro_asset", "outro_asset"))
-        if (state.value.phase != Phase.READY || state.value.busy) return
+        if (!admit(if (field == "logo_asset") "logo" else "cards")) return
         if (bytes.isEmpty() || bytes.size > 10 * 1024 * 1024 || (field != "logo_asset" && cardDuration(field) == null)) {
             mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return
         }
         mutation(if (field == "logo_asset") "logo" else "cards") { current ->
+            val epoch = network.value.epoch
             val uploaded = api().uploadBranding(bytes)
             checkSession(current)
             saved["pending_$field"] = uploaded.asset; saved["preview_$field"] = uploaded.previewUrl
             mutable.update { it.copy(pendingAssets = it.pendingAssets + (field to uploaded)) }
-            installAsset(field, uploaded, current)
+            installAsset(field, uploaded, current, epoch)
         }
     }
     private fun cardDuration(field: String): Double? = state.value.drafts[field.replace("_asset", "_duration")]?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }
-    private suspend fun installAsset(field: String, uploaded: BrandingAssetOut, current: Int) {
-        checkSession(current)
+    private suspend fun installAsset(field: String, uploaded: BrandingAssetOut, current: Int, epoch: Long = network.value.epoch) {
+        checkWrite(current, epoch, if (field == "logo_asset") "logo" else "cards")
         val changes = buildJsonObject {
             put(field, uploaded.asset)
             if (field != "logo_asset") put(field.replace("_asset", "_duration"), cardDuration(field) ?: throw IllegalArgumentException("duration"))
@@ -491,7 +686,7 @@ class AppViewModel(
     }
     fun skipCards() { mutation("cards") { api().skipCards() } }
     suspend fun preview(path: String): ByteArray {
-        require(state.value.phase == Phase.READY)
+        require(state.value.phase == Phase.READY && network.value.connected)
         val current = generation
         val bytes = try { api().preview(path) }
         catch (e: ApiFailure) {
@@ -502,20 +697,28 @@ class AppViewModel(
         return bytes
     }
     fun refreshEditor() {
-        if (state.value.phase == Phase.READY) launch { loadEditor(it, explicit = true) }
+        if (state.value.phase == Phase.READY && network.value.connected) launch { loadEditor(it, explicit = true) }
     }
     private suspend fun loadEditor(current: Int, explicit: Boolean = false, expected: ActiveEditorOut? = null, savedTrims: Boolean = false) {
+        val epoch = network.value.epoch
         try {
             val snapshot = api().mediaEditor()
-            checkSession(current)
-            mutable.update { it.copy(editor = it.editor.accept(snapshot, explicit, expected, savedTrims)) }
+            checkRead(current, epoch)
+            if (snapshot.`package` != state.value.dashboard?.`package`) {
+                mutable.update { it.copy(editor = MediaEditorState().copy(readRequired = true, issue = EditorIssue.CONFLICT), editorFetchedAt = null) }
+                persistState(current)
+                return
+            }
+            mutable.update { it.copy(editor = it.editor.accept(snapshot, explicit, expected, savedTrims), editorFetchedAt = now()) }
+            persistState(current)
         } catch (e: ApiFailure) {
             checkSession(current)
             if (e.status != 404) {
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = true, issue = EditorIssue.READ)) }
                 throw e
             }
-            mutable.update { it.copy(editor = if (it.editor.dirty) it.editor.copy(snapshot = null, readRequired = true, issue = EditorIssue.CONFLICT) else MediaEditorState()) }
+            mutable.update { it.copy(editor = if (it.editor.dirty) it.editor.copy(snapshot = null, readRequired = true, issue = EditorIssue.CONFLICT) else MediaEditorState(), editorFetchedAt = now()) }
+            persistState(current)
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
             checkSession(current)
@@ -524,17 +727,19 @@ class AppViewModel(
         }
     }
     fun editRanges(id: String, ranges: List<RangeInput>) {
-        if (state.value.phase != Phase.READY || state.value.busy || state.value.editor.readRequired) return
+        if (!admit(media = true)) return
         if (state.value.editor.snapshot?.media?.none { it.mediaId == id && it.isVideo && it.status == "finalized" } != false) return
         mutable.update { it.copy(editor = it.editor.edit(id, ranges)) }
     }
-    fun discardMediaTrims() { if (!state.value.busy) mutable.update { it.copy(editor = it.editor.discard()) } }
+    fun discardMediaTrims() { if (admit(media = true)) mutable.update { it.copy(editor = it.editor.discard()) } }
     private fun mediaMutation(expected: ActiveEditorOut, savedTrims: Boolean = false, action: suspend (DojoApi, String) -> Unit) {
         val editor = state.value.editor
-        if (state.value.phase != Phase.READY || state.value.busy || editor.readRequired || editor.snapshot == null || editor.snapshot.`package`.status == "completed") return
+        if (!admit(media = true) || editor.snapshot == null) return
+        val epoch = network.value.epoch
         val folder = editor.snapshot.`package`.folderName
         launch { current ->
             try {
+                checkWrite(current, epoch, media = true)
                 action(api(), folder)
                 checkSession(current)
                 // A lost read must not let the next write reuse an unverified snapshot.
@@ -612,12 +817,15 @@ class AppViewModel(
     }
     fun observePushFailure(failure: PushFailure) {
         if (failure.origin != state.value.origin || failure.bindingId != bindingId ||
-            state.value.phase !in setOf(Phase.READY, Phase.LOADING) ||
-            runCatching { store.readSession(failure.origin)?.bindingId }.getOrNull() != failure.bindingId) return
-        if (failure.status in setOf(401, 426)) failure(ApiFailure(failure.status, failure.updateUrl))
+            state.value.phase !in setOf(Phase.READY, Phase.LOADING)) return
+        val current = generation; val revision = boundRevision
+        if (failure.status in setOf(401, 426)) viewModelScope.launch {
+            if (generation == current && store.revision.value == revision && bindingId == failure.bindingId)
+                failure(ApiFailure(failure.status, failure.updateUrl))
+        }
     }
     val currentBindingId: String? get() = bindingId?.takeIf {
-        runCatching { store.readSession(state.value.origin)?.bindingId == it }.getOrDefault(false)
+        boundRevision == store.revision.value
     }
     fun observePushReceipt(receipt: PushReceipt) {
         if (receipt.origin == state.value.origin && receipt.bindingId == currentBindingId && state.value.phase == Phase.READY) {
@@ -661,22 +869,23 @@ class AppViewModel(
         clearReviewSaved(); saved["destination"] = owner.name
         mutable.update { it.copy(review = ReviewState(), destination = owner) }
     }
-    private fun checkReview(current: Int, epoch: Int) {
+    private suspend fun checkReview(current: Int, epoch: Int) {
         checkSession(current)
         if (epoch != reviewEpoch || state.value.phase != Phase.READY) throw CancellationException("Review changed")
-        if (runCatching { store.readSession(state.value.origin)?.bindingId }.getOrNull() != bindingId) {
-            clearReviewSaved()
-            mutable.update { it.copy(review = ReviewState()) }
-            throw CancellationException("Session binding changed")
-        }
     }
     private fun reviewWork(mutation: Boolean = false, action: suspend (Int, Int) -> Unit) {
-        if (state.value.phase != Phase.READY || state.value.review.busy || state.value.review.target == null || mutation && (state.value.busy || state.value.stale)) return
+        if (state.value.phase != Phase.READY || !network.value.connected || state.value.review.busy || state.value.review.target == null ||
+            mutation && (!admit() || state.value.stale)) return
         val current = generation
         val epoch = reviewEpoch
+        val networkEpoch = network.value.epoch
         mutable.update { it.copy(review = it.review.copy(busy = true)) }
         reviewJob = viewModelScope.launch {
-            try { checkReview(current, epoch); action(current, epoch) }
+            try {
+                checkReview(current, epoch)
+                if (mutation) checkWrite(current, networkEpoch) else checkRead(current, networkEpoch)
+                action(current, epoch)
+            }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 checkReview(current, epoch)
@@ -701,12 +910,14 @@ class AppViewModel(
     suspend fun downloadReviewPreview(id: Int, revision: String, destination: File) {
         val current = generation
         val epoch = reviewEpoch
-        fun requirePreview(): String {
+        val networkEpoch = network.value.epoch
+        suspend fun requirePreview(): String {
             checkReview(current, epoch)
+            checkRead(current, networkEpoch)
             val review = state.value.review
             val detail = requireNotNull(review.detail)
             require(review.target?.reviewId == id && detail.review.id == id &&
-                detail.review.revisionDigest == revision && detail.renderReady && review.issue == null)
+                detail.review.revisionDigest == revision && detail.renderReady && review.issue == null && !review.readRequired)
             return requireNotNull(detail.previewUrl)
         }
         try {
@@ -720,11 +931,14 @@ class AppViewModel(
         }
     }
     private suspend fun loadReview(current: Int, epoch: Int) {
+        val networkEpoch = network.value.epoch
+        checkRead(current, networkEpoch)
         val target = state.value.review.target ?: return
         val transport = api()
         if (target.reviewId != null) {
             val detail = transport.review(target.reviewId)
             checkReview(current, epoch)
+            checkRead(current, networkEpoch)
             require(detail.review.id > 0 && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank() &&
                 detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "approved", "skipped", "rescheduled"))
             saved.get<Int>("review_source_occurrence")?.let { require(detail.review.occurrenceId == it) }
@@ -755,6 +969,7 @@ class AppViewModel(
         } else {
             val dashboard = transport.dashboard()
             checkReview(current, epoch)
+            checkRead(current, networkEpoch)
             val matches = dashboard.pendingActions.filter { it.occurrenceId == target.occurrenceId }
             val pending = matches.find { it.packageFolder == target.packageFolder && it.state == "review_ready" } ?: matches.firstOrNull()
             val issue = when {
@@ -763,13 +978,20 @@ class AppViewModel(
                 pending.state !in setOf("empty_package", "preparing", "review_ready") -> ReviewIssue.STALE
                 else -> null
             }
-            mutable.update { it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, review = it.review.copy(readRequired = issue != null || pending?.state != "empty_package",
+            mutable.update {
+                val changedPackage = it.editor.snapshot?.`package` != dashboard.`package`
+                it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, dashboardFetchedAt = now(),
+                    editor = if (changedPackage) MediaEditorState() else it.editor,
+                    editorFetchedAt = if (changedPackage) null else it.editorFetchedAt,
+                    review = it.review.copy(readRequired = issue != null || pending?.state != "empty_package",
                 issue = issue, continuing = it.review.continuing && issue == null,
                 nextRegularAt = it.review.nextRegularAt ?: dashboard.nextSlot?.takeIf { slot -> slot.kind == "regular" }?.dueAt)) }
+            persistState(current)
             if (issue != null) { saved["review_continuing"] = false; return }
             if (pending?.reviewId != null && pending.state == "review_ready") {
                 val detail = transport.review(pending.reviewId)
                 checkReview(current, epoch)
+                checkRead(current, networkEpoch)
                 if (detail.renderReady && detail.review.status == "pending" && detail.review.id == pending.reviewId &&
                     detail.review.occurrenceId == target.occurrenceId && detail.review.packageFolder == target.packageFolder &&
                     detail.review.version == pending.version && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank()) {
@@ -783,13 +1005,15 @@ class AppViewModel(
             if (target.action == ReviewAction.UPLOAD || state.value.review.continuing) {
                 val snapshot = transport.mediaEditor()
                 checkReview(current, epoch)
+                checkRead(current, networkEpoch)
                 if (snapshot.`package`.folderName != target.packageFolder || snapshot.`package`.status != "active") {
                     saved["review_continuing"] = false
                     mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.PACKAGE_CHANGED, readRequired = true, continuing = false)) }
                 } else {
                     val failed = snapshot.renderStatus == "failed"
-                    mutable.update { it.copy(editor = it.editor.accept(snapshot), review = it.review.copy(uploadPackageId = snapshot.`package`.id, issue = if (failed) ReviewIssue.RENDER_FAILED else null,
+                    mutable.update { it.copy(editor = it.editor.accept(snapshot), editorFetchedAt = now(), review = it.review.copy(uploadPackageId = snapshot.`package`.id, issue = if (failed) ReviewIssue.RENDER_FAILED else null,
                         continuing = it.review.continuing && !failed)) }
+                    persistState(current)
                     if (failed) saved["review_continuing"] = false
                 }
             }
@@ -798,7 +1022,7 @@ class AppViewModel(
     fun requestReviewAction(action: ReviewAction) {
         val review = state.value.review
         val target = review.target ?: return
-        if (state.value.phase != Phase.READY || review.busy) return
+        if (!admit(busy = false) || review.busy) return
         val updated = target.copy(action = action)
         saveReviewTarget(updated)
         mutable.update { it.copy(review = it.review.copy(target = updated)) }
@@ -807,15 +1031,17 @@ class AppViewModel(
     val reviewUploadPackageId: Int? get() {
         val current = state.value
         val review = current.review
-        if (current.phase != Phase.READY || current.stale || current.busy || review.busy ||
+        if (!admit() || current.stale || review.busy ||
             review.target?.action != ReviewAction.UPLOAD || review.target.occurrenceId == null ||
             review.issue !in setOf(null, ReviewIssue.MEDIA_REQUIRED, ReviewIssue.UPLOAD_PENDING, ReviewIssue.RENDER_FAILED)) return null
         return review.uploadPackageId
     }
     fun enqueueReviewUploads(expectedPackageId: Int, enqueue: (Int) -> Unit) {
         if (reviewUploadPackageId != expectedPackageId) return
+        val networkEpoch = network.value.epoch
         reviewWork { current, epoch ->
             loadReview(current, epoch)
+            checkWrite(current, networkEpoch)
             val review = state.value.review
             if (!state.value.stale && review.target?.action == ReviewAction.UPLOAD &&
                 review.uploadPackageId == expectedPackageId && review.issue in setOf(null, ReviewIssue.RENDER_FAILED)) enqueue(expectedPackageId)
@@ -823,14 +1049,16 @@ class AppViewModel(
     }
     fun continueReview(uploadRows: List<UploadRecord>, retry: Boolean = false) {
         val review = state.value.review
-        if (state.value.phase != Phase.READY || state.value.busy || review.busy || review.target?.occurrenceId == null ||
+        if (!admit() || review.busy || review.target?.occurrenceId == null ||
             review.target.action != ReviewAction.UPLOAD || review.continuing && !retry ||
             review.issue in setOf(ReviewIssue.UNCERTAIN, ReviewIssue.PACKAGE_CHANGED, ReviewIssue.ALREADY_HANDLED, ReviewIssue.NOT_FOUND)) return
         if (uploadRows.any { it.origin == state.value.origin && it.bindingId == bindingId && it.phase !in setOf(UploadPhase.FINALIZED, UploadPhase.SKIPPED) }) {
             mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.UPLOAD_PENDING)) }; return
         }
+        val networkEpoch = network.value.epoch
         reviewWork(mutation = true) { current, epoch ->
             loadReview(current, epoch)
+            checkWrite(current, networkEpoch)
             val fresh = state.value.review
             if (fresh.target?.reviewId != null || fresh.issue != null && !(fresh.issue == ReviewIssue.RENDER_FAILED && retry)) return@reviewWork
             val snapshot = state.value.editor.snapshot ?: return@reviewWork
@@ -859,7 +1087,7 @@ class AppViewModel(
         val review = state.value.review
         val detail = review.detail ?: return
         if (state.value.phase != Phase.READY || review.target?.reviewId != id || detail.review.id != id ||
-            detail.review.revisionDigest != revision || ready && (!detail.renderReady || review.issue != null)) return
+            detail.review.revisionDigest != revision || ready && (!admit(busy = false) || review.readRequired || !detail.renderReady || review.issue != null)) return
         mutable.update { it.copy(review = it.review.copy(previewReady = ready)) }
     }
     fun approveReview() {
@@ -916,10 +1144,18 @@ class AppViewModel(
         }
     }
     private suspend fun refreshReviewDashboard(current: Int, epoch: Int) {
+        val networkEpoch = network.value.epoch
         try {
             val dashboard = api().dashboard()
             checkReview(current, epoch)
-            mutable.update { it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, stale = false) }
+            checkRead(current, networkEpoch)
+            mutable.update {
+                val changedPackage = it.editor.snapshot?.`package` != dashboard.`package`
+                it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, dashboardFetchedAt = now(), stale = false,
+                    editor = if (changedPackage) MediaEditorState() else it.editor,
+                    editorFetchedAt = if (changedPackage) null else it.editorFetchedAt)
+            }
+            persistState(current)
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) {
             checkReview(current, epoch)

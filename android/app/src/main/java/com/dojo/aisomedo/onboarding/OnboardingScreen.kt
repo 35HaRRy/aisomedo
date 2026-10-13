@@ -28,6 +28,9 @@ import java.util.Locale
         Heading(R.string.setup)
         Text(stringResource(R.string.setup_progress, state.setup?.checklist?.count { it.complete } ?: 0, state.setup?.checklist?.size ?: 0))
         SectionHeading(stepLabel(state.step.orEmpty()))
+        if (state.step !in setOf("pairing", "summary") && (!state.networkConnected || !state.authoritative || state.step !in state.configurationFresh)) {
+            Text(stringResource(R.string.section_read_only), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        }
         if (state.step in state.changedSteps) {
             Text(stringResource(R.string.remote_changed))
             OutlinedButton(onClick = { model.reloadStep(state.step.orEmpty()) }, enabled = !state.busy) { Text(stringResource(R.string.reload_step)) }
@@ -39,17 +42,18 @@ import java.util.Locale
             "pairing" -> state.client?.let { Text(stringResource(R.string.device_identity, it.name, it.id)) }
             "schedule" -> ScheduleStep(state, model)
             "consent" -> {
-                ConsentStep(state.consent, state.busy) { version -> model.acknowledgeConsent(true); model.acceptConsent(version) }
+                ConsentStep(state.consent, state.busy, { version -> model.acknowledgeConsent(true); model.acceptConsent(version) }, canMutate = state.canConfigure("consent"))
                 TextButton(onClick = { model.reloadStep("consent") }, enabled = !state.busy) { Text(stringResource(R.string.retry)) }
             }
             "caption_template" -> {
                 val text = state.drafts["caption"].orEmpty()
-                OutlinedTextField(text, { model.setDraft("caption", it, "caption_template") }, label = { Text(stringResource(R.string.caption_template)) }, modifier = Modifier.fillMaxWidth(), minLines = 3)
-                Button(onClick = { model.saveCaption(text) }, enabled = !state.busy && text.isNotBlank()) { Text(stringResource(R.string.save)) }
+                OutlinedTextField(text, { model.setDraft("caption", it, "caption_template") }, label = { Text(stringResource(R.string.caption_template)) }, modifier = Modifier.fillMaxWidth(), minLines = 3,
+                    enabled = state.networkConnected && state.authoritative && "caption_template" in state.configurationFresh)
+                Button(onClick = { model.saveCaption(text) }, enabled = state.canConfigure("caption_template") && text.isNotBlank()) { Text(stringResource(R.string.save)) }
             }
             "summary" -> {
                 Text(stringResource(if (state.setup?.ready == true) R.string.setup_ready else R.string.setup_incomplete))
-                Button(onClick = model::finishSetup, enabled = !state.busy && state.setup?.ready == true) { Text(stringResource(R.string.finish_setup)) }
+                Button(onClick = model::finishSetup, enabled = state.canMutate && state.setup?.ready == true) { Text(stringResource(R.string.finish_setup)) }
             }
             else -> Text(stringResource(R.string.step_not_loaded))
         }
@@ -71,24 +75,29 @@ import java.util.Locale
     val date = state.drafts["date"].orEmpty()
     val time = state.drafts["time"].orEmpty()
     val enabled = state.drafts["enabled"] != "false"
+    val access = state.canConfigure("schedule")
     Text(stringResource(R.string.plan_help))
     OutlinedButton(onClick = {
         val initial = runCatching { LocalDate.parse(date) }.getOrDefault(LocalDate.now(ZoneId.of("Europe/Istanbul")))
-        DatePickerDialog(context, { _, year, month, day -> model.setDraft("date", LocalDate.of(year, month + 1, day).toString(), "schedule") }, initial.year, initial.monthValue - 1, initial.dayOfMonth).show()
-    }, enabled = !state.busy) { Text(stringResource(R.string.anchor_date, date.ifBlank { stringResource(R.string.choose) })) }
+        DatePickerDialog(context, { _, year, month, day -> if (model.state.value.canConfigure("schedule")) model.setDraft("date", LocalDate.of(year, month + 1, day).toString(), "schedule") }, initial.year, initial.monthValue - 1, initial.dayOfMonth).show()
+    }, enabled = access) { Text(stringResource(R.string.anchor_date, date.ifBlank { stringResource(R.string.choose) })) }
     OutlinedButton(onClick = {
         val initial = runCatching { LocalTime.parse(time) }.getOrDefault(LocalTime.of(18, 0))
-        TimePickerDialog(context, { _, hour, minute -> model.setDraft("time", String.format(Locale.ROOT, "%02d:%02d", hour, minute), "schedule") }, initial.hour, initial.minute, true).show()
-    }, enabled = !state.busy) { Text(stringResource(R.string.anchor_time, time.ifBlank { stringResource(R.string.choose) })) }
+        TimePickerDialog(context, { _, hour, minute -> if (model.state.value.canConfigure("schedule")) model.setDraft("time", String.format(Locale.ROOT, "%02d:%02d", hour, minute), "schedule") }, initial.hour, initial.minute, true).show()
+    }, enabled = access) { Text(stringResource(R.string.anchor_time, time.ifBlank { stringResource(R.string.choose) })) }
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(stringResource(R.string.plan_enabled), Modifier.weight(1f))
-        Switch(enabled, { model.setDraft("enabled", it.toString(), "schedule") }, enabled = !state.busy,
+        Switch(enabled, { model.setDraft("enabled", it.toString(), "schedule") }, enabled = access,
             modifier = Modifier.semantics { contentDescription = context.getString(R.string.plan_enabled) })
     }
-    Button(onClick = { model.savePlan(date, time, enabled) }, enabled = !state.busy && date.isNotBlank() && time.isNotBlank()) { Text(stringResource(R.string.save)) }
+    Button(onClick = { model.savePlan(date, time, enabled) }, enabled = access && date.isNotBlank() && time.isNotBlank()) { Text(stringResource(R.string.save)) }
 }
 
 @Composable fun ConsentStep(policy: ConsentOut?, busy: Boolean, onAccept: (Int) -> Unit) {
+    ConsentStep(policy, busy, onAccept, canMutate = true)
+}
+
+@Composable fun ConsentStep(policy: ConsentOut?, busy: Boolean, onAccept: (Int) -> Unit, canMutate: Boolean) {
     var acknowledged by remember(policy) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         if (policy == null) Text(stringResource(R.string.policy_missing))
@@ -99,11 +108,11 @@ import java.util.Locale
             else {
                 val acknowledgement = stringResource(R.string.policy_acknowledgement)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Checkbox(acknowledged, { acknowledged = it }, enabled = !busy,
+                    Checkbox(acknowledged, { acknowledged = it }, enabled = canMutate && !busy,
                         modifier = Modifier.testTag("consent-acknowledgement").semantics { contentDescription = acknowledgement })
                     Text(acknowledgement)
                 }
-                Button(onClick = { onAccept(policy.version); acknowledged = false }, enabled = !busy && acknowledged) { Text(stringResource(R.string.accept_policy)) }
+                Button(onClick = { onAccept(policy.version); acknowledged = false }, enabled = canMutate && !busy && acknowledged) { Text(stringResource(R.string.accept_policy)) }
             }
         }
     }

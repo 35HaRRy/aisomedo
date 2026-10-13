@@ -13,6 +13,11 @@ enum class SchedulerKind { UIDT, WORK_MANAGER }
 fun schedulerKind(apiLevel: Int) = if (apiLevel >= 34) SchedulerKind.UIDT else SchedulerKind.WORK_MANAGER
 
 class UploadScheduler(private val context: Context) {
+    fun wake(bindingId: String): Boolean = try {
+        if (Build.VERSION.SDK_INT >= 34 && context.getSystemService(JobScheduler::class.java).forNamespace("dojo-uploads")
+                .getPendingJob(3300)?.extras?.getString("binding") == bindingId) true
+        else schedule(bindingId)
+    } catch (_: Exception) { false }
     fun schedule(bindingId: String): Boolean = try {
         require(bindingId.matches(Regex("[a-f0-9]{64}")))
         if (Build.VERSION.SDK_INT >= 34) {

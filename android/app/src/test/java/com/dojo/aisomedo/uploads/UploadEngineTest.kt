@@ -32,6 +32,8 @@ class UploadEngineTest {
         var losePut = false
         var loseComplete = false
         var responseDelay = false
+        var delayInit = false
+        var disconnectOnInitResponse = false
         var invalid = false
         var resolveError = 0
         var statusError = 0
@@ -46,13 +48,23 @@ class UploadEngineTest {
             put("processed", buildJsonObject { put("content_type", "image/jpeg") })
         }
         var clock = 0L
+        @Volatile var connected = true
+        var updateFailurePath: String? = null
+        var rejectionCode = 426
+        var disconnectOnRejection = false
+        val updates = CopyOnWriteArrayList<Pair<String, String?>>()
         var credential: SessionCredential? = SessionCredential("a".repeat(64), "TEST-ONLY")
         val putStarted = CompletableDeferred<Unit>()
+        val initStarted = CompletableDeferred<Unit>()
         val engine: UploadEngine
         init {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.requestUrl!!.encodedPath
+                    if (path == updateFailurePath) {
+                        if (disconnectOnRejection) connected = false
+                        return MockResponse().setResponseCode(rejectionCode).setBody("""{"update_url":"https://dojo.example/release"}""")
+                    }
                     if (path == "/api/pairing/me") return MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
                     if (path == "/api/activity") {
                         val events = resolved.filterValues { it == "aborted" }.keys.mapIndexed { index, id -> buildJsonObject {
@@ -85,6 +97,8 @@ class UploadEngineTest {
                     if (request.method == "POST" && path.endsWith("uploads")) {
                         initializations++
                         initBodies.add(request.body.readUtf8())
+                        initStarted.complete(Unit)
+                        if (disconnectOnInitResponse) connected = false
                         if (initError != 0) return MockResponse().setResponseCode(initError).setBody("""{"detail":"$initDetail"}""")
                     }
                     if (request.method == "PUT") {
@@ -106,11 +120,13 @@ class UploadEngineTest {
                         conflicts = if (state == "conflict") listOf(targets) else emptyList(), packageId = 1, uploadId = if (invalid) "wrong" else uploadId)
                     return MockResponse().setBody(Json.encodeToString(UploadOut.serializer(), out)).apply {
                         if (responseDelay && request.method == "PUT") setBodyDelay(2, TimeUnit.SECONDS)
+                        if (delayInit && request.method == "POST" && path.endsWith("uploads")) setBodyDelay(2, TimeUnit.SECONDS)
                     }
                 }
             }
             server.start()
-            engine = UploadEngine(store, { content.inputStream() }, { credential }, { row, auth -> DojoApi(row.origin, auth.token, 5, OkHttpClient()) }, { clock })
+            engine = UploadEngine(store, { content.inputStream() }, { credential }, { row, auth -> DojoApi(row.origin, auth.token, 5, OkHttpClient()) }, { clock },
+                { connected }, { row, url -> updates.add(row.bindingId to url) })
         }
         suspend fun add(known: Boolean = true): UploadRecord {
             val identity = if (known) prepareFile({ content.inputStream() }, null, Long.MAX_VALUE) {} else null
@@ -156,6 +172,201 @@ class UploadEngineTest {
             assertEquals(1, f.initializations)
             assertEquals(1, Json.parseToJsonElement(f.initBodies.single()).jsonObject["expected_package_id"]!!.jsonPrimitive.int)
             assertEquals(UploadIssue.PACKAGE_CHANGED, reloaded.rows.value.single().issue)
+        }
+    }
+    @Test fun disconnectedWaitingConsumesNoRetryBudgetOrRequests() = runBlocking {
+        Fixture().use { f ->
+            val row = f.add(); f.connected = false
+            repeat(7) { assertEquals(QueueOutcome.RETRY, f.engine.run {}) }
+            assertEquals(row, f.store.rows.value.single())
+            assertEquals(0, f.server.requestCount)
+        }
+    }
+    @Test fun disconnectPreservesActiveIntentAndRetryBudget() = runBlocking {
+        Fixture().use { f ->
+            val row = f.add(); f.responseDelay = true
+            f.confirmed = CHUNK_BYTES.toLong()
+            f.store.mutate(row.id) { it.copy(status = it.status!!.copy(receivedBytes = CHUNK_BYTES.toLong(), receivedRanges = listOf(listOf(0L, CHUNK_BYTES.toLong())))) }
+            val before = f.store.rows.value.single()
+            val pending = async { f.engine.run {} }
+            f.putStarted.await(); f.connected = false; f.engine.suspendTransfers(); pending.await()
+            val paused = f.store.rows.value.single()
+            assertEquals(UploadIntent.ACTIVE, paused.intent)
+            assertEquals(before.identity, paused.identity)
+            assertEquals("saved", paused.status!!.uploadId)
+            assertEquals(CHUNK_BYTES.toLong(), paused.status!!.receivedBytes)
+            assertEquals(0, paused.failures)
+        }
+    }
+    @Test fun reconnectSendsOnlyMissingChunks() = runBlocking {
+        Fixture().use { f ->
+            val row = f.add(); f.responseDelay = true
+            f.confirmed = CHUNK_BYTES.toLong()
+            f.store.mutate(row.id) { it.copy(status = it.status!!.copy(receivedBytes = CHUNK_BYTES.toLong(), receivedRanges = listOf(listOf(0L, CHUNK_BYTES.toLong())))) }
+            val pending = async { f.engine.run {} }
+            f.putStarted.await(); f.connected = false; f.engine.suspendTransfers(); pending.await()
+            f.responseDelay = false; f.connected = true; f.engine.run {}
+            assertEquals(listOf(CHUNK_BYTES.toLong()), f.puts)
+            assertEquals(0, f.initializations)
+            assertEquals("saved", f.store.rows.value.single().status!!.uploadId)
+            assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun disconnectDuringInitializationRequiresExplicitRetryWithoutReplayingPost() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.add(known = false); f.delayInit = true
+            val pending = async { f.engine.run {} }
+            withTimeout(5_000) { f.initStarted.await() }
+            f.connected = false; f.engine.suspendTransfers(); pending.await()
+            val uncertain = f.store.rows.value.single()
+            assertNull(uncertain.status)
+            assertNotNull(uncertain.identity)
+            assertEquals(UploadIntent.ACTIVE, uncertain.intent)
+            assertEquals(0, uncertain.failures)
+            val requests = f.server.requestCount
+            f.connected = true; f.delayInit = false; f.clock = 3_600_000
+            assertEquals(QueueOutcome.IDLE, f.engine.run {})
+            assertEquals("Unacknowledged creation must not be replayed on reconnect", 1, f.initializations)
+            assertEquals(requests, f.server.requestCount)
+            assertTrue(f.puts.isEmpty())
+            assertNull(f.store.rows.value.single().retryAtMillis)
+        }
+    }
+    @Test fun cancelledInitializationSurvivesRestartWithoutReplayingPost() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.add(known = false); f.delayInit = true
+            val pending = async { f.engine.run {} }
+            withTimeout(5_000) { f.initStarted.await() }
+            // Process death can occur before cancellation cleanup; use that on-disk snapshot.
+            val reloaded = UploadStore(f.directory)
+            f.connected = false; f.engine.suspendTransfers(); pending.await()
+            val restarted = UploadEngine(reloaded, { f.content.inputStream() }, { f.credential },
+                { row, auth -> DojoApi(row.origin, auth.token, 5, OkHttpClient()) }, { 3_600_000L })
+            val requests = f.server.requestCount
+            f.delayInit = false
+            assertEquals(QueueOutcome.IDLE, restarted.run {})
+            assertEquals("Durable uncertain creation must require explicit retry after restart", 1, f.initializations)
+            assertEquals(requests, f.server.requestCount)
+            assertNull(reloaded.rows.value.single().status)
+            assertTrue(f.puts.isEmpty())
+        }
+    }
+    @Test fun disconnectBeforeInitializationSendRemainsAutomaticallyResumable() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.add(known = false)
+            f.engine.run { row ->
+                if (row.identity != null && row.status == null) {
+                    f.connected = false; f.engine.suspendTransfers()
+                }
+            }
+            assertEquals(0, f.initializations)
+            assertTrue(eligible(f.store.rows.value.single()))
+            assertNull(f.store.rows.value.single().status)
+            f.connected = true
+            f.engine.run {}
+            assertEquals(1, f.initializations)
+            assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun disconnectAfterAcknowledgedInitializationPreservesKnownId() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.add(known = false)
+            f.engine.run { row ->
+                if (row.status != null) {
+                    f.connected = false; f.engine.suspendTransfers()
+                }
+            }
+            assertEquals("saved", f.store.rows.value.single().status!!.uploadId)
+            assertEquals(0, f.store.rows.value.single().failures)
+            assertTrue(f.puts.isEmpty())
+            f.connected = true
+            f.engine.run {}
+            assertEquals(1, f.initializations)
+            assertEquals("saved", f.store.rows.value.single().status!!.uploadId)
+            assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun disconnectAtInitializationGuardBeforeSendRestoresAutomaticResume() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.add(known = false)
+            f.engine.run { row ->
+                if (row.phase == UploadPhase.RETRYABLE && row.status == null) {
+                    f.connected = false; f.engine.suspendTransfers()
+                }
+            }
+            assertEquals(0, f.initializations)
+            assertTrue(eligible(f.store.rows.value.single()))
+            f.connected = true
+            f.engine.run {}
+            assertEquals(1, f.initializations)
+            assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun initializationResponseDeliveredAfterDisconnectRetainsServerId() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.add(known = false); f.disconnectOnInitResponse = true
+            f.engine.run {}
+            val acknowledged = f.store.rows.value.single()
+            assertEquals("saved", acknowledged.status!!.uploadId)
+            assertEquals(UploadIntent.ACTIVE, acknowledged.intent)
+            assertEquals(0, acknowledged.failures)
+            assertTrue(eligible(acknowledged))
+            assertTrue(f.puts.isEmpty())
+            f.connected = true; f.disconnectOnInitResponse = false
+            f.engine.run {}
+            assertEquals(1, f.initializations)
+            assertEquals("saved", f.store.rows.value.single().status!!.uploadId)
+            assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun background426CarriesUpdateUrlFromAuthenticationStatusAndChunk() = runBlocking {
+        for (path in listOf("/api/pairing/me", "/api/media/uploads/saved", "/api/media/uploads/saved/ranges")) Fixture(byteArrayOf(1)).use { f ->
+            f.add(); f.updateFailurePath = path
+            assertEquals(QueueOutcome.UPDATE_REQUIRED, f.engine.run {})
+            assertEquals("a".repeat(64) to "https://dojo.example/release", f.updates.single())
+        }
+    }
+    @Test fun conflictRefresh426CarriesUpdateUrl() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            f.conflict(); f.updateFailurePath = "/api/media/uploads/saved"
+            assertEquals(UploadIssue.UPDATE_REQUIRED, (runCatching { f.engine.refresh() }.exceptionOrNull() as UploadFailure).issue)
+            assertEquals("https://dojo.example/release", f.updates.single().second)
+        }
+    }
+    @Test fun received401And426SurviveDisconnectAtAuthenticationStatusAndChunk() = runBlocking {
+        for (status in listOf(401, 426)) for (path in listOf("/api/pairing/me", "/api/media/uploads/saved", "/api/media/uploads/saved/ranges")) Fixture(byteArrayOf(1)).use { f ->
+            f.add(); f.updateFailurePath = path; f.rejectionCode = status; f.disconnectOnRejection = true
+            assertEquals(if (status == 401) QueueOutcome.AUTH_REQUIRED else QueueOutcome.UPDATE_REQUIRED, f.engine.run {})
+            assertEquals(0, f.store.rows.value.single().failures)
+            if (status == 426) assertEquals("https://dojo.example/release", f.updates.single().second)
+            else assertTrue(f.updates.isEmpty())
+        }
+    }
+    @Test fun conflictRefreshRejectionSurvivesDisconnect() = runBlocking {
+        for (status in listOf(401, 426)) Fixture(byteArrayOf(1)).use { f ->
+            f.conflict(); f.updateFailurePath = "/api/media/uploads/saved"; f.rejectionCode = status; f.disconnectOnRejection = true
+            val error = runCatching { f.engine.refresh() }.exceptionOrNull()
+            assertTrue(error is UploadFailure)
+            assertEquals(if (status == 401) UploadIssue.AUTH else UploadIssue.UPDATE_REQUIRED, (error as UploadFailure).issue)
+        }
+    }
+    @Test fun conflictDecisionRejectionAfterDisconnectClearsUncertainCommandWithoutReplay() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict(); f.updateFailurePath = "/api/media/uploads/saved/resolve"; f.disconnectOnRejection = true
+            val error = runCatching { f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_both")) }.exceptionOrNull()
+            assertTrue(error is UploadFailure)
+            assertEquals(UploadIssue.UPDATE_REQUIRED, (error as UploadFailure).issue)
+            assertNull(f.store.rows.value.single().pendingDecision)
+            assertEquals("https://dojo.example/release", f.updates.single().second)
+        }
+    }
+    @Test fun definitiveDecisionRejectionAfterDisconnectCannotLeavePermanentPendingCommand() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.conflict(); f.updateFailurePath = "/api/media/uploads/saved/resolve"
+            f.rejectionCode = 409; f.disconnectOnRejection = true
+            runCatching { f.engine.resolve(row.id, ResolveConflictIn(decision = "keep_both")) }
+            assertNull(f.store.rows.value.single().pendingDecision)
+            assertTrue(f.updates.isEmpty())
         }
     }
     @Test fun conflictRefreshRecoversDecisionMadeOnAnotherClient() = runBlocking {

@@ -5,11 +5,38 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.io.InputStream
 import java.io.IOException
 import java.security.MessageDigest
 
 data class SelectedDocument(val uri: String, val filename: String, val contentType: String, val size: Long?)
+
+internal enum class SelectionAvailability { WAIT, READY, INVALID }
+
+internal suspend fun awaitSelectionCommit(access: Flow<SelectionAvailability>, commit: suspend () -> Boolean): Boolean {
+    while (access.first { it != SelectionAvailability.WAIT } == SelectionAvailability.READY) {
+        if (commit()) return true
+    }
+    return false
+}
+
+internal suspend fun retainAndCommit(
+    retain: () -> SelectedDocument, stillCurrent: () -> Boolean, release: (String) -> Unit,
+    verify: suspend (SelectedDocument) -> Unit = {}, commit: (SelectedDocument) -> Boolean,
+): Boolean {
+    if (!stillCurrent()) return false
+    val document = retain()
+    var committed = false
+    try {
+        if (!stillCurrent()) return false
+        verify(document)
+        if (!stillCurrent()) return false
+        committed = commit(document)
+        return committed
+    } finally { if (!committed) release(document.uri) }
+}
 
 class UploadSource(private val resolver: ContentResolver) {
     fun retain(uri: Uri): SelectedDocument = try {

@@ -14,13 +14,13 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-@Composable fun DashboardScreen(dashboard: DashboardOut?, setup: SetupOut?, stale: Boolean, wide: Boolean, onRefresh: () -> Unit, onSetup: () -> Unit, onPending: (DashboardActionOut, ReviewAction) -> Unit = { _, _ -> }) {
+@Composable fun DashboardScreen(dashboard: DashboardOut?, setup: SetupOut?, stale: Boolean, wide: Boolean, onRefresh: () -> Unit, onSetup: () -> Unit, onPending: (DashboardActionOut, ReviewAction) -> Unit = { _, _ -> }, canMutate: Boolean = true) {
     Heading(R.string.dashboard)
     TextButton(onClick = onRefresh) { Text(stringResource(R.string.refresh)) }
     if (dashboard == null) { Text(stringResource(R.string.dashboard_unavailable)); return }
     if (stale) Text(stringResource(R.string.stale, formattedTime(dashboard.generatedAt)))
     SectionHeading(R.string.pending)
-    PendingRows(dashboard, !stale, onPending)
+    PendingRows(dashboard, canMutate && !stale, onPending)
     if (wide) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) { PublishingSummary(dashboard) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) { HealthSummary(dashboard) }
@@ -29,12 +29,12 @@ import java.util.Locale
     Text(stringResource(if (setup?.ready == true) R.string.setup_ready else R.string.setup_incomplete))
     Button(onClick = onSetup) { Text(stringResource(R.string.open_setup)) }
 }
-@Composable fun ApprovalInbox(dashboard: DashboardOut?, stale: Boolean, onRefresh: () -> Unit, onPending: (DashboardActionOut, ReviewAction) -> Unit) {
+@Composable fun ApprovalInbox(dashboard: DashboardOut?, stale: Boolean, onRefresh: () -> Unit, onPending: (DashboardActionOut, ReviewAction) -> Unit, canMutate: Boolean = true) {
     Heading(R.string.approval_inbox)
     TextButton(onClick = onRefresh) { Text(stringResource(R.string.refresh)) }
     if (dashboard == null) { Text(stringResource(R.string.dashboard_unavailable)); return }
     if (stale) Text(stringResource(R.string.stale, formattedTime(dashboard.generatedAt)))
-    PendingRows(dashboard, !stale, onPending)
+    PendingRows(dashboard, canMutate && !stale, onPending)
 }
 @Composable private fun PendingRows(dashboard: DashboardOut, enabled: Boolean, onPending: (DashboardActionOut, ReviewAction) -> Unit) {
     if (dashboard.pendingActions.isEmpty()) Text(stringResource(R.string.no_pending))

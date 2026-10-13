@@ -39,7 +39,8 @@ class MainActivity : ComponentActivity() {
             initializer {
                 AppViewModel(uploads.sessionStore,
                     OkHttpClient(), packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt(),
-                    BuildConfig.DEBUG, createSavedStateHandle()) { uploads.stopSession(); push.stopSession() }
+                    BuildConfig.DEBUG, createSavedStateHandle(), uploads.snapshots, uploads.network.state,
+                    onSessionStopped = { uploads.stopSession(); push.stopSession() })
             }
         })[AppViewModel::class.java]
         handleIntent(intent)
@@ -48,11 +49,12 @@ class MainActivity : ComponentActivity() {
                 var attached: Triple<String, String, Long>? = null
                 val notifications = ReviewNotifications(this@MainActivity)
                 model.state.collect { state ->
+                uploads.setWriteAccess(state.origin, model.currentBinding, model.writesAllowed)
                 if (state.phase == Phase.READY) {
                     state.client?.let { uploads.attach(state.origin, it.id) }
                     if (packageRequested) { packageRequested = false; model.navigate(Destination.PACKAGE) }
                     val binding = model.currentBindingId
-                    if (!state.busy && !state.stale && binding != null) {
+                    if (model.writesAllowed && binding != null) {
                         val next = Triple(state.origin, binding, state.dashboardRevision)
                         if (attached != next) {
                             attached = next; push.refresh()

@@ -41,9 +41,10 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     editor: MediaEditorState, busy: Boolean, scroll: ScrollState, viewport: Rect,
     onRefresh: () -> Unit, onReorder: (List<String>) -> Unit, onRemove: (String) -> Unit, onRestore: (String) -> Unit,
     onEditRanges: (String, List<RangeInput>) -> Unit, onSave: () -> Unit, onDiscard: () -> Unit,
+    canMutate: Boolean = true,
 ) {
     val snapshot = editor.snapshot
-    val blocked = busy || editor.readRequired || snapshot?.`package`?.status == "completed"
+    val blocked = !canMutate || busy || editor.readRequired || snapshot?.`package`?.status == "completed"
     val order = snapshot?.montage?.order.orEmpty()
     val byId = snapshot?.media.orEmpty().associateBy { it.mediaId }
     val ordered = order.mapNotNull(byId::get).filter { it.status == "finalized" }
@@ -103,7 +104,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
             Text(stringResource(if (editor.dirty) R.string.media_unsaved else R.string.media_saved), style = MaterialTheme.typography.bodySmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onSave, enabled = !blocked && editor.canSave, modifier = Modifier.testTag("media-save")) { Text(stringResource(R.string.media_save)) }
-                TextButton(onClick = onDiscard, enabled = !busy && editor.dirty) { Text(stringResource(R.string.media_discard)) }
+                TextButton(onClick = onDiscard, enabled = !blocked && editor.dirty) { Text(stringResource(R.string.media_discard)) }
             }
             Text(stringResource(R.string.media_drag_help), style = MaterialTheme.typography.bodySmall)
             ordered.forEachIndexed { index, media -> key(media.mediaId) {

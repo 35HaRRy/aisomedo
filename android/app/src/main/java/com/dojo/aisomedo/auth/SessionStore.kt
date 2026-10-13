@@ -2,6 +2,8 @@ package com.dojo.aisomedo.auth
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
@@ -19,11 +21,14 @@ class SessionCredential(val bindingId: String, val token: String)
 class SessionStore(private val directory: File, private val keyProvider: () -> SecretKey) {
     private val originFile = File(directory, "server.txt")
     private val tokenFile = File(directory, "credential.bin")
+    private val changes = MutableStateFlow(0L)
+    val revision = changes.asStateFlow()
     val origin: String? get() = originFile.takeIf { it.exists() }?.readText()?.takeIf { it.isNotBlank() }
 
     @Synchronized fun setOrigin(value: String) {
         if (origin != value) clearToken()
         writeAtomically(originFile, value.toByteArray(Charsets.UTF_8))
+        changes.value++
     }
 
     @Synchronized fun readToken(origin: String): String? = readSession(origin)?.token
@@ -48,11 +53,15 @@ class SessionStore(private val directory: File, private val keyProvider: () -> S
             cipher.init(Cipher.ENCRYPT_MODE, keyProvider())
             cipher.updateAAD(origin.toByteArray(Charsets.UTF_8))
             writeAtomically(tokenFile, cipher.iv + cipher.doFinal(token.toByteArray(Charsets.UTF_8)))
+            changes.value++
         } catch (_: Exception) { throw CredentialUnavailable() }
     }
 
     @Synchronized fun clearToken() {
-        if (tokenFile.exists() && !tokenFile.delete()) throw CredentialUnavailable()
+        if (tokenFile.exists()) {
+            if (!tokenFile.delete()) throw CredentialUnavailable()
+            changes.value++
+        }
     }
     @Synchronized fun clearTokenIfBinding(origin: String, bindingId: String): Boolean {
         if (readSession(origin)?.bindingId != bindingId) return false

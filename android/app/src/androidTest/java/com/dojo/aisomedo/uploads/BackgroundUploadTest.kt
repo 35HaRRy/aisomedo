@@ -8,6 +8,30 @@ import org.junit.Test
 
 /** These checks require a dedicated, unlocked API 33 or API 34+ test emulator. */
 class BackgroundUploadTest {
+    @Test fun offlineReconnectPreservesProgressInBackground() {
+        UploadDeviceFixture().use { f ->
+            f.delayMillis = 1500
+            f.select(f.document(CHUNK_BYTES * 4 + 1))
+            f.await { (f.runtime.rows.value.singleOrNull()?.status?.receivedBytes ?: 0) > 0 }
+            val before = f.runtime.rows.value.single()
+            val id = before.status!!.uploadId
+            f.shell("input keyevent KEYCODE_HOME")
+            f.offline {
+                assertEquals(UploadIntent.ACTIVE, f.runtime.rows.value.single().intent)
+                assertEquals(before.identity, f.runtime.rows.value.single().identity)
+                assertEquals(id, f.runtime.rows.value.single().status!!.uploadId)
+                assertTrue(f.runtime.rows.value.single().status!!.receivedBytes >= before.status!!.receivedBytes)
+                val count = f.offsets.size
+                Thread.sleep(500)
+                assertEquals(count, f.offsets.size)
+            }
+            f.await { f.runtime.rows.value.single().phase == UploadPhase.QUEUED }
+            assertEquals(id, f.runtime.rows.value.single().status!!.uploadId)
+            assertEquals(1, f.initializationCount.get())
+            val offsets = f.offsets.filter { it.first == id }.map { it.second }
+            assertEquals(offsets.distinct(), offsets)
+        }
+    }
     @Test fun backgroundAndScreenOffContinueTransfer() {
         UploadDeviceFixture().use { f ->
             f.delayMillis = 750

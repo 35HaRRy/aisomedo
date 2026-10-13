@@ -94,4 +94,117 @@ class UploadPanelTest {
         show(UploadPhase.RETRYABLE)
         compose.onNodeWithText("Tekrar dene").assertExists()
     }
+    @Test fun offlineControlsDisabledExceptTransferPauseResume() {
+        val active = row(UploadPhase.UPLOADING).copy(filename = "active", status = null)
+        val paused = row(UploadPhase.PAUSED).copy(id = "paused", filename = "paused", status = null)
+        val retry = row(UploadPhase.FAILED).copy(id = "retry", filename = "retry")
+        compose.setContent { DojoTheme { Column(Modifier.verticalScroll(rememberScrollState())) {
+            UploadPanel(listOf(active, paused, retry), null, {}, {}, { _, _ -> }, { _, _ -> }, {}, canMutate = false)
+        } } }
+        compose.onNodeWithText("Fotoğraf/video seç").assertIsNotEnabled()
+        compose.onNodeWithText("Duraklat").assertIsEnabled()
+        compose.onNodeWithText("Devam et").assertIsEnabled()
+        compose.onNodeWithText("Tekrar dene").assertIsNotEnabled()
+        compose.onAllNodesWithText("Listeden kaldır").assertAll(isNotEnabled())
+    }
+    @Test fun pickerSelectionSurvivesRefreshUntilAccessReturns() {
+        val requests = mutableListOf<Int>()
+        val registry = object : androidx.activity.result.ActivityResultRegistry() {
+            override fun <I, O> onLaunch(requestCode: Int, contract: androidx.activity.result.contract.ActivityResultContract<I, O>, input: I, options: androidx.core.app.ActivityOptionsCompat?) { requests.add(requestCode) }
+        }
+        val owner = object : androidx.activity.result.ActivityResultRegistryOwner { override val activityResultRegistry = registry }
+        val access = androidx.compose.runtime.mutableStateOf(true)
+        val selected = mutableListOf<Pair<List<android.net.Uri>, Int?>>()
+        val uri = android.net.Uri.parse("content://test/file")
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.activity.compose.LocalActivityResultRegistryOwner provides owner) {
+                DojoTheme { UploadPanel(emptyList(), null, { fail("Generic upload callback") }, {}, { _, _ -> }, { _, _ -> }, {},
+                    selectionPackageId = 42, onSelectPackage = { uris, id -> selected.add(uris to id) }, canMutate = access.value) }
+            }
+        }
+        compose.onNodeWithText("Fotoğraf/video seç").performClick()
+        compose.runOnIdle { access.value = false }
+        compose.runOnIdle { registry.dispatchResult(requests.first(), listOf(uri)) }
+        compose.runOnIdle {
+            // Notification consent may also finish while the foreground refresh is busy.
+            if (requests.size == 2) registry.dispatchResult(requests.last(), false)
+            assertTrue(selected.isEmpty())
+        }
+        compose.runOnIdle { access.value = true }
+        compose.runOnIdle { assertEquals(listOf(listOf(uri) to 42), selected) }
+        compose.runOnIdle { access.value = false }
+        compose.runOnIdle { access.value = true }
+        compose.runOnIdle { assertEquals(1, selected.size) }
+    }
+    @Test fun pickerResultAfterDisconnectDoesNotInvokePackageMutation() {
+        var launchedCode = 0
+        val registry = object : androidx.activity.result.ActivityResultRegistry() {
+            override fun <I, O> onLaunch(requestCode: Int, contract: androidx.activity.result.contract.ActivityResultContract<I, O>, input: I, options: androidx.core.app.ActivityOptionsCompat?) { launchedCode = requestCode }
+        }
+        val owner = object : androidx.activity.result.ActivityResultRegistryOwner { override val activityResultRegistry = registry }
+        val access = androidx.compose.runtime.mutableStateOf(true)
+        val context = androidx.compose.runtime.mutableStateOf<String?>("binding:epoch-1")
+        var selections = 0
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.activity.compose.LocalActivityResultRegistryOwner provides owner) {
+                DojoTheme { UploadPanel(emptyList(), null, { fail("Generic upload callback") }, {}, { _, _ -> }, { _, _ -> }, {},
+                    selectionPackageId = 42, onSelectPackage = { _, _ -> selections++ }, canMutate = access.value, selectionContext = context.value) }
+            }
+        }
+        compose.onNodeWithText("Fotoğraf/video seç").performClick()
+        compose.runOnIdle { access.value = false; context.value = null }
+        compose.runOnIdle { registry.dispatchResult(launchedCode, android.app.Activity.RESULT_OK, android.content.Intent().setData(android.net.Uri.parse("content://test/file"))) }
+        compose.runOnIdle { assertEquals(0, selections) }
+        compose.runOnIdle { access.value = true; context.value = "binding:epoch-2" }
+        compose.runOnIdle { assertEquals(0, selections) }
+    }
+    @Test fun permissionResultAfterDisconnectDoesNotInvokePackageMutation() {
+        val requests = mutableListOf<Int>()
+        val registry = object : androidx.activity.result.ActivityResultRegistry() {
+            override fun <I, O> onLaunch(requestCode: Int, contract: androidx.activity.result.contract.ActivityResultContract<I, O>, input: I, options: androidx.core.app.ActivityOptionsCompat?) { requests.add(requestCode) }
+        }
+        val owner = object : androidx.activity.result.ActivityResultRegistryOwner { override val activityResultRegistry = registry }
+        val access = androidx.compose.runtime.mutableStateOf(true)
+        val context = androidx.compose.runtime.mutableStateOf<String?>("binding:epoch-1")
+        var selections = 0
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.activity.compose.LocalActivityResultRegistryOwner provides owner) {
+                DojoTheme { UploadPanel(emptyList(), null, {}, {}, { _, _ -> }, { _, _ -> }, {},
+                    selectionPackageId = 42, onSelectPackage = { _, _ -> selections++ }, canMutate = access.value, selectionContext = context.value) }
+            }
+        }
+        compose.onNodeWithText("Fotoğraf/video seç").performClick()
+        compose.runOnIdle { registry.dispatchResult(requests.first(), listOf(android.net.Uri.parse("content://test/file"))) }
+        // Permission request only exists on API 33+ when notifications are not already granted.
+        org.junit.Assume.assumeTrue(requests.size == 2)
+        compose.runOnIdle { access.value = false; context.value = null }
+        compose.runOnIdle { registry.dispatchResult(requests.last(), true) }
+        compose.runOnIdle { assertEquals(0, selections) }
+        compose.runOnIdle { access.value = true; context.value = "binding:epoch-2" }
+        compose.runOnIdle { assertEquals(0, selections) }
+    }
+    @Test fun bufferedPickerSelectionCannotMoveToAnotherSession() {
+        val requests = mutableListOf<Int>()
+        val registry = object : androidx.activity.result.ActivityResultRegistry() {
+            override fun <I, O> onLaunch(requestCode: Int, contract: androidx.activity.result.contract.ActivityResultContract<I, O>, input: I, options: androidx.core.app.ActivityOptionsCompat?) { requests.add(requestCode) }
+        }
+        val owner = object : androidx.activity.result.ActivityResultRegistryOwner { override val activityResultRegistry = registry }
+        val access = androidx.compose.runtime.mutableStateOf(true)
+        val context = androidx.compose.runtime.mutableStateOf<String?>("first-binding:epoch-1")
+        var selections = 0
+        compose.setContent {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.activity.compose.LocalActivityResultRegistryOwner provides owner) {
+                DojoTheme { UploadPanel(emptyList(), null, {}, {}, { _, _ -> }, { _, _ -> }, {},
+                    onSelectPackage = { _, _ -> selections++ }, canMutate = access.value, selectionContext = context.value) }
+            }
+        }
+        compose.onNodeWithText("Fotoğraf/video seç").performClick()
+        compose.runOnIdle { access.value = false }
+        compose.runOnIdle { registry.dispatchResult(requests.first(), listOf(android.net.Uri.parse("content://test/file"))) }
+        compose.runOnIdle { if (requests.size == 2) registry.dispatchResult(requests.last(), false) }
+        compose.onNodeWithText("Dosyalar seçildi; yenileme tamamlanınca aktarım başlayacak.").assertExists()
+        compose.runOnIdle { context.value = "second-binding:epoch-1"; access.value = true }
+        compose.runOnIdle { assertEquals(0, selections) }
+        compose.onNodeWithText("Dosyalar seçildi; yenileme tamamlanınca aktarım başlayacak.").assertDoesNotExist()
+    }
 }

@@ -27,15 +27,17 @@ fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1
     val scope = rememberCoroutineScope()
     var reading by remember { mutableStateOf(false) }
     var selectedField by remember { mutableStateOf("logo_asset") }
+    val step = if (cards) "cards" else "logo"
+    val access = state.canConfigure(step)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) scope.launch {
+        if (model.state.value.canConfigure(step) && uri != null) scope.launch {
             reading = true
             try {
                 val bytes = withContext(Dispatchers.IO) {
                     require(context.contentResolver.getType(uri) in listOf("image/png", "image/jpeg"))
                     context.contentResolver.openInputStream(uri)?.use(::readBrandingImage) ?: throw IllegalArgumentException("document")
                 }
-                model.uploadAsset(selectedField, bytes)
+                if (model.state.value.canConfigure(step)) model.uploadAsset(selectedField, bytes)
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { model.pickerFailed() }
             finally { reading = false }
@@ -49,15 +51,16 @@ fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1
             val label = when (field) { "intro_asset" -> R.string.intro_card; "outro_asset" -> R.string.outro_card; else -> R.string.logo }
             val asset = when (field) { "intro_asset" -> state.branding?.introAsset; "outro_asset" -> state.branding?.outroAsset; else -> state.branding?.logoAsset }
             SectionHeadingForBranding(label)
-            asset?.let { BrandingPreview(model, it, label) }
+            asset?.let { if (state.networkConnected) BrandingPreview(model, it, label) else Text(stringResource(R.string.offline_media)) }
             if (cards) {
                 val key = field.replace("_asset", "_duration")
-                OutlinedTextField(state.drafts[key].orEmpty(), { model.setDraft(key, it, "cards") }, label = { Text(stringResource(R.string.card_duration)) }, singleLine = true)
+                OutlinedTextField(state.drafts[key].orEmpty(), { model.setDraft(key, it, "cards") }, label = { Text(stringResource(R.string.card_duration)) }, singleLine = true,
+                    enabled = state.networkConnected && state.authoritative && step in state.configurationFresh)
             }
-            Button(onClick = { selectedField = field; picker.launch(arrayOf("image/png", "image/jpeg")) }, enabled = !reading && !state.busy) { Text(stringResource(R.string.choose_image)) }
+            Button(onClick = { selectedField = field; picker.launch(arrayOf("image/png", "image/jpeg")) }, enabled = !reading && access) { Text(stringResource(R.string.choose_image)) }
             if (field in state.pendingAssets) {
                 Text(stringResource(R.string.upload_pending))
-                OutlinedButton(onClick = { model.retryAsset(field) }, enabled = !state.busy && !reading) { Text(stringResource(R.string.retry_asset)) }
+                OutlinedButton(onClick = { model.retryAsset(field) }, enabled = access && !reading) { Text(stringResource(R.string.retry_asset)) }
             }
             if (cards && asset != null) OutlinedButton(onClick = {
                 val branding = state.branding ?: return@OutlinedButton
@@ -65,15 +68,15 @@ fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1
                     if (field == "intro_asset") null else branding.introDuration,
                     if (field == "outro_asset") null else branding.outroAsset,
                     if (field == "outro_asset") null else branding.outroDuration)
-            }, enabled = !state.busy && !reading) { Text(stringResource(R.string.clear_card)) }
+            }, enabled = access && !reading) { Text(stringResource(R.string.clear_card)) }
         }
         if (cards) {
             Button(onClick = {
                 val branding = state.branding ?: return@Button
                 model.saveCards(branding.introAsset, if (branding.introAsset != null) state.drafts["intro_duration"]?.toDoubleOrNull() else null,
                     branding.outroAsset, if (branding.outroAsset != null) state.drafts["outro_duration"]?.toDoubleOrNull() else null)
-            }, enabled = !state.busy && !reading && state.branding != null) { Text(stringResource(R.string.save_cards)) }
-            TextButton(onClick = model::skipCards, enabled = !state.busy && !reading) { Text(stringResource(R.string.skip_cards)) }
+            }, enabled = access && !reading && state.branding != null) { Text(stringResource(R.string.save_cards)) }
+            TextButton(onClick = model::skipCards, enabled = access && !reading) { Text(stringResource(R.string.skip_cards)) }
         }
     }
 }

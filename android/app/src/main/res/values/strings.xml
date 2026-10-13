@@ -119,6 +119,7 @@
     <string name="upload_pause">Duraklat</string>
     <string name="upload_resume">Devam et</string>
     <string name="upload_select">Fotoğraf/video seç</string>
+    <string name="upload_selection_waiting">Dosyalar seçildi; yenileme tamamlanınca aktarım başlayacak.</string>
     <string name="upload_bytes">%1$d / %2$d bayt · %3$d%%</string>
     <string name="upload_notifications">Yükleme bildirimi görünmüyor. Uygulama ayarlarından bildirimleri açın; Android arka plan çalışmasını kısıtlayabilir.</string>
     <string name="upload_scheduling">Android aktarımı başlatamadı. Uygulamayı açık tutup tekrar deneyin.</string>
@@ -258,4 +259,13 @@
     <string name="preview_failed">Görsel önizlemesi yüklenemedi. Tekrar deneyin.</string>
     <string name="refresh_due">Bağlantı yenilemesi gerekli</string>
     <string name="reconnect_required">Yeniden bağlantı gerekli</string>
+    <string name="offline_notice">Çevrimdışı: kayıtlı bilgiler gösteriliyor. Değişiklikler ve inceleme işlemleri bağlantı gerektirir.</string>
+    <string name="backend_unavailable_notice">Sunucu henüz doğrulanmadı. Kayıtlı bilgiler salt okunur; bağlantıyı kontrol edip yenileyin.</string>
+    <string name="section_read_only">Bu bölüm için güncel bilgi alınamadı. Değişiklik yapmak için bağlanıp yenileyin.</string>
+    <string name="last_fetch">Son alınan bilgi: %1$s</string>
+    <string name="cache_unavailable">Bu bölüm için kayıtlı bilgi yok. Bağlanıp yenileyin.</string>
+    <string name="activity_empty">Henüz hareket kaydı yok.</string>
+    <string name="activity_actor_unknown">İşlemi yapan bilinmiyor</string>
+    <string name="offline_media">Önizleme için bağlantı gerekir.</string>
+    <string name="update_download_unavailable">Güvenli güncelleme adresi alınamadı. Yeniden deneyin veya sunucuyu değiştirin.</string>
 </resources>

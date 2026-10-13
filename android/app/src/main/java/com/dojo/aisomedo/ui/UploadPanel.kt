@@ -43,34 +43,57 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
     onPreview: suspend (String, ConflictTarget, File) -> Unit = { _, _, _ -> throw UploadFailure(UploadIssue.FILE_ACCESS) },
     selectionEnabled: Boolean = true, selectionPackageId: Int? = null,
     onSelectPackage: (List<Uri>, Int?) -> Unit = { uris, _ -> onSelect(uris) },
+    canMutate: Boolean = true,
+    selectionContext: String? = "local",
 ) {
+    val currentSelectionContext by rememberUpdatedState(selectionContext)
     val context = LocalContext.current
     var pendingUris by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
     var replacementId by rememberSaveable { mutableStateOf<String?>(null) }
     var pickerIssue by remember { mutableStateOf<UploadIssue?>(null) }
     var pickerPackageId by rememberSaveable { mutableStateOf<Int?>(null) }
+    var pickerContext by rememberSaveable { mutableStateOf<String?>(null) }
+    var permissionPending by rememberSaveable { mutableStateOf(false) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        onSelectPackage(pendingUris.map(Uri::parse), pickerPackageId); pendingUris = arrayListOf()
+        permissionPending = false
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) {
+        if (pickerContext != null && pickerContext == currentSelectionContext && uris.isNotEmpty()) {
+            pendingUris = ArrayList(uris.map(Uri::toString))
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                pendingUris = ArrayList(uris.map(Uri::toString)); permission.launch(Manifest.permission.POST_NOTIFICATIONS)
-            } else onSelectPackage(uris, pickerPackageId)
+                permissionPending = true
+                permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
     }
     val original = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        val id = replacementId
-        replacementId = null
-        if (id != null && uri != null) onResume(id, uri)
+        if (pickerContext != null && pickerContext == currentSelectionContext && replacementId != null && uri != null) {
+            pendingUris = arrayListOf(uri.toString())
+        } else replacementId = null
+    }
+    LaunchedEffect(selectionContext, canMutate, selectionEnabled, selectionPackageId, pendingUris, permissionPending) {
+        if (pickerContext != selectionContext) {
+            pendingUris = arrayListOf(); replacementId = null; pickerContext = null
+        } else if (pickerContext != null && canMutate && !permissionPending && pendingUris.isNotEmpty()) {
+            val uris = pendingUris.map(Uri::parse)
+            val id = replacementId
+            if (id == null && !selectionEnabled) return@LaunchedEffect
+            pendingUris = arrayListOf(); replacementId = null
+            if (id != null) onResume(id, uris.single())
+            else if (pickerPackageId == selectionPackageId) onSelectPackage(uris, pickerPackageId)
+            else pickerIssue = UploadIssue.PACKAGE_CHANGED
+        }
     }
     Column(Modifier.widthIn(max = 640.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Button(enabled = resolvingId == null && selectionEnabled, onClick = {
+        Button(enabled = canMutate && resolvingId == null && selectionEnabled && pendingUris.isEmpty() && !permissionPending, onClick = {
             pickerPackageId = selectionPackageId
+            pickerContext = selectionContext
             try { picker.launch(arrayOf("image/*", "video/*")); pickerIssue = null }
             catch (_: Exception) { pickerIssue = UploadIssue.FILE_ACCESS }
         }) { Text(stringResource(R.string.upload_select)) }
         Text(stringResource(R.string.upload_help), style = MaterialTheme.typography.bodyMedium)
+        if (pendingUris.isNotEmpty()) Text(stringResource(R.string.upload_selection_waiting),
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         (pickerIssue ?: issue)?.let { error ->
             Text(stringResource(uploadIssueLabel(error)), color = MaterialTheme.colorScheme.error, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             if (error == UploadIssue.NOTIFICATIONS) TextButton(onClick = {
@@ -95,21 +118,25 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
                 row.issue?.let { Text(stringResource(uploadIssueLabel(it)), color = MaterialTheme.colorScheme.error) }
                 row.diagnostic?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 if (row.phase == UploadPhase.CONFLICT) key(row.bindingId, row.status?.conflicts) {
-                    ConflictControls(row, resolvingId != null, onResolve, onRefresh, onPreview)
+                    ConflictControls(row, resolvingId != null, onResolve, onRefresh, onPreview, canMutate = canMutate)
                 }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     when (row.phase) {
                         UploadPhase.PREPARING, UploadPhase.WAITING, UploadPhase.UPLOADING -> OutlinedButton(onClick = { onPause(row.id) }) { Text(stringResource(R.string.upload_pause)) }
                         UploadPhase.PAUSED -> OutlinedButton(onClick = { onResume(row.id, null) }) { Text(stringResource(R.string.upload_resume)) }
-                        UploadPhase.RETRYABLE, UploadPhase.FAILED, UploadPhase.EXPIRED -> OutlinedButton(onClick = { onRetry(row.id, null) }) { Text(stringResource(R.string.retry)) }
-                        UploadPhase.NEEDS_FILE -> OutlinedButton(onClick = {
+                        UploadPhase.RETRYABLE, UploadPhase.FAILED, UploadPhase.EXPIRED -> {
+                            if (eligible(row)) OutlinedButton(onClick = { onPause(row.id) }) { Text(stringResource(R.string.upload_pause)) }
+                            OutlinedButton(onClick = { onRetry(row.id, null) }, enabled = canMutate) { Text(stringResource(R.string.retry)) }
+                        }
+                        UploadPhase.NEEDS_FILE -> OutlinedButton(enabled = canMutate, onClick = {
                             replacementId = row.id
+                            pickerContext = selectionContext
                             try { original.launch(arrayOf("image/*", "video/*")); pickerIssue = null }
                             catch (_: Exception) { pickerIssue = UploadIssue.FILE_ACCESS }
                         }) { Text(stringResource(R.string.upload_original)) }
                         else -> Unit
                     }
-                    if (row.phase !in setOf(UploadPhase.PREPARING, UploadPhase.WAITING, UploadPhase.UPLOADING, UploadPhase.QUEUED, UploadPhase.PROCESSING)) TextButton(enabled = resolvingId == null, onClick = { onDismiss(row.id) }) { Text(stringResource(R.string.upload_dismiss)) }
+                    if (row.phase !in setOf(UploadPhase.PREPARING, UploadPhase.WAITING, UploadPhase.UPLOADING, UploadPhase.QUEUED, UploadPhase.PROCESSING)) TextButton(enabled = canMutate && resolvingId == null, onClick = { onDismiss(row.id) }) { Text(stringResource(R.string.upload_dismiss)) }
                 }
             }
         } }

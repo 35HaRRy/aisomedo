@@ -52,7 +52,8 @@ class AppViewModelTest {
             bodies["/api/pairing/validate"] = """{"client_id":1,"kind":"device","token":"DEVICE"}"""
             bodies["/api/pairing/me"] = """{"id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
             bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
-            bodies["/api/dashboard"] = """{"generated_at":"2026-10-05T12:00:00Z","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
+            bodies["/api/dashboard"] = """{"generated_at":"2026-10-05T12:00:00Z","package":{"id":1,"folder_name":"active","created_at":"2026-10-10T12:00:00Z","status":"active"},"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
+            bodies["/api/activity?limit=50"] = """{"events":[],"next_cursor":null}"""
             bodies["/api/settings/plan"] = """{"anchor_date":"2026-10-05","anchor_time":"18:30:00","enabled":false,"timezone":"Europe/Istanbul"}"""
             bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":null,"intro_duration":null,"logo_asset":"logo.png","outro_asset":null,"outro_duration":null}"""
             bodies["/api/setup/consent"] = """{"accepted_at":null,"text":"Politika metni","version":1}"""
@@ -196,7 +197,7 @@ class AppViewModelTest {
             f.await { it.phase == Phase.READY && !it.busy }
             f.codes["/api/reviews/7"] = code
             f.model.openReview(ReviewTarget(reviewId = 7))
-            f.await { !it.review.busy }
+            f.await { !it.review.busy && !it.busy }
             when (code) {
                 401 -> { assertEquals(Phase.PAIRING, f.model.state.value.phase); assertNull(f.store.readToken(f.origin)) }
                 426 -> assertEquals(Phase.UPDATE_REQUIRED, f.model.state.value.phase)
@@ -410,6 +411,7 @@ class AppViewModelTest {
             f.model.observePushFailure(PushFailure("https://other.example", binding, code))
             assertEquals(Phase.READY, f.model.state.value.phase)
             f.model.observePushFailure(PushFailure(f.origin, binding, code))
+            f.await { it.phase == (if (code == 401) Phase.PAIRING else Phase.UPDATE_REQUIRED) && !it.busy }
             assertEquals(if (code == 401) Phase.PAIRING else Phase.UPDATE_REQUIRED, f.model.state.value.phase)
         }
     }
@@ -735,6 +737,7 @@ class AppViewModelTest {
             assertEquals(count, f.server.requestCount)
             f.codes["/api/packages/active/editor"] = 401
             f.model.refreshEditor(); f.await { it.phase == Phase.PAIRING }
+            f.await { !it.busy }
             assertNull(f.model.state.value.editor.snapshot)
             assertNull(f.store.readToken(f.origin))
         }
@@ -760,7 +763,7 @@ class AppViewModelTest {
             f.model.saveMediaTrims(); f.await { !it.busy }
             assertTrue(f.model.state.value.editor.readRequired)
             f.model.discardMediaTrims()
-            assertFalse(f.model.state.value.editor.dirty)
+            assertTrue("Unverified read-only editor must retain draft", f.model.state.value.editor.dirty)
             val count = f.server.requestCount
             f.model.editRanges("c", listOf(RangeInput("2", "3")))
             f.model.saveMediaTrims(); f.model.removeMedia("a"); main.scheduler.runCurrent()
@@ -775,6 +778,7 @@ class AppViewModelTest {
         Fixture(paired = true).use { f ->
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.observeSessionFailure(UploadIssue.AUTH)
+            f.await { it.phase == Phase.PAIRING && !it.busy }
             assertEquals(Phase.PAIRING, f.model.state.value.phase)
             assertNull(f.store.readToken(f.origin))
             assertEquals(1, f.stopped)
@@ -785,6 +789,7 @@ class AppViewModelTest {
         Fixture(paired = true).use { f ->
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.observeSessionFailure(UploadIssue.UPDATE_REQUIRED)
+            f.await { it.phase == Phase.UPDATE_REQUIRED }
             assertEquals(Phase.UPDATE_REQUIRED, f.model.state.value.phase)
             assertEquals("DEVICE", f.store.readToken(f.origin))
             assertEquals(1, f.stopped)
@@ -861,7 +866,7 @@ class AppViewModelTest {
         Fixture(paired = true).use { f ->
             f.await { it.phase == Phase.READY && !it.busy }
             f.codes["/api/dashboard"] = 401
-            f.model.refresh(); f.await { it.phase == Phase.PAIRING }
+            f.model.refresh(); f.await { it.phase == Phase.PAIRING && !it.busy }
             assertNull(f.store.readToken(f.origin)); assertNull(f.model.state.value.client)
         }
     }
@@ -1043,7 +1048,7 @@ class AppViewModelTest {
             val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
             assertEquals(1, requests.count { it.method == "POST" && it.path == "/api/settings/branding/assets" })
             assertEquals(2, requests.count { it.method == "PATCH" })
-            assertTrue(requests.none { it.path?.startsWith("/api/packages") == true })
+            assertTrue(requests.none { it.method != "GET" && it.path?.startsWith("/api/packages") == true })
         }
     }
     @Test fun cardClearingUsesNullAndInvalidDurationsNeverSend() = runTest(main.scheduler) {

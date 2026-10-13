@@ -92,6 +92,12 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
             return name
         if "anyOf" in node:
             parts = node["anyOf"]
+            if len(parts) == 2 and {json.dumps(part, sort_keys=True) for part in parts} == {
+                json.dumps({"$ref": "#/components/schemas/ClientRefOut"}, sort_keys=True),
+                json.dumps({"type": "string"}, sort_keys=True),
+            }:
+                pending.add("ClientRefOut")
+                return "JsonElement"
             values = [part for part in parts if part.get("type") != "null"]
             if len(parts) != 2 or len(values) != 1:
                 raise ValueError(f"Unsupported union: {node}")
@@ -232,7 +238,7 @@ def main() -> None:
         "BrandingDefaultsOut", "BrandingAssetOut", "StatusOut", "StartIn", "StartOut",
         "AttemptOut", "SelectIn",
         "UploadLimitsOut", "UploadInitIn", "UploadOut",
-        "ActiveEditorOut", "SelectionIn", "OrderIn", "ResolveConflictIn",
+        "ActiveEditorOut", "SelectionIn", "OrderIn", "ResolveConflictIn", "ActivityPageOut",
         "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn", "RenderIn", "RenderOut",
         "PushTokenIn", "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut",
     ]))

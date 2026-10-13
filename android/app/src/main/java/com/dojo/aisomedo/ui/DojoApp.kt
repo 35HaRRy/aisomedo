@@ -40,8 +40,8 @@ import kotlinx.coroutines.delay
     onNotificationPermission: () -> Unit = {}, onNotificationSettings: () -> Unit = {}, openUrl: (String) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(lifecycle, state.phase, state.review.target?.reviewId, state.review.target?.occurrenceId) {
-        if (state.phase == Phase.READY && state.review.target != null) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+    LaunchedEffect(lifecycle, state.phase, state.networkConnected, state.authoritative, state.review.target?.reviewId, state.review.target?.occurrenceId) {
+        if (state.phase == Phase.READY && state.networkConnected && state.authoritative && state.review.target != null) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) { delay(5000); model.pollReview() }
         }
     }
@@ -79,28 +79,44 @@ import kotlinx.coroutines.delay
                         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite })
                         state.issue?.let { Text(stringResource(issueLabel(it)), color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }) }
+                        if (ready && (!state.networkConnected || !state.authoritative)) Surface(
+                            color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium,
+                            modifier = Modifier.fillMaxWidth().testTag("offline-notice")) {
+                            Text(stringResource(if (state.networkConnected) R.string.backend_unavailable_notice else R.string.offline_notice),
+                                modifier = Modifier.padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite })
+                        }
                         if (!ready) StartupScreen(state, model, openUrl)
-                        else if (state.review.target != null && state.review.target?.action != ReviewAction.UPLOAD) ReviewScreen(state.review, !state.busy && !state.stale,
+                        else if (state.review.target != null && state.review.target?.action != ReviewAction.UPLOAD) ReviewScreen(state.review, state.canMutate && !state.stale,
                             model::requestReviewAction, model::approveReview, model::skipReview, model::rescheduleReview,
                             model::refreshReview, model::closeReview) { detail ->
-                                ReviewPreview(detail, model::downloadReviewPreview, model::markReviewPreviewReady)
+                                if (state.networkConnected && state.authoritative) ReviewPreview(detail, model::downloadReviewPreview, model::markReviewPreviewReady)
+                                else Text(stringResource(R.string.offline_media), modifier = Modifier.testTag("review-offline-preview"))
                             }
                         else if (state.step != null) OnboardingScreen(model, openUrl)
                         else when (state.destination) {
-                            Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup, onPending)
+                            Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup, onPending,
+                                canMutate = state.canMutate)
                             Destination.PACKAGE -> {
                                 if (state.review.target?.action == ReviewAction.UPLOAD) {
                                     val continuationRows = uploads?.rows?.collectAsStateWithLifecycle()?.value.orEmpty()
-                                    ReviewContinuation(state.review, !state.busy && !state.stale, continuationRows, model::continueReview,
+                                    ReviewContinuation(state.review, state.canMutate && !state.stale, continuationRows, model::continueReview,
                                         model::requestReviewAction, model::refreshReview, model::closeReview)
                                 }
                                 Heading(R.string.active_package); PackageSummary(state.dashboard)
-                                MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
-                                    model::removeMedia, model::restoreMedia, model::editRanges, model::saveMediaTrims, model::discardMediaTrims)
+                                LastFetchedAt(state.dashboardFetchedAt, "package-fetched-at")
+                                LastFetchedAt(state.editorFetchedAt, "editor-fetched-at")
+                                if (state.editor.snapshot == null && state.editorFetchedAt == null && (state.dashboardFetchedAt == null || state.dashboard?.`package` != null)) {
+                                    Text(stringResource(R.string.cache_unavailable))
+                                    OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
+                                } else MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
+                                    model::removeMedia, model::restoreMedia, model::editRanges, model::saveMediaTrims, model::discardMediaTrims,
+                                    canMutate = state.canEditMedia)
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val issue by uploads.issue.collectAsStateWithLifecycle()
                                     val resolving by uploads.resolvingId.collectAsStateWithLifecycle()
+                                    val writeAccess by uploads.writeAccess.collectAsStateWithLifecycle()
+                                    val network by uploads.network.state.collectAsStateWithLifecycle()
                                      UploadPanel(rows, issue, uploads::enqueue, uploads::pause, uploads::resume, uploads::retry, uploads::dismiss,
                                         resolving, uploads::resolve, uploads::refresh, uploads::preview,
                                         selectionEnabled = state.review.target?.action != ReviewAction.UPLOAD || model.reviewUploadPackageId != null,
@@ -108,13 +124,18 @@ import kotlinx.coroutines.delay
                                         onSelectPackage = { uris, expected ->
                                             if (expected != null) model.enqueueReviewUploads(expected) { uploads.enqueue(uris, it) }
                                             else if (state.review.target?.action != ReviewAction.UPLOAD) uploads.enqueue(uris)
+                                        }, canMutate = state.canMutate && writeAccess != null && writeAccess == model.currentBinding,
+                                        selectionContext = model.currentBinding?.takeIf { state.networkConnected && network.connected }?.let {
+                                            "${state.origin}:$it:${network.epoch}:${state.review.target?.occurrenceId}:${state.review.target?.reviewId}:${state.review.target?.action}"
                                         })
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
                             }
                             Destination.ACTIVITY -> {
                                 state.outcomePackage?.let { Text(stringResource(R.string.publication_context, it)) }
-                                ApprovalInbox(state.dashboard, state.stale, model::refresh, onPending)
+                                ApprovalInbox(state.dashboard, state.stale, model::refresh, onPending, canMutate = state.canMutate)
+                                HorizontalDivider()
+                                ActivityScreen(state.activity, state.activityFetchedAt, state.busy || !state.networkConnected, model::refresh)
                             }
                             Destination.SETTINGS -> {
                                 SettingsScreen(state, model)
@@ -170,6 +191,7 @@ fun destinationLabel(item: Destination) = when (item) {
             Phase.UPDATE_REQUIRED -> {
                 Heading(R.string.update_title); Text(stringResource(R.string.update_help))
                 state.updateUrl?.let { url -> Button(onClick = { openUrl(url) }) { Text(stringResource(R.string.update_download)) } }
+                    ?: Text(stringResource(R.string.update_download_unavailable))
                 TextButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.retry)) }
                 TextButton(onClick = model::changeServer) { Text(stringResource(R.string.change_server)) }
             }

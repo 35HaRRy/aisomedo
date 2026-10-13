@@ -6,12 +6,109 @@ import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.concurrent.TimeUnit
 import java.nio.file.Files
+import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 class DojoApiTest {
+    @Test fun getRecoversWhenReusedConnectionClosesBeforeResponse() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("{}"))
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            server.enqueue(MockResponse().setBody("""{"recovered":true}"""))
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, OkHttpClient())
+            api.request("GET", "/api/test")
+            assertEquals(buildJsonObject { put("recovered", true) }, api.request("GET", "/api/test"))
+            val requests = List(3) { server.takeRequest() }
+            assertEquals(listOf(0, 1, 0), requests.map { it.sequenceNumber })
+            assertTrue(requests.all { it.method == "GET" && it.getHeader("Authorization") == "Bearer DEVICE" })
+        }
+    }
+
+    @Test fun mutationsNeverReplayWhenReusedConnectionClosesBeforeResponse() = runBlocking {
+        for (method in listOf("POST", "PUT", "PATCH", "DELETE")) {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setBody("{}"))
+                server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+                server.enqueue(MockResponse().setBody("{}"))
+                val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, OkHttpClient())
+                api.request("GET", "/api/test")
+                assertEquals(method, 0, (runCatching { api.request(method, "/api/test") }.exceptionOrNull() as ApiFailure).status)
+                assertEquals(method, 2, server.requestCount)
+                assertEquals("GET", server.takeRequest().method)
+                assertEquals(method, server.takeRequest().method)
+            }
+        }
+    }
+
+    @Test fun diagnosticsRedactCredentialsQueriesAndDynamicPaths() = runBlocking {
+        MockWebServer().use { server ->
+            val logs = CopyOnWriteArrayList<String>()
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE-SECRET", 5, OkHttpClient(), logs::add)
+            server.enqueue(MockResponse().setResponseCode(503).setBody("""{"detail":"RESPONSE-SECRET"}"""))
+            val failure = runCatching {
+                api.request("POST", "/api/media/uploads/UPLOAD-SECRET/resolve?token=QUERY-SECRET",
+                    buildJsonObject { put("token", "BODY-SECRET") })
+            }.exceptionOrNull() as ApiFailure
+            assertEquals(503, failure.status)
+            assertTrue(logs.any { it.contains("POST /api/media/uploads/:id/resolve") })
+            assertTrue(logs.any { it.contains("stage=headers") && it.contains("status=503") })
+            assertTrue(logs.any { it.contains("stage=failed") && it.contains("error=ApiFailure") })
+            assertTrue(logs.all { it.contains("id=") && it.contains("elapsed_ms=") })
+            for (secret in listOf("DEVICE-SECRET", "RESPONSE-SECRET", "UPLOAD-SECRET", "QUERY-SECRET", "BODY-SECRET")) {
+                assertFalse("Diagnostic leaked $secret", logs.any { it.contains(secret) })
+            }
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun diagnosticsIdentifyTransportFailureWithoutMessageOrReplay() = runBlocking {
+        val logs = CopyOnWriteArrayList<String>()
+        val attempts = AtomicInteger()
+        val http = OkHttpClient.Builder().addInterceptor {
+            attempts.incrementAndGet()
+            throw java.net.SocketTimeoutException("TRANSPORT-SECRET")
+        }.build()
+        val api = DojoApi("https://example.test", "DEVICE-SECRET", 5, http, logs::add)
+        assertEquals(0, (runCatching { api.request("POST", "/api/test") }.exceptionOrNull() as ApiFailure).status)
+        assertTrue(logs.any { it.contains("stage=failed") && it.contains("error=SocketTimeoutException") })
+        assertFalse(logs.any { it.contains("TRANSPORT-SECRET") || it.contains("DEVICE-SECRET") })
+        assertEquals(1, attempts.get())
+    }
+
+    @Test fun diagnosticSinkFailureCannotBreakSuccessfulRequest() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("{}"))
+            val attempts = AtomicInteger()
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, OkHttpClient()) {
+                attempts.incrementAndGet()
+                throw IOException("Diagnostic sink unavailable")
+            }
+            assertEquals(buildJsonObject {}, api.request("GET", "/api/test"))
+            assertTrue(attempts.get() >= 3)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun activityUsesAuthenticatedLatest50AndBothActorShapes() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""{"events":[{"id":2,"action":"package.created","occurred_at":"2026-10-12T12:00:00Z","details":{},"actor":{"id":1,"name":"Telefon","kind":"device"}},{"id":1,"action":"worker.started","occurred_at":"2026-10-12T11:00:00Z","details":{},"actor":"system"}],"next_cursor":null}"""))
+            val page = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient()).activity()
+            assertEquals(2, page.events.size)
+            assertNull(page.nextCursor)
+            assertEquals("Telefon", page.events.first().actor.jsonObject["name"]!!.jsonPrimitive.content)
+            assertEquals(JsonPrimitive("system"), page.events.last().actor)
+            val request = server.takeRequest()
+            assertEquals("/api/activity?limit=50", request.path)
+            assertEquals("Bearer SYNTHETIC", request.getHeader("Authorization"))
+            assertEquals("5", request.getHeader("X-Android-Version-Code"))
+        }
+    }
     @Test fun reviewPreviewIsAuthenticatedBoundedAndNeverFollowsRedirects() = runBlocking {
         MockWebServer().use { server ->
             val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 1, OkHttpClient())

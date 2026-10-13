@@ -1,5 +1,7 @@
 package com.dojo.aisomedo.api
 
+import android.util.Log
+import com.dojo.aisomedo.BuildConfig
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.*
@@ -13,15 +15,28 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class ApiFailure(val status: Int, val updateUrl: String? = null, val detail: String? = null) : Exception("API failure: $status")
 
-class DojoApi(private val origin: String, private val token: String?, private val versionCode: Int, http: OkHttpClient) {
+private val diagnosticIds = AtomicLong()
+// Allow only fixed route words. Dynamic identities and all query values stay out of logs.
+private val diagnosticSegments = setOf(
+    "api", "compat", "pairing", "validate", "me", "dashboard", "activity", "setup", "consent", "accept",
+    "settings", "plan", "branding", "assets", "cards", "skip", "meta", "status", "instagram", "token",
+    "oauth", "start", "attempts", "select", "packages", "active", "render", "preview", "editor", "order",
+    "selections", "media", "remove", "restore", "upload-limits", "uploads", "complete", "resolve",
+    "conflicts", "ranges", "reviews", "approve", "reschedule", "occurrences", "push-token",
+)
+
+class DojoApi(private val origin: String, private val token: String?, private val versionCode: Int, http: OkHttpClient,
+    private val diagnostic: (String) -> Unit = { if (BuildConfig.DEBUG) Log.d("DojoHttp", it); Unit }) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = true }
     private val client = http.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
+    private val readClient = client.newBuilder().retryOnConnectionFailure(true).build()
 
     private suspend fun bytes(method: String, path: String, body: RequestBody? = null, authenticated: Boolean = true,
         destination: File? = null, limit: Long = 10L * 1024 * 1024): ByteArray {
@@ -32,20 +47,41 @@ class DojoApi(private val origin: String, private val token: String?, private va
         val builder = Request.Builder().url(url).header("X-Android-Version-Code", versionCode.toString())
         if (authenticated && token != null) builder.header("Authorization", "Bearer $token")
         builder.method(method, body ?: if (method == "POST" || method == "PUT" || method == "PATCH") ByteArray(0).toRequestBody() else null)
-        val transport = if (method == "POST" && path.startsWith("/api/reviews/") && path.endsWith("/approve"))
-            client.newBuilder().readTimeout(120, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build() else client
+        val transport = when {
+            method == "GET" -> readClient
+            method == "POST" && path.startsWith("/api/reviews/") && path.endsWith("/approve") ->
+                client.newBuilder().readTimeout(120, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()
+            else -> client
+        }
         val call = transport.newCall(builder.build())
+        val id = diagnosticIds.incrementAndGet()
+        val started = System.nanoTime()
+        val endpoint = "/" + url.encodedPath.trim('/').split('/').joinToString("/") {
+            if (it in diagnosticSegments) it else ":id"
+        }
+        fun trace(stage: String, status: Int = 0, error: Exception? = null, protocol: String? = null) {
+            // Logging must not break requests. Never include exception messages, headers, bodies or URLs.
+            runCatching { diagnostic("id=$id $method $endpoint stage=$stage status=$status " +
+                "elapsed_ms=${(System.nanoTime() - started) / 1_000_000}" +
+                (error?.let { " error=${it.javaClass.simpleName}" } ?: "") +
+                (protocol?.let { " protocol=$it" } ?: "")) }
+        }
+        trace("start")
         return suspendCancellableCoroutine { continuation ->
-            continuation.invokeOnCancellation { call.cancel() }
+            continuation.invokeOnCancellation { trace("cancelled"); call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     destination?.delete()
-                    if (continuation.isActive) continuation.resumeWithException(ApiFailure(0))
+                    if (continuation.isActive) {
+                        trace("failed", error = e)
+                        continuation.resumeWithException(ApiFailure(0))
+                    }
                 }
                 override fun onResponse(call: Call, response: Response) {
                     response.use {
                         if (!continuation.isActive) { destination?.delete(); return }
                         try {
+                            trace("headers", response.code, protocol = response.protocol.toString())
                             if (!response.isSuccessful) {
                                 destination?.delete()
                                 val error = runCatching {
@@ -54,7 +90,9 @@ class DojoApi(private val origin: String, private val token: String?, private va
                                 }.getOrNull()
                                 val update = if (response.code == 426) (error?.get("update_url") as? JsonPrimitive)?.contentOrNull else null
                                 val detail = (error?.get("detail") as? JsonPrimitive)?.contentOrNull?.take(1024)
-                                continuation.resumeWithException(ApiFailure(response.code, update, detail))
+                                val failure = ApiFailure(response.code, update, detail)
+                                trace("failed", response.code, failure)
+                                continuation.resumeWithException(failure)
                             } else {
                                 val source = response.body?.byteStream()
                                 val data = if (destination == null) source?.use { readBounded(it, limit.toInt()) } ?: ByteArray(0)
@@ -74,11 +112,17 @@ class DojoApi(private val origin: String, private val token: String?, private va
                                     } }
                                     ByteArray(0)
                                 }
-                                if (continuation.isActive) continuation.resume(data) else destination?.delete()
+                                if (continuation.isActive) {
+                                    trace("end", response.code)
+                                    continuation.resume(data)
+                                } else destination?.delete()
                             }
                         } catch (e: Exception) {
                             destination?.delete()
-                            if (continuation.isActive) continuation.resumeWithException(if (e is ApiFailure) e else ApiFailure(0))
+                            if (continuation.isActive) {
+                                trace("failed", response.code, e)
+                                continuation.resumeWithException(if (e is ApiFailure) e else ApiFailure(0))
+                            }
                         }
                     }
                 }
@@ -99,6 +143,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun pair(code: String, name: String): PairingOut = decode(request("POST", "/api/pairing/validate", json.encodeToJsonElement(ValidateIn(code, "device", name))))
     suspend fun me(): ClientOut = decode(request("GET", "/api/pairing/me"))
     suspend fun dashboard(): DashboardOut = decode(request("GET", "/api/dashboard"))
+    suspend fun activity(): ActivityPageOut = decode(request("GET", "/api/activity?limit=50"))
     suspend fun setup(): SetupOut = decode(request("GET", "/api/setup"))
     suspend fun review(id: Int): ReviewDetailOut = decode(request("GET", "/api/reviews/$id"))
     private suspend fun reviewDecision(id: Int, action: String, body: JsonElement): JsonObject =
