@@ -110,7 +110,8 @@ import kotlinx.coroutines.delay
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
                                 } else MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
                                     model::removeMedia, model::restoreMedia, model::editRanges, model::saveMediaTrims, model::discardMediaTrims,
-                                    canMutate = state.canEditMedia)
+                                    canMutate = state.canEditMedia, onPreview = model::downloadMediaPreview,
+                                    previewEnabled = state.networkConnected && state.authoritative)
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val issue by uploads.issue.collectAsStateWithLifecycle()

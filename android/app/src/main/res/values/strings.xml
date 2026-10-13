@@ -67,6 +67,11 @@
     <string name="media_move_up">%1$s yukarı taşı</string>
     <string name="media_move_down">%1$s aşağı taşı</string>
     <string name="media_clip_duration">Kaydedilmiş medya süresi: %1$s saniye</string>
+    <string name="media_preview_show">Önizlemeyi göster</string>
+    <string name="media_preview_hide">Önizlemeyi gizle</string>
+    <string name="media_preview_loading">Önizleme yükleniyor…</string>
+    <string name="media_preview_failed">Önizleme yüklenemedi. Tekrar deneyin.</string>
+    <string name="media_preview_missing">Bu dosya için önizleme yok.</string>
     <string name="media_edit_trim">Video bölümlerini düzenle</string>
     <string name="media_remove">Montajdan kaldır</string>
     <string name="media_empty">Montajda medya yok. Fotoğraf veya video yükleyin.</string>

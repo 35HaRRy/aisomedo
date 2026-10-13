@@ -1,6 +1,9 @@
 package com.dojo.aisomedo.ui
 
 import androidx.activity.compose.BackHandler
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -18,9 +21,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -30,7 +35,14 @@ import androidx.compose.ui.unit.dp
 import com.dojo.aisomedo.R
 import com.dojo.aisomedo.api.EditorMediaOut
 import com.dojo.aisomedo.editor.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 private data class DropTarget(val id: String, val after: Boolean)
@@ -42,6 +54,8 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     onRefresh: () -> Unit, onReorder: (List<String>) -> Unit, onRemove: (String) -> Unit, onRestore: (String) -> Unit,
     onEditRanges: (String, List<RangeInput>) -> Unit, onSave: () -> Unit, onDiscard: () -> Unit,
     canMutate: Boolean = true,
+    onPreview: suspend (String, File) -> Unit = { _, _ -> },
+    previewEnabled: Boolean = true,
 ) {
     val snapshot = editor.snapshot
     val blocked = !canMutate || busy || editor.readRequired || snapshot?.`package`?.status == "completed"
@@ -53,6 +67,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     var pointer by remember { mutableStateOf(Offset.Zero) }
     var target by remember { mutableStateOf<DropTarget?>(null) }
     var opened by rememberSaveable(snapshot?.`package`?.folderName) { mutableStateOf<String?>(null) }
+    var previewed by rememberSaveable(snapshot?.`package`?.folderName) { mutableStateOf<String?>(null) }
     val currentViewport by rememberUpdatedState(viewport)
     val currentOrder by rememberUpdatedState(order)
     val currentReorder by rememberUpdatedState(onReorder)
@@ -149,6 +164,15 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                         }
                     }
                     Text(stringResource(R.string.media_clip_duration, media.effectiveDuration?.let(::seconds) ?: stringResource(R.string.media_unknown_duration)), style = MaterialTheme.typography.bodySmall)
+                    if (!previewEnabled) Text(stringResource(R.string.offline_media), style = MaterialTheme.typography.bodySmall)
+                    else if (media.previewUrl == null) Text(stringResource(R.string.media_preview_missing), style = MaterialTheme.typography.bodySmall)
+                    else {
+                        OutlinedButton(onClick = { previewed = if (previewed == id) null else id },
+                            modifier = Modifier.testTag("media-preview-$id")) {
+                            Text(stringResource(if (previewed == id) R.string.media_preview_hide else R.string.media_preview_show))
+                        }
+                        if (previewed == id) key(media.mediaId, media.previewUrl) { MediaPreview(media, onPreview) }
+                    }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (media.isVideo) OutlinedButton(onClick = { opened = if (opened == id) null else id }, enabled = !busy, modifier = Modifier.testTag("media-edit-$id")) { Text(stringResource(R.string.media_edit_trim)) }
                         TextButton(onClick = { onRemove(id) }, enabled = !blocked, modifier = Modifier.testTag("media-remove-$id")) { Text(stringResource(R.string.media_remove)) }
@@ -192,5 +216,64 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
             modifier = Modifier.testTag("range-error-${media.mediaId}").semantics { liveRegion = LiveRegionMode.Polite })
         OutlinedButton(onClick = { onChange(rows + RangeInput("", "")) }, enabled = !blocked, modifier = Modifier.testTag("range-add-${media.mediaId}")) { Text(stringResource(R.string.range_add)) }
         TextButton(onClick = { onChange(emptyList()) }, enabled = !blocked && rows.isNotEmpty()) { Text(stringResource(R.string.range_reset)) }
+    }
+}
+
+@Composable private fun MediaPreview(media: EditorMediaOut, load: suspend (String, File) -> Unit) {
+    val context = LocalContext.current
+    val loader by rememberUpdatedState(load)
+    val previewUrl = requireNotNull(media.previewUrl)
+    val isVideo = media.isVideo
+    var attempt by remember { mutableIntStateOf(0) }
+    var image by remember(attempt) { mutableStateOf<Bitmap?>(null) }
+    var video by remember(attempt) { mutableStateOf<File?>(null) }
+    var loading by remember(attempt) { mutableStateOf(true) }
+    var failed by remember(attempt) { mutableStateOf(false) }
+    val label = stringResource(R.string.image_preview, media.filename)
+    DisposableEffect(image) {
+        val bitmap = image
+        onDispose { bitmap?.recycle() }
+    }
+    LaunchedEffect(media.mediaId, previewUrl, attempt) {
+        var file: File? = null
+        try {
+            val temporary = withContext(Dispatchers.IO) {
+                val directory = context.cacheDir.resolve("media-previews")
+                check(directory.isDirectory || directory.mkdirs())
+                File.createTempFile("media-", if (isVideo) ".mp4" else ".jpg", directory).also { file = it }
+            }
+            loader(previewUrl, temporary)
+            ensureActive()
+            if (isVideo) video = temporary
+            else {
+                image = withContext(Dispatchers.Default) {
+                    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(temporary.absolutePath, options)
+                    require(options.outWidth in 1..16384 && options.outHeight in 1..16384)
+                    options.inJustDecodeBounds = false
+                    options.inSampleSize = 1
+                    while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 1024) options.inSampleSize *= 2
+                    BitmapFactory.decodeFile(temporary.absolutePath, options) ?: error("Invalid preview")
+                }
+                loading = false
+            }
+            awaitCancellation()
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            failed = true; loading = false
+        }
+        catch (_: Exception) { failed = true; loading = false }
+        finally { file?.delete() }
+    }
+    image?.let { Image(it.asImageBitmap(), contentDescription = label, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)) }
+    video?.let { file -> key(file) {
+        NativeVideo(file, label, { loading = false }, { file.delete(); failed = true; loading = false; video = null })
+    } }
+    if (loading && !failed) Text(stringResource(R.string.media_preview_loading),
+        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+    if (failed) {
+        Text(stringResource(R.string.media_preview_failed), color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        TextButton(onClick = { attempt++ }) { Text(stringResource(R.string.retry)) }
     }
 }

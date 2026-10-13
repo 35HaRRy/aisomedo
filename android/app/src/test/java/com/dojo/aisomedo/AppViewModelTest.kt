@@ -1132,6 +1132,27 @@ class AppViewModelTest {
             assertFalse("PATCH /api/settings/branding" in f.seen)
         }
     }
+    @Test fun mediaPreviewDownloadsFileAndSessionSwitchDeletesIt() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            val path = "/api/packages/active/media/a/preview"
+            f.bodies[path] = "media-preview"
+            val file = f.dir.resolve("media-preview.jpg")
+            val transfer = async { f.model.downloadMediaPreview(path, file) }
+            f.await { transfer.isCompleted }
+            transfer.await()
+            assertEquals("media-preview", file.readText())
+            assertEquals(1, f.seen.count { it == "GET $path" })
+            f.delayPath = path
+            val stale = f.dir.resolve("media-stale.jpg")
+            val rejected = async { runCatching { f.model.downloadMediaPreview(path, stale) } }
+            repeat(500) { main.scheduler.runCurrent(); if ("GET $path" !in f.seen.drop(1)) Thread.sleep(10) }
+            f.model.changeServer()
+            f.await { rejected.isCompleted }
+            assertTrue(rejected.await().isFailure)
+            assertFalse(stale.exists())
+        }
+    }
     @Test fun captionEditMadeAfterSubmissionRemainsUnsavedAndVisible() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.await { it.phase == Phase.READY && !it.busy }

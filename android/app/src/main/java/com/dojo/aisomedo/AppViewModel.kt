@@ -696,6 +696,24 @@ class AppViewModel(
         if (generation != current) throw CancellationException("Session changed")
         return bytes
     }
+    suspend fun downloadMediaPreview(previewUrl: String, destination: File) {
+        require(state.value.phase == Phase.READY && network.value.connected)
+        val current = generation
+        try {
+            api().downloadReviewPreview(previewUrl, destination)
+        } catch (e: ApiFailure) {
+            destination.delete()
+            if (generation == current && (e.status == 401 || e.status == 426)) failure(e)
+            throw e
+        } catch (e: Exception) {
+            destination.delete()
+            throw e
+        }
+        if (generation != current) {
+            destination.delete()
+            throw CancellationException("Session changed")
+        }
+    }
     fun refreshEditor() {
         if (state.value.phase == Phase.READY && network.value.connected) launch { loadEditor(it, explicit = true) }
     }
