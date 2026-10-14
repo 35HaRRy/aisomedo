@@ -1,11 +1,13 @@
 """Recovery trust boundaries; only Docker calls are doubled."""
 
+import contextlib
 import hashlib
 import importlib.util
 import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tarfile
 from pathlib import Path
@@ -160,3 +162,169 @@ def test_output_never_overwritten(backup_cli, tmp_path, age_keys):
     with pytest.raises((ValueError, FileExistsError)):
         backup_cli.encrypt_archive(plain, recipient, encrypted)
     assert encrypted.read_bytes() == original
+
+
+@pytest.fixture
+def installation(backup_cli, tmp_path, monkeypatch):
+    root = tmp_path / "install"
+    root.mkdir()
+    _, archive, manifest = payload(tmp_path, backup_cli)
+    events = []
+    info = {"root": root, "state": manifest["state"], "release": tmp_path / "payload/release",
+            "images": {}, "command": ["docker", "compose"], "config": {},
+            "containers": {"backend": ["api"], "worker": ["w1", "w2"], "db": ["db"]},
+            "media_volume": "fixture_media", "worker_count": 2}
+    stopped = set()
+
+    def external(args, **kwargs):
+        events.append(list(args))
+        if "stop" in args:
+            stopped.update(["api", "w1", "w2"])
+        if "up" in args:
+            stopped.clear()
+        return b""
+
+    monkeypatch.setattr(backup_cli.deploy, "installation_lock", lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(backup_cli.deploy, "run", external)
+    monkeypatch.setattr(backup_cli.deploy, "inspect_container", lambda name, **_: {
+        "State": {"Running": name not in stopped}})
+    monkeypatch.setattr(backup_cli.deploy, "running", lambda *_, **__: info["containers"])
+    monkeypatch.setattr(backup_cli.deploy, "verify_public_health", lambda *_: None)
+    monkeypatch.setattr(backup_cli, "read_installation", lambda _: info, raising=False)
+
+    def capture(*_):
+        assert stopped == {"api", "w1", "w2"}, "capture must stop all writers first"
+        events.append(["capture"])
+        return archive
+
+    monkeypatch.setattr(backup_cli, "capture_archive", capture, raising=False)
+    return root, info, events, stopped
+
+
+def test_all_writer_replicas_stopped_before_capture(backup_cli, installation, tmp_path,
+                                                   age_keys, monkeypatch):
+    root, _, events, stopped = installation
+    identity, recipient = age_keys
+    # Keep age subprocess real; the deployment subprocess double is Docker-only.
+    monkeypatch.setattr(backup_cli, "age_file", lambda source, output, args:
+                        _real_age_file(backup_cli, source, output, args))
+    backup_cli.backup(root, recipient, tmp_path / "backup.age")
+    assert not stopped
+    assert events.index(["capture"]) > next(i for i, e in enumerate(events) if "stop" in e)
+    start = next(e for e in events if "up" in e)
+    assert start[start.index("--scale") + 1] == "worker=2"
+    assert "--no-deps" in start
+    assert "init" not in start
+    result = tmp_path / "restored.tar"
+    _real_age_file(backup_cli, tmp_path / "backup.age", result,
+                   ["--decrypt", "--identity", str(identity)])
+    backup_cli.validate_archive(result, tmp_path / "decoded")
+
+
+def _real_age_file(cli, source, output, args):
+    output.write_bytes(subprocess.check_output(["age", *args, str(source)]))
+
+
+@pytest.mark.parametrize("failure", ["capture", "signal", "partial-stop"])
+def test_backup_failure_and_signal_restart_original_replicas(backup_cli, installation,
+                                                              tmp_path, age_keys, monkeypatch,
+                                                              failure):
+    root, _, events, stopped = installation
+    _, recipient = age_keys
+    external = backup_cli.deploy.run
+
+    def run(args, **kwargs):
+        if "age" == args[0]:
+            return subprocess.run(args, stdout=kwargs.get("stdout"), check=True,
+                                  capture_output=not kwargs.get("stdout")).stdout or b""
+        result = external(args, **kwargs)
+        if failure == "partial-stop" and "stop" in args:
+            raise RuntimeError("partial stop")
+        return result
+
+    monkeypatch.setattr(backup_cli.deploy, "run", run)
+
+    def broken_capture(*_):
+        if failure == "signal":
+            signal.raise_signal(signal.SIGTERM)
+        raise RuntimeError("capture failure")
+
+    monkeypatch.setattr(backup_cli, "capture_archive", broken_capture)
+    with pytest.raises(RuntimeError):
+        backup_cli.backup(root, recipient, tmp_path / "backup.age")
+    assert not stopped
+    assert any("up" in e for e in events)
+    assert not (tmp_path / "backup.age").exists()
+
+
+def test_lock_contention_prevents_mutation(backup_cli, installation, tmp_path,
+                                          age_keys, monkeypatch):
+    root, _, events, _ = installation
+
+    @contextlib.contextmanager
+    def locked(_):
+        raise RuntimeError("another deployment holds lock")
+        yield
+
+    monkeypatch.setattr(backup_cli.deploy, "installation_lock", locked)
+    with pytest.raises(RuntimeError, match="lock"):
+        backup_cli.backup(root, age_keys[1], tmp_path / "backup.age")
+    assert not events
+
+
+def test_backup_preflight_before_stop(backup_cli, installation, tmp_path,
+                                     age_keys, monkeypatch):
+    root, _, events, _ = installation
+    usage = shutil._ntuple_diskusage(100, 99, 1)
+    monkeypatch.setattr(backup_cli.shutil, "disk_usage", lambda _: usage)
+    with pytest.raises(RuntimeError, match="space"):
+        backup_cli.backup(root, age_keys[1], tmp_path / "backup.age")
+    assert not any("stop" in e for e in events)
+
+
+def test_restart_failure_not_success(backup_cli, installation, tmp_path, age_keys, monkeypatch):
+    root, _, _, _ = installation
+    monkeypatch.setattr(backup_cli, "age_file", lambda source, output, args:
+                        _real_age_file(backup_cli, source, output, args))
+    monkeypatch.setattr(backup_cli.deploy, "verify_public_health",
+                        lambda *_: (_ for _ in ()).throw(RuntimeError("health failed")))
+    with pytest.raises(RuntimeError, match="health"):
+        backup_cli.backup(root, age_keys[1], tmp_path / "backup.age")
+
+
+def test_backup_includes_database_config_credentials_and_all_media(backup_cli, tmp_path,
+                                                                  monkeypatch):
+    root, _, manifest = payload(tmp_path, backup_cli)
+    manifest["state"]["monitoring"] = True
+    (root / "current.json").write_text(json.dumps(manifest["state"]))
+    credential = tmp_path / "external-firebase.json"
+    credential.write_bytes(b'{"project_id":"fixture-only"}')
+    info = {"root": root, "state": manifest["state"], "release": root / "release",
+            "credential": credential, "containers": {"db": ["fixture-db"]},
+            "config": {"services": {"db": {"environment": {
+                "POSTGRES_USER": "fixture", "POSTGRES_DB": "fixture"}}}}}
+
+    def run(args, **kwargs):
+        assert "pg_dump" in args
+        kwargs["stdout"].write(b"PGDMP fixture dump")
+        return b""
+
+    def export(_installation, _script, *, output):
+        with tarfile.open(fileobj=output, mode="w|") as tar:
+            for path in [root / "media", *sorted((root / "media").rglob("*"))]:
+                tar.add(path, arcname=path.relative_to(root).as_posix(), recursive=False)
+
+    monkeypatch.setattr(backup_cli.deploy, "run", run)
+    monkeypatch.setattr(backup_cli, "volume_helper", export)
+    monkeypatch.setattr(backup_cli, "database_metadata", lambda _: manifest["database"])
+    staging = tmp_path / "capture"
+    staging.mkdir()
+    archive = backup_cli.capture_archive(info, staging)
+    decoded = tmp_path / "decoded"
+    result = backup_cli.validate_archive(archive, decoded)
+    assert result["credentials"] == {"firebase_credentials": "credentials/firebase.json"}
+    assert (decoded / "credentials/firebase.json").read_bytes() == credential.read_bytes()
+    assert (decoded / "config/production.env").read_text() == "SIGNED_URL_SECRET=fixture-only\n"
+    assert (decoded / "database.dump").read_bytes() == b"PGDMP fixture dump"
+    assert (decoded / "media/nested/binary.bin").read_bytes() == b"\x00\xfforiginal"
+    assert (decoded / "media/empty").is_dir()
