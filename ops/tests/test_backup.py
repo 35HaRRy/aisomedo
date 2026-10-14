@@ -10,7 +10,7 @@ import shutil
 import signal
 import subprocess
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -178,6 +178,8 @@ def installation(backup_cli, tmp_path, monkeypatch):
 
     def external(args, **kwargs):
         events.append(list(args))
+        if "ps" in args:
+            return "\n".join(info["containers"].get(args[-1], [])).encode()
         if "stop" in args:
             stopped.update(["api", "w1", "w2"])
         if "up" in args:
@@ -328,3 +330,134 @@ def test_backup_includes_database_config_credentials_and_all_media(backup_cli, t
     assert (decoded / "database.dump").read_bytes() == b"PGDMP fixture dump"
     assert (decoded / "media/nested/binary.bin").read_bytes() == b"\x00\xfforiginal"
     assert (decoded / "media/empty").is_dir()
+
+
+@pytest.fixture
+def restore_fixture(backup_cli, installation, tmp_path, age_keys, monkeypatch):
+    root, info, events, stopped = installation
+    identity, recipient = age_keys
+    (root / "current.json").write_text(json.dumps(info["state"]))
+    archive = tmp_path / "restore.age"
+    _real_age_file(backup_cli, tmp_path / "payload.tar", archive,
+                   ["--encrypt", "--recipient", recipient])
+    monkeypatch.setattr(backup_cli, "age_file", lambda source, output, args:
+                        _real_age_file(backup_cli, source, output, args))
+    monkeypatch.setattr(backup_cli, "prepare_restore", lambda *args: dict(info), raising=False)
+
+    def replace(*args):
+        assert stopped == {"api", "w1", "w2"}
+        events.append(["replace-data"])
+
+    monkeypatch.setattr(backup_cli, "restore_data", replace, raising=False)
+    monkeypatch.setattr(backup_cli, "verify_restored", lambda *args: None, raising=False)
+    return root, archive, identity, recipient, events, stopped
+
+
+def test_restore_validation_before_mutation(backup_cli, restore_fixture, tmp_path):
+    root, archive, identity, recipient, events, _ = restore_fixture
+    archive.write_bytes(archive.read_bytes()[:-20])
+    before = (root / "current.json").read_bytes()
+    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+        backup_cli.restore(root, archive, identity, confirm_replace=True,
+                           safety_recipient=recipient, safety_output=tmp_path / "safety.age")
+    assert not events
+    assert (root / "current.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("confirmed,safety", [(False, True), (True, False)])
+def test_restore_requires_confirmation_and_safety_archive(backup_cli, restore_fixture,
+                                                         tmp_path, confirmed, safety):
+    root, archive, identity, recipient, events, _ = restore_fixture
+    with pytest.raises(ValueError):
+        backup_cli.restore(root, archive, identity, confirm_replace=confirmed,
+                           safety_recipient=recipient if safety else None,
+                           safety_output=tmp_path / "safety.age" if safety else None)
+    assert not any("stop" in event for event in events)
+
+
+def test_safety_failure_recovers_original_services(backup_cli, restore_fixture,
+                                                   tmp_path, monkeypatch):
+    root, archive, identity, recipient, events, stopped = restore_fixture
+    monkeypatch.setattr(backup_cli, "capture_archive", lambda *_:
+                        (_ for _ in ()).throw(RuntimeError("safety capture failed")))
+    with pytest.raises(RuntimeError, match="safety"):
+        backup_cli.restore(root, archive, identity, confirm_replace=True,
+                           safety_recipient=recipient, safety_output=tmp_path / "safety.age")
+    assert not stopped
+    assert ["replace-data"] not in events
+
+
+@pytest.mark.parametrize("failure", ["signal", "health", "replace"])
+def test_restore_interrupt_and_health_failure_leave_writers_stopped(backup_cli, restore_fixture,
+                                                                   tmp_path, monkeypatch, failure):
+    root, archive, identity, recipient, events, stopped = restore_fixture
+    if failure == "health":
+        monkeypatch.setattr(backup_cli.deploy, "verify_public_health", lambda *_:
+                            (_ for _ in ()).throw(RuntimeError("health failed")))
+    else:
+        def broken(*_):
+            if failure == "signal":
+                signal.raise_signal(signal.SIGTERM)
+            raise RuntimeError("replacement failed")
+        monkeypatch.setattr(backup_cli, "restore_data", broken)
+    with pytest.raises(RuntimeError, match="stopped"):
+        backup_cli.restore(root, archive, identity, confirm_replace=True,
+                           safety_recipient=recipient, safety_output=tmp_path / "safety.age")
+    assert stopped == {"api", "w1", "w2"}
+    assert (tmp_path / "safety.age").exists()
+    assert events[-1][-3:] != ["up", "backend", "worker"]
+
+
+def test_restore_commits_configuration_after_safety_capture(backup_cli, restore_fixture, tmp_path):
+    root, archive, identity, recipient, events, stopped = restore_fixture
+    backup_cli.restore(root, archive, identity, confirm_replace=True,
+                       safety_recipient=recipient, safety_output=tmp_path / "safety.age")
+    assert events.index(["capture"]) < events.index(["replace-data"])
+    assert (root / "config/production.env").read_text() == "SIGNED_URL_SECRET=fixture-only\n"
+    assert not stopped
+
+
+def test_fresh_target_rejects_existing_resources(backup_cli, tmp_path, monkeypatch):
+    monkeypatch.setattr(backup_cli.deploy, "run", lambda *_, **__: b"fixture-existing-container\n")
+    with pytest.raises(ValueError):
+        backup_cli.ensure_fresh_project()
+
+
+def test_restore_relocates_firebase_credentials(backup_cli, tmp_path):
+    root, _, _ = payload(tmp_path, backup_cli)
+    (root / "config/production.env").write_text(
+        "SIGNED_URL_SECRET=keep-exact\nFCM_CREDENTIALS_FILE=/old/external.json\n")
+    target = PurePosixPath("/srv/new-root")
+    text = backup_cli.relocated_environment(root, target, True)
+    assert 'FCM_CREDENTIALS_FILE="' + str(target / "config/firebase.json") + '"' in text
+    assert "SIGNED_URL_SECRET=keep-exact\n" in text
+    assert "/old/external.json" not in text
+
+
+def test_cli_help_and_error_redaction(backup_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(backup_cli.sys, "argv", ["backup.py", "--help"])
+    with pytest.raises(SystemExit) as result:
+        backup_cli.main()
+    assert result.value.code == 0
+    assert "restore" in capsys.readouterr().out
+    monkeypatch.setattr(backup_cli.sys, "platform", "linux")
+    monkeypatch.setattr(backup_cli.sys, "argv", ["backup.py", "backup", "--root", str(tmp_path),
+                                               "--recipient", "bad", "--output", "out.age"])
+    monkeypatch.setattr(backup_cli, "backup", lambda *args:
+                        (_ for _ in ()).throw(ValueError("secret-fixture-do-not-log")))
+    assert backup_cli.main() == 1
+    assert "secret-fixture-do-not-log" not in capsys.readouterr().err
+
+
+def test_cli_loads_all_helpers_before_execution(tmp_path):
+    import sys
+
+    if sys.platform != "linux":
+        pytest.skip("actual recovery entry point requires Linux")
+    result = subprocess.run([sys.executable, str(Path(__file__).parents[1] / "backup.py"),
+                             "backup", "--root", str(tmp_path), "--recipient", "bad",
+                             "--output", str(tmp_path / "backup.age")],
+                            capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "NameError" not in result.stderr
+    assert "ValueError" in result.stderr
