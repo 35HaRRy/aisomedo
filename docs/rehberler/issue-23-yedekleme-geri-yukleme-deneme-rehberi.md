@@ -2,20 +2,24 @@
 
 ## 1. Şu ana kadar ne değişti?
 
-**Henüz yedekleme/geri yükleme özelliği uygulanmadı.** Bu aşamada tasarım belgesi
-ve uygulama planı hazırlandı. Tasarım kullanıcı tarafından onaylandı; planın
-incelenmesi ve uygulama yönteminin seçilmesi bekleniyor.
+`ops/backup.py` altında manuel şifreli yedekleme ve geri yükleme CLI'si eklendi.
+Web/Android yedekleme ekranı eklenmedi. Canlı sunucuda yedekleme veya geri yükleme
+yapılmadı; aşağıdaki denemeler yalnız sentetik ve geçici test kaynaklarını kullanır.
 
 | Dosya | İçerik |
 | --- | --- |
 | `docs/superpowers/specs/2026-10-14-manual-encrypted-backup-restore-design.md` | Onaylanan kapsam, şifreleme, güvenlik, bakım kesintisi ve kurtarma kuralları |
 | `docs/superpowers/plans/2026-10-14-manual-encrypted-backup-restore.md` | Kodlama görevleri, testler, CI ve doğrulama adımları |
 | Bu rehber | Mevcut belgeleri kontrol etme; uygulama tamamlandığında güvenli deneme yolu |
+| `ops/backup.py` | Veritabanı, yapılandırma ve tüm medyanın tek şifreli arşivde saklanması/geri yüklenmesi |
+| `ops/tests/test_backup.py` | Yanlış anahtar, bozuk arşiv, güvensiz yollar, kesinti ve güvenlik yedeği kontrolleri |
+| `ops/tests/test_backup_integration.py` | Gerçek PostgreSQL/medya kurtarma; mevcut ve boş hedef; hata sonrası servislerin kapalı kalması |
+| `docs/ops/backup.md` | Linux operatör komutları, anahtar saklama ve kurtarma sınırları |
 
 Tasarım belgesi `3a20eed` commit'inde eklendi. Bu commit yalnız dokümantasyon
 değişikliğidir; çalışan uygulamaya özellik, ekran veya yedekleme komutu eklemez.
 
-Planlanan özellik: PostgreSQL, üretim ayarları ve gerekli kimlik bilgileri,
+Eklenen özellik: PostgreSQL, üretim ayarları ve gerekli kimlik bilgileri,
 geçerli sürüm paketi ve tüm medyanın tek `age` şifreli arşivde saklanması.
 Yedekleme kısa bakım kesintisi gerektirir. Mevcut verinin geri yüklemeyle
 değiştirilmesi açık onay ve önce şifreli güvenlik yedeği gerektirir.
@@ -23,8 +27,9 @@ Zamanlanmış yedek, uygulama ekranı veya otomatik buluta gönderim yoktur.
 
 ## 2. Şimdi deneyebileceğiniz kontroller — PowerShell
 
-PowerShell'i proje kökünde açın. Aşağıdaki komutlar veri değiştirmez,
-servis durdurmaz; Python veya SQL kodu içermez.
+PowerShell'i proje kökünde açın. Bu bölümdeki komutlar veri değiştirmez,
+servis durdurmaz; Python veya SQL kodu içermez. §4 testleri kendi geçici
+Docker kaynaklarını oluşturup temizler; üretim ortamına dokunmaz.
 
 ### 2.1. Belgelerin varlığını kontrol edin
 
@@ -71,26 +76,31 @@ Get-Content -Encoding UTF8 $Plan
 ## 3. Tarayıcı veya Android'de neden doğrudan denenemiyor?
 
 Bu özellik sunucu operatörü için manuel CLI olarak tasarlandı. Yedek alma,
-indirme veya geri yükleme düğmesi eklenmeyecek. Şu anda uygulamada bu çalışma
-nedeniyle yeni davranış beklemeyin.
+indirme veya geri yükleme düğmesi yoktur. Ekran üzerinden yalnız geri yüklenen
+test ortamının eski verileri tekrar gösterdiği gözlemlenebilir.
 
 Belgeler GitHub'a gönderildikten sonra tarayıcıda ilgili dalın dosya listesinden
 spec ve planı okuyabilirsiniz. Yerel commit'lerin GitHub'da görünmesi için ayrıca
 gönderim gerekir; bu rehber gönderim veya dağıtım yaptırmaz.
 
-## 4. Uygulama tamamlandıktan sonra kullanılacak güvenli deneme
+## 4. Güvenli deneme — PowerShell
 
-**Bu bölüm gelecek deneme sırasıdır; şu anda uygulanmış veya çalıştırılmış değildir.**
-İlgili test dosyaları eklenmeden bu komutları çalıştırmayın.
+Önce §4.1'i, Linux ortamı hazırsa §4.2'yi çalıştırın. Testlerin içinde mevcut
+kod çalışır; komutlara Python veya SQL kaynak kodu yapıştırmanız gerekmez.
 
 ### 4.1. Sentetik güvenlik testleri
 
-Kod tamamlandıktan sonra PowerShell'de:
+`uv` ve `age` kurulu, `age-keygen` PATH üzerinde olmalıdır:
 
 ```powershell
 if (-not (Test-Path 'ops/tests/test_backup.py')) {
-    throw 'Yedekleme testleri henüz uygulanmadı.'
+    throw 'Doğru checkout altında değilsiniz.'
 }
+uv --version
+if ($LASTEXITCODE -ne 0) { throw 'uv kurulumu gerekli.' }
+age --version
+if ($LASTEXITCODE -ne 0) { throw 'age kurulumu gerekli.' }
+Get-Command age-keygen -ErrorAction Stop
 uv sync --all-packages --frozen
 if ($LASTEXITCODE -ne 0) { throw 'Test bağımlılıkları hazırlanamadı.' }
 uv run --project backend pytest ops/tests/test_backup.py -v
@@ -104,15 +114,41 @@ atlanabilir; `skipped` çıktısı başarılı Linux doğrulaması sayılmaz.
 
 ### 4.2. Gerçek veritabanı ve medya kurtarma testi
 
-Linux, Docker/Compose, `age` ve doğrulama imajları gereklidir. Windows'ta
-PowerShell üzerinden WSL kullanılabilir; Docker Desktop WSL entegrasyonu ve
-WSL içindeki test ortamı ayrıca hazırlanmalıdır. Tam kurulum adımları uygulama
-tamamlandığında `docs/ops/backup.md` belgesinde yer alacaktır.
+Linux, Docker/Compose, `age`, Linux `uv` ve doğrulama imajları gereklidir.
+Windows'ta PowerShell üzerinden WSL kullanılabilir. Örnekte `Ubuntu` kullanılır;
+dağıtım adınızı değiştirin. Docker Desktop'ın bu dağıtım için WSL entegrasyonu
+açık olmalıdır. Komut bulunamazsa önce ilgili Linux aracının kurulumunu tamamlayın.
+Linux ve Windows sanal ortamlarını karıştırmamak için ayrı Linux ortamı kullanılır.
 
-Mevcut proje kökü WSL tarafından erişilebiliyorsa, ön koşullar hazırlandıktan sonra:
+Ön koşulları kontrol edin:
 
 ```powershell
-wsl -- env REQUIRE_BACKUP_INTEGRATION=1 uv run --project backend pytest ops/tests/test_backup_integration.py -v
+wsl -d Ubuntu -- docker info
+if ($LASTEXITCODE -ne 0) { throw 'WSL Docker erişimi gerekli; Docker Desktop WSL entegrasyonunu kontrol edin.' }
+wsl -d Ubuntu -- age --version
+if ($LASTEXITCODE -ne 0) { throw 'WSL içinde age kurulumu gerekli.' }
+wsl -d Ubuntu -- uv --version
+if ($LASTEXITCODE -ne 0) { throw 'WSL içinde uv kurulumu gerekli.' }
+```
+
+Üretim imajlarından ayrı test imajlarını hazırlayın:
+
+```powershell
+$LinuxEnv = '/var/tmp/aisomedo-issue23-venv'
+wsl -d Ubuntu -- env "UV_PROJECT_ENVIRONMENT=$LinuxEnv" uv sync --all-packages --frozen
+if ($LASTEXITCODE -ne 0) { throw 'Linux test bağımlılıkları hazırlanamadı.' }
+wsl -d Ubuntu -- docker build -t dojo-backend-verify:issue23 -f backend/Dockerfile .
+if ($LASTEXITCODE -ne 0) { throw 'Backend test imajı hazırlanamadı.' }
+wsl -d Ubuntu -- docker build -t dojo-worker-verify:issue23 -f worker/Dockerfile .
+if ($LASTEXITCODE -ne 0) { throw 'Worker test imajı hazırlanamadı.' }
+wsl -d Ubuntu -- docker build -t dojo-gateway-verify:issue23 -f ops/gateway/Dockerfile .
+if ($LASTEXITCODE -ne 0) { throw 'Gateway test imajı hazırlanamadı.' }
+```
+
+Gerçek kurtarma testlerini çalıştırın:
+
+```powershell
+wsl -d Ubuntu -- env "UV_PROJECT_ENVIRONMENT=$LinuxEnv" REQUIRE_BACKUP_INTEGRATION=1 VERIFY_IMAGE_TAG=issue23 uv run --project backend pytest ops/tests/test_backup_integration.py -v
 if ($LASTEXITCODE -ne 0) { throw 'Linux kurtarma doğrulaması başarısız.' }
 ```
 
@@ -121,7 +157,25 @@ Testler geçici Docker proje adları ve sahte kimlik bilgileriyle çalışır;
 orijinal verileri geri getirir, yedekten sonra eklenen medya dosyalarını kaldırır
 ve uygulama sağlığını kontrol eder. Üretim ortamını hedeflememelidir.
 
-### 4.3. İsteğe bağlı tarayıcı/Android gözlemi
+Mevcut hedef için iki worker örneği ve isteğe bağlı Firebase kimlik dosyası;
+boş hedef için sıfırdan kurtarma; değiştirme sonrası hata için servislerin
+kapalı kalması ayrı senaryolardır. Uygulamanın başlangıç klasör onarımıyla
+çakışmamak için sentetik iç içe medya `branding` altında oluşturulur.
+
+### 4.3. Tarayıcıda CI sonucunu inceleme
+
+Değişiklikleri içeren dal GitHub'a gönderilmişse:
+
+1. GitHub deposunda **Actions → ci** sayfasını açın.
+2. Bu değişiklikleri içeren commit'in koşusunu seçin; eski koşu yeni kodu doğrulamaz.
+3. **ops → Verify real encrypted recovery** adımını açın.
+4. Mevcut hedef, Firebase dosyası, boş hedef ve hata senaryolarının geçtiğini kontrol edin.
+5. **required** işinin başarılı olduğunu doğrulayın. Başarısız/atlanmış sonuç başarı sayılmaz.
+
+Bu rehber dalı göndermeyi, üretime dağıtımı veya workflow başlatmayı otomatik yapmaz.
+Yalnız yerel commit varsa GitHub'da yeni koşu beklemeyin.
+
+### 4.4. İsteğe bağlı tarayıcı/Android gözlemi
 
 Otomatik testler geçici ortamı temizleyebilir; bu ortamın açık kalacağını varsaymayın.
 Operatör ayrıca yalıtılmış ve açık tutulmuş bir test kurulumu hazırlarsa:
@@ -140,7 +194,7 @@ kurtarma testleri ve doğrulama raporu esas kanıttır.
 
 - Canlı sunucuda geri yükleme, servis durdurma veya volume silme denemesi yapmayın.
 - Özel `age` anahtarını, üretim ayarlarını ve şifresiz yedeği Git'e eklemeyin.
-- Tasarım/plan hazırlanmış olması #23'ün tamamlandığı anlamına gelmez.
-- Bu aşamada şifreli yedek ve geri yükleme testleri çalıştırılmadı; kod henüz yok.
-- Uygulama sonrasında gerçek sonuçlar `docs/verification/issue-23-backup-restore.md`
-  altında kaydedilecek; rehber de mevcut komutlarla güncellenecek.
+- Yalnız güvendiğiniz kaynaktan gelen arşivi geri yükleyin. Şifreleme, arşivi
+  oluşturan kişinin kimliğini kanıtlamaz; veritabanı dökümleri çalıştırılabilir işlemler içerir.
+- Gerçek sonuçlar ve ortam sınırları `docs/verification/issue-23-backup-restore.md`
+  altında kaydedilir. Yerel test başarısı üretimde geri yükleme yapıldığı anlamına gelmez.

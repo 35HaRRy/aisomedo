@@ -85,8 +85,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --all-packages --frozen
-      - run: uv run --project backend ruff check ops/deploy.py ops/tests backend/scripts
-      - run: uv run --project backend pytest ops/tests/test_deploy.py ops/tests/test_workflows.py -v
+      - name: Install authenticated archive tools
+        run: sudo apt-get update && sudo apt-get install -y age
+      - run: uv run --project backend ruff check ops/deploy.py ops/backup.py ops/tests backend/scripts
+      - run: uv run --project backend mypy --follow-imports=silent ops/backup.py
+      - run: uv run --project backend pytest ops/tests/test_backup.py ops/tests/test_deploy.py ops/tests/test_workflows.py -v
+        env:
+          REQUIRE_BACKUP_INTEGRATION: "1"
       - name: Render development Compose with synthetic settings
         run: |
           set -euo pipefail
@@ -124,6 +129,11 @@ jobs:
           REQUIRE_DEPLOY_INTEGRATION: "1"
           VERIFY_IMAGE_TAG: ${{ github.sha }}
         run: uv run --project backend pytest ops/tests/test_deploy_integration.py -v
+      - name: Verify real encrypted recovery
+        env:
+          REQUIRE_BACKUP_INTEGRATION: "1"
+          VERIFY_IMAGE_TAG: ${{ github.sha }}
+        run: uv run --project backend pytest ops/tests/test_backup_integration.py -v
       # The gateway image build only copies the Caddyfile, so a syntax error in
       # it would otherwise reach a deploy. Validating here fails on the PR.
       - name: Validate the Caddyfile

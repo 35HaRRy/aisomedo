@@ -92,6 +92,25 @@ def test_ci_gate_covers_all_checks_and_merge_queue():
         assert "secrets." not in str(jobs[name])
 
 
+def test_backup_integration_step_is_required(tmp_path):
+    stages = [s for s in workflow("ci.yml")["jobs"]["ops"]["steps"]
+              if "test_backup_integration.py" in s.get("run", "")]
+    assert len(stages) == 1, "real encrypted recovery must run in required ops job"
+    stage = stages[0]
+    assert not stage.get("continue-on-error", False)
+    assert stage["env"]["REQUIRE_BACKUP_INTEGRATION"] == "1"
+    if os.name == "nt":
+        pytest.skip("executable shell stand-in needs Linux")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    fake = tools / "uv"
+    fake.write_text('#!/bin/sh\ncase "$*" in *test_backup_integration.py*) '
+                    'test "$REQUIRE_BACKUP_INTEGRATION" = 1 && exit 7;; esac\nexit 0\n')
+    fake.chmod(0o700)
+    result = run_step(stage, tmp_path, {**stage["env"], "PATH": f"{tools}:/usr/bin:/bin"})
+    assert result.returncode == 7, "failed recovery verification must fail CI step"
+
+
 @pytest.mark.parametrize("status,success", [("success", True), ("failure", False),
                                           ("cancelled", False), ("skipped", False)])
 def test_aggregate_executes_exact_success_gate(tmp_path, status, success):

@@ -139,6 +139,9 @@ installation root (example `/srv/aisomedo`, mode 0700) containing:
 - `snapshots/`: private pre-deployment PostgreSQL dumps, never uploaded to Actions.
 - `deploy.lock`: host lock shared by manual and automated deployments.
 
+Manual encrypted database/configuration/media recovery uses the same lock. See
+[backup and restore](backup.md); it is not scheduled and has no application UI.
+
 ### İlk kurulum: hazır release bundle (Oracle Cloud)
 
 Bu adımlar yeni kurulum içindir. Mevcut veri varsa önce aşağıdaki volume-adoption
