@@ -114,6 +114,7 @@ import kotlinx.coroutines.delay
                                     previewEnabled = state.networkConnected && state.authoritative)
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
+                                    val runningSinceMillis by uploads.runningSinceMillis.collectAsStateWithLifecycle()
                                     val issue by uploads.issue.collectAsStateWithLifecycle()
                                     val resolving by uploads.resolvingId.collectAsStateWithLifecycle()
                                     val writeAccess by uploads.writeAccess.collectAsStateWithLifecycle()
@@ -126,6 +127,7 @@ import kotlinx.coroutines.delay
                                             if (expected != null) model.enqueueReviewUploads(expected) { uploads.enqueue(uris, it) }
                                             else if (state.review.target?.action != ReviewAction.UPLOAD) uploads.enqueue(uris)
                                         }, canMutate = state.canMutate && writeAccess != null && writeAccess == model.currentBinding,
+                                        runningSinceMillis = runningSinceMillis,
                                         selectionContext = model.currentBinding?.takeIf { state.networkConnected && network.connected }?.let {
                                             "${state.origin}:$it:${network.epoch}:${state.review.target?.occurrenceId}:${state.review.target?.reviewId}:${state.review.target?.action}"
                                         })

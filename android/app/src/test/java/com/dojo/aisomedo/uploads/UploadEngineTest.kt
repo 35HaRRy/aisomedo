@@ -33,6 +33,8 @@ class UploadEngineTest {
         var loseComplete = false
         var responseDelay = false
         var delayInit = false
+        var opens = 0
+        var phasesAtAuthentication: List<UploadPhase> = emptyList()
         var disconnectOnInitResponse = false
         var invalid = false
         var resolveError = 0
@@ -65,7 +67,10 @@ class UploadEngineTest {
                         if (disconnectOnRejection) connected = false
                         return MockResponse().setResponseCode(rejectionCode).setBody("""{"update_url":"https://dojo.example/release"}""")
                     }
-                    if (path == "/api/pairing/me") return MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
+                    if (path == "/api/pairing/me") {
+                        phasesAtAuthentication = store.rows.value.map { it.phase }
+                        return MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
+                    }
                     if (path == "/api/activity") {
                         val events = resolved.filterValues { it == "aborted" }.keys.mapIndexed { index, id -> buildJsonObject {
                             put("id", index + 1); put("action", "conflict.resolved"); put("occurred_at", "2026-10-09T10:00:00Z"); put("actor", "system")
@@ -125,7 +130,7 @@ class UploadEngineTest {
                 }
             }
             server.start()
-            engine = UploadEngine(store, { content.inputStream() }, { credential }, { row, auth -> DojoApi(row.origin, auth.token, 5, OkHttpClient()) }, { clock },
+            engine = UploadEngine(store, { opens++; content.inputStream() }, { credential }, { row, auth -> DojoApi(row.origin, auth.token, 5, OkHttpClient()) }, { clock },
                 { connected }, { row, url -> updates.add(row.bindingId to url) })
         }
         suspend fun add(known: Boolean = true): UploadRecord {
@@ -180,6 +185,132 @@ class UploadEngineTest {
             repeat(7) { assertEquals(QueueOutcome.RETRY, f.engine.run {}) }
             assertEquals(row, f.store.rows.value.single())
             assertEquals(0, f.server.requestCount)
+        }
+    }
+    @Test fun uploadHttpErrorsKeepTheirActualReason() = runBlocking {
+        for ((status, detail, expected) in listOf(
+            Triple(408, "request timed out", "TIMEOUT"), Triple(429, "too many requests", "RATE_LIMIT"),
+            Triple(403, "forbidden", "FORBIDDEN"), Triple(422, "invalid media", "INVALID_INPUT"),
+            Triple(409, "package limit exceeded", "CAPACITY"), Triple(409, "active package changed", "PACKAGE_CHANGED"),
+            Triple(409, "upload not receiving", "SERVER"), Triple(400, "checksum mismatch", "CHECKSUM"),
+            Triple(400, "invalid content type", "INVALID_INPUT"), Triple(503, "service unavailable", "SERVER"),
+        )) Fixture(byteArrayOf(1)).use { f ->
+            f.add(false); f.initError = status; f.initDetail = detail
+            f.engine.run {}
+            assertEquals("HTTP $status: $detail", expected, f.store.rows.value.single().issue?.name)
+            assertEquals(1, f.initializations)
+        }
+    }
+
+    @Test fun uploadTransportErrorsDoNotMasqueradeAsConnectionFailures() = runBlocking {
+        for ((exception, expected, automatic) in listOf(
+            Triple(java.net.SocketTimeoutException("SECRET"), "TIMEOUT", true),
+            Triple(java.net.UnknownHostException("SECRET"), "DNS", true),
+            Triple(javax.net.ssl.SSLHandshakeException("SECRET"), "TLS", false),
+            Triple(java.net.ConnectException("SECRET"), "NETWORK", true),
+            Triple(java.net.ProtocolException("SECRET"), "INVALID_RESPONSE", false),
+        )) Fixture(byteArrayOf(1)).use { f ->
+            f.add()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.encodedPath.startsWith("/api/media/uploads/")) throw exception
+                chain.proceed(chain.request())
+            }.build()
+            val engine = UploadEngine(f.store, { f.content.inputStream() }, { f.credential },
+                { row, auth -> DojoApi(row.origin, auth.token, 5, http) }, { f.clock })
+            engine.run {}
+            val row = f.store.rows.value.single()
+            assertEquals(expected, row.issue?.name)
+            assertEquals(automatic, row.retryAtMillis != null)
+            assertNull(row.diagnostic)
+            assertTrue(f.puts.isEmpty())
+        }
+    }
+    @Test fun longOperationKeepsRunningUntilCancelledAndNeverReplaysUncertainInitialization() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.add(false); f.delayInit = true
+            val pending = async { f.engine.run {} }
+            withTimeout(3000) { f.initStarted.await() }
+            assertEquals(mapOf(row.id to 0L), f.engine.runningSinceMillis.value)
+            f.clock = 61_000
+            assertTrue(pending.isActive)
+            assertEquals(mapOf(row.id to 0L), f.engine.runningSinceMillis.value)
+            f.engine.cancel(row.id)
+            pending.await()
+            assertTrue(f.engine.runningSinceMillis.value.isEmpty())
+            val reloaded = UploadStore(f.directory)
+            val restarted = UploadEngine(reloaded, { f.content.inputStream() }, { f.credential },
+                { record, auth -> DojoApi(record.origin, auth.token, 5, OkHttpClient()) }, { f.clock })
+            restarted.run {}
+            assertEquals(1, f.initializations)
+            assertTrue(f.puts.isEmpty())
+        }
+    }
+    @Test fun explicitPausePreservesUncertainInitializationAndPreventsRestartReplay() = runBlocking {
+        Fixture(byteArrayOf(1)).use { f ->
+            val row = f.add(false); f.delayInit = true
+            val pending = async { f.engine.run {} }
+            withTimeout(3000) { f.initStarted.await() }
+            assertTrue(f.engine.pause(row.id))
+            pending.await()
+            val saved = f.store.rows.value.single()
+            assertEquals(UploadIntent.PAUSED, saved.intent)
+            assertEquals(UploadPhase.RETRYABLE, saved.phase)
+            assertNull(saved.status)
+            assertTrue(f.engine.runningSinceMillis.value.isEmpty())
+            val reloaded = UploadStore(f.directory)
+            val restarted = UploadEngine(reloaded, { f.content.inputStream() }, { f.credential },
+                { record, auth -> DojoApi(record.origin, auth.token, 5, OkHttpClient()) }, { f.clock })
+            assertEquals(QueueOutcome.IDLE, restarted.run {})
+            assertEquals(1, f.initializations)
+            assertTrue(f.puts.isEmpty())
+        }
+    }
+    @Test fun newlyPreparedFileIsNotFullyScannedAgainBeforeFirstChunk() = runBlocking {
+        Fixture(byteArrayOf(7)).use { f ->
+            f.add(known = false)
+            var opensAtFirstChunk = 0
+            f.engine.run { row ->
+                if ((row.status?.receivedBytes ?: 0) > 0 && opensAtFirstChunk == 0) opensAtFirstChunk = f.opens
+            }
+            assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+            assertEquals(2, opensAtFirstChunk)
+            assertEquals(listOf(0L), f.puts)
+        }
+    }
+    @Test fun preparationIsVisibleBeforeSlowAuthenticationOrLimits() = runBlocking {
+        Fixture(byteArrayOf(7)).use { f ->
+            f.add(known = false)
+            val phases = mutableListOf<UploadPhase>()
+            f.engine.run { phases.add(it.phase) }
+            assertEquals(listOf(UploadPhase.PREPARING), f.phasesAtAuthentication)
+            assertEquals(UploadPhase.PREPARING, phases.first())
+            assertEquals(UploadPhase.QUEUED, f.store.rows.value.single().phase)
+        }
+    }
+    @Test fun changedFreshFileCannotBeSentOrCompleted() = runBlocking {
+        Fixture(byteArrayOf(7)).use { f ->
+            f.add(known = false)
+            f.engine.run { row -> if (row.status != null) f.content[0] = 8 }
+            assertEquals(UploadPhase.NEEDS_FILE, f.store.rows.value.single().phase)
+            assertEquals(UploadIssue.WRONG_FILE, f.store.rows.value.single().issue)
+            assertTrue(f.puts.isEmpty())
+            assertEquals(0, f.completions)
+        }
+    }
+    @Test fun fileAddedDuringTransferRunsWithoutRestartingQueue() = runBlocking {
+        Fixture(byteArrayOf(7)).use { f ->
+            f.add()
+            var added = false
+            f.engine.run { row ->
+                if (row.phase == UploadPhase.QUEUED && !added) {
+                    added = true
+                    f.status = "receiving"; f.confirmed = 0
+                    runBlocking { f.add() }
+                }
+            }
+            assertEquals(2, f.store.rows.value.size)
+            assertTrue(f.store.rows.value.all { it.phase == UploadPhase.QUEUED })
+            assertEquals(2, f.completions)
         }
     }
     @Test fun disconnectPreservesActiveIntentAndRetryBudget() = runBlocking {

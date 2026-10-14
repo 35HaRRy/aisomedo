@@ -1,6 +1,9 @@
 package com.dojo.aisomedo.uploads
 
 import com.dojo.aisomedo.api.UploadOut
+import com.dojo.aisomedo.api.ApiFailure
+import com.dojo.aisomedo.api.ApiTransportIssue
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import java.time.OffsetDateTime
@@ -9,9 +12,40 @@ const val CHUNK_BYTES = 2 * 1024 * 1024
 @Serializable data class FileIdentity(val size: Long, val chunkHashes: List<String>, val fingerprint: String)
 @Serializable enum class UploadIntent { ACTIVE, PAUSED }
 @Serializable enum class UploadPhase { PREPARING, WAITING, UPLOADING, PAUSED, RETRYABLE, NEEDS_FILE, QUEUED, PROCESSING, FINALIZED, FAILED, CONFLICT, EXPIRED, SKIPPED }
-@Serializable enum class UploadIssue { NETWORK, OVERSIZE, CAPACITY, PACKAGE_CHANGED, CHECKSUM, WRONG_FILE, FILE_ACCESS, STORAGE, SCHEDULING, NOTIFICATIONS, EXPIRED, CONFLICT, AUTH, UPDATE_REQUIRED, SERVER, INVALID_RESPONSE }
+@Serializable enum class UploadIssue { NETWORK, TIMEOUT, DNS, TLS, RATE_LIMIT, FORBIDDEN, INVALID_INPUT, OVERSIZE, CAPACITY, PACKAGE_CHANGED, CHECKSUM, WRONG_FILE, FILE_ACCESS, STORAGE, SCHEDULING, NOTIFICATIONS, EXPIRED, CONFLICT, AUTH, UPDATE_REQUIRED, SERVER, INVALID_RESPONSE }
 class UploadFailure(val issue: UploadIssue) : Exception("Upload failure: ${issue.name}")
 enum class QueueOutcome { IDLE, RETRY, AUTH_REQUIRED, UPDATE_REQUIRED }
+
+internal fun uploadIssue(error: Exception): UploadIssue = when (error) {
+    is UploadFailure -> error.issue
+    is SerializationException -> UploadIssue.INVALID_RESPONSE
+    is ApiFailure -> when (error.status) {
+        0 -> when (error.transportIssue) {
+            ApiTransportIssue.TIMEOUT -> UploadIssue.TIMEOUT
+            ApiTransportIssue.DNS -> UploadIssue.DNS
+            ApiTransportIssue.TLS -> UploadIssue.TLS
+            ApiTransportIssue.STORAGE -> UploadIssue.STORAGE
+            ApiTransportIssue.INVALID_RESPONSE -> UploadIssue.INVALID_RESPONSE
+            else -> UploadIssue.NETWORK
+        }
+        401 -> UploadIssue.AUTH
+        426 -> UploadIssue.UPDATE_REQUIRED
+        403 -> UploadIssue.FORBIDDEN
+        404 -> UploadIssue.EXPIRED
+        408, 504 -> UploadIssue.TIMEOUT
+        413 -> UploadIssue.OVERSIZE
+        429 -> UploadIssue.RATE_LIMIT
+        409 -> when {
+            error.detail?.contains("changed", true) == true -> UploadIssue.PACKAGE_CHANGED
+            error.detail?.contains("package limit", true) == true -> UploadIssue.CAPACITY
+            else -> UploadIssue.SERVER
+        }
+        400, 422 -> if (error.detail?.contains("checksum", true) == true) UploadIssue.CHECKSUM else UploadIssue.INVALID_INPUT
+        else -> UploadIssue.SERVER
+    }
+    is java.io.IOException, is SecurityException -> UploadIssue.FILE_ACCESS
+    else -> UploadIssue.SERVER
+}
 
 @Serializable data class UploadRecord(
     val id: String, val origin: String, val bindingId: String, val uri: String,

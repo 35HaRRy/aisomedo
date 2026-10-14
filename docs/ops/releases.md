@@ -131,7 +131,7 @@ The workflow runs release unit tests/lint, validates the APK signature with
 before publishing it. It never overwrites a published release. If publication
 fails midway, inspect and remove only the incomplete draft before rerunning.
 
-The stable URL is `https://github.com/OWNER/REPO/releases/latest/download/aisomedo.apk`.
+The stable URL is `https://github.com/35HaRRy/aisomedo/releases/latest/download/aisomedo.apk`.
 Private repositories require download authentication; use a public repository
 or another operator-managed HTTPS distribution endpoint if administrators must
 download without GitHub credentials. Never make repository/package visibility

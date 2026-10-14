@@ -136,6 +136,17 @@
     <string name="upload_package_changed">Aktif Paket değişti. Güncel paketi kontrol edip tekrar deneyin.</string>
     <string name="upload_checksum">Dosya doğrulaması başarısız. Orijinal dosyayı kontrol edin.</string>
     <string name="upload_server_error">Sunucu yüklemeyi tamamlayamadı. Durumu yenileyip tekrar deneyin.</string>
+    <string name="upload_network_error">Yükleme sırasında sunucuyla bağlantı kesildi veya sunucuya ulaşılamadı. Bağlantınızı kontrol edip tekrar deneyin.</string>
+    <string name="upload_timeout">Bağlantı kurulurken veya sunucudan yanıt beklenirken zaman aşımı oluştu. Yükleme sonucu doğrulanamadı; durumu yenileyip tekrar deneyin.</string>
+    <string name="upload_dns">Sunucunun adresi çözümlenemedi (DNS). İnternet bağlantınızı ve sunucu adresini kontrol edin.</string>
+    <string name="upload_tls">Sunucuyla güvenli bağlantı kurulamadı (TLS/sertifika). Cihazın tarih ve saatini kontrol edin; sorun sürerse sistem yöneticinize başvurun.</string>
+    <string name="upload_rate_limit">Sunucu çok fazla yükleme isteği aldı. Bir süre bekleyip tekrar deneyin.</string>
+    <string name="upload_forbidden">Sunucu bu cihazın dosya yüklemesine izin vermiyor. Sistem yöneticinizden yükleme yetkisini kontrol etmesini isteyin.</string>
+    <string name="upload_invalid_input">Sunucu dosyayı veya yükleme bilgilerini kabul etmedi. Dosya türünü ve orijinal dosyayı kontrol edin.</string>
+    <string name="upload_invalid_response">Sunucunun yükleme yanıtı geçersiz veya eksik. Sonuç doğrulanamadı; tekrar göndermeden önce durumu yenileyin.</string>
+    <string name="upload_slow_title">İşlem uzun sürüyor. Durdurulsun mu?</string>
+    <string name="upload_slow_help">Dosyanın hazırlanması veya aktarımı sürüyor. Bu uyarı işlemi durdurmaz. Durdur seçeneği işlemi duraklatır; sunucuya gönderilmiş bir isteğin sonucu sonradan belli olabilir.</string>
+    <string name="upload_stop">Durdur</string>
     <string name="app_name">Dojo Yayıncılık</string>
     <string name="dashboard">Kontrol Paneli</string>
     <string name="package_nav">Paket</string>

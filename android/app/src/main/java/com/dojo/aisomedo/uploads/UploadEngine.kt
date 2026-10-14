@@ -3,9 +3,11 @@ package com.dojo.aisomedo.uploads
 import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.auth.SessionCredential
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.SerializationException
 import java.io.InputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -25,8 +27,24 @@ class UploadEngine(
 ) {
     private val guard = Mutex()
     private val jobs = ConcurrentHashMap<String, Job>()
+    private val mutableRunning = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val runningSinceMillis = mutableRunning.asStateFlow()
     fun cancel(id: String) { jobs[id]?.cancel() }
     fun suspendTransfers() { jobs.values.forEach { it.cancel() } }
+    fun pause(id: String): Boolean {
+        while (true) {
+            val row = store.rows.value.find { it.id == id } ?: return false
+            if (row.intent == UploadIntent.PAUSED || row.phase !in setOf(UploadPhase.WAITING, UploadPhase.PREPARING, UploadPhase.UPLOADING, UploadPhase.RETRYABLE) ||
+                (!eligible(row) && id !in runningSinceMillis.value)) return false
+            val paused = store.mutate(id, row.revision) {
+                // Preserve the write-ahead sentinel if initialization raced with this pause.
+                val uncertainInit = it.phase == UploadPhase.RETRYABLE && it.status == null && it.identity != null && it.retryAtMillis == null
+                it.copy(intent = UploadIntent.PAUSED, phase = if (uncertainInit) UploadPhase.RETRYABLE else UploadPhase.PAUSED, retryAtMillis = null)
+            } ?: continue
+            cancel(paused.id)
+            return true
+        }
+    }
 
     suspend fun resolve(id: String, body: ResolveConflictIn) = withContext(Dispatchers.IO) {
         guard.withLock {
@@ -51,13 +69,20 @@ class UploadEngine(
     suspend fun run(onProgress: (UploadRecord) -> Unit): QueueOutcome = withContext(Dispatchers.IO) {
         if (!guard.tryLock()) return@withContext QueueOutcome.IDLE
         try {
-            for (id in store.rows.value.map { it.id }) {
+            val attempted = mutableSetOf<String>()
+            while (true) {
                 currentCoroutineContext().ensureActive()
                 if (!connected()) break
-                val row = store.rows.value.find { it.id == id } ?: continue
-                if (!eligible(row) || session(row)?.bindingId != row.bindingId || (row.retryAtMillis ?: 0) > now()) continue
+                val row = store.rows.value.find { it.id !in attempted && eligible(it) &&
+                    session(it)?.bindingId == it.bindingId && (it.retryAtMillis ?: 0) <= now() } ?: break
+                val id = row.id
+                attempted.add(id)
                 val outcome = supervisorScope {
-                    val child = async(start = CoroutineStart.LAZY) { Attempt(row, onProgress).run() }
+                    val child = async(start = CoroutineStart.LAZY) {
+                        mutableRunning.update { it + (id to now()) }
+                        try { Attempt(row, onProgress).run() }
+                        finally { mutableRunning.update { it - id } }
+                    }
                     jobs[id] = child
                     try { child.await() }
                     catch (e: CancellationException) { currentCoroutineContext().ensureActive(); QueueOutcome.IDLE }
@@ -209,18 +234,17 @@ class UploadEngine(
                 if (candidate.id == row.id) row = store.rows.value.find { it.id == row.id } ?: throw CancellationException("Upload removed")
             }
             if (failure != null && row.phase == UploadPhase.CONFLICT) {
-                val issue = when ((failure as? ApiFailure)?.status) {
-                    401 -> UploadIssue.AUTH; 426 -> UploadIssue.UPDATE_REQUIRED; 0 -> UploadIssue.NETWORK
-                    else -> UploadIssue.SERVER
-                }
+                val issue = uploadIssue(failure)
                 save(false) { it.copy(issue = issue, diagnostic = diagnostic((failure as? ApiFailure)?.detail)) }
                 if (issue in setOf(UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED)) throw UploadFailure(issue)
             }
         }
         suspend fun run(): QueueOutcome {
             try {
+                save { it.copy(phase = UploadPhase.PREPARING, issue = null) }
                 authenticate()
                 fence()
+                var preparedHere = false
                 if (row.status == null) {
                     operation = "limits"
                     val limits = remote.uploadLimits()
@@ -228,6 +252,7 @@ class UploadEngine(
                     if (row.expectedPackageId != null && row.expectedPackageId != limits.activePackageId) throw UploadFailure(UploadIssue.PACKAGE_CHANGED)
                     save { it.copy(phase = UploadPhase.PREPARING, issue = null) }
                     val identity = prepareFile({ open(row.uri) }, row.size, limits.maxFileBytes) { fence() }
+                    preparedHere = true
                     save { it.copy(identity = identity, size = identity.size) }
                     fence()
                     operation = "init"
@@ -254,13 +279,15 @@ class UploadEngine(
                     }
                 } else {
                     operation = "status"
-                    accept(remote.uploadStatus(row.status!!.uploadId))
+                    accept(remote.uploadStatus(row.status!!.uploadId, waitForUpload = true))
                 }
                 if (row.status!!.status != "receiving") return QueueOutcome.IDLE
                 val identity = row.identity!!
                 if (row.status!!.receivedBytes < identity.size) {
-                    save { it.copy(phase = UploadPhase.PREPARING) }
-                    verifyFile({ open(row.uri) }, identity) { fence() }
+                    if (!preparedHere) {
+                        save { it.copy(phase = UploadPhase.PREPARING) }
+                        verifyFile({ open(row.uri) }, identity) { fence() }
+                    }
                     save { it.copy(phase = UploadPhase.UPLOADING) }
                     operation = "range"
                     val length = scanChunks({ open(row.uri) }, identity.size) { offset, bytes, count ->
@@ -286,11 +313,12 @@ class UploadEngine(
                 if (rejection(e)) { sessionFence(); return fail(e, false) }
                 fence()
                 if (e is UploadFailure && e.issue == UploadIssue.STORAGE) throw e
-                val transient = e is ApiFailure && (e.status == 0 || e.status == 408 || e.status == 429 || e.status >= 500)
+                val transient = e is ApiFailure && ((e.status == 0 && uploadIssue(e) in setOf(UploadIssue.NETWORK, UploadIssue.TIMEOUT, UploadIssue.DNS)) ||
+                    e.status == 408 || e.status == 429 || e.status >= 500)
                 if (e is ApiFailure && row.status != null && operation in setOf("range", "complete") && (transient || e.status == 409)) {
                     try {
                         fence()
-                        accept(remote.uploadStatus(row.status!!.uploadId))
+                        accept(remote.uploadStatus(row.status!!.uploadId, waitForUpload = true))
                         if (row.status!!.status != "receiving") return QueueOutcome.IDLE
                     } catch (cancel: CancellationException) { throw cancel }
                     catch (reconcile: Exception) {
@@ -304,23 +332,12 @@ class UploadEngine(
             val security = rejection(error)
             if (security) sessionFence()
             if (error is ApiFailure && error.status == 426) onUpdateRequired(row, error.updateUrl)
-            val issue = when (error) {
-                is UploadFailure -> error.issue
-                is SerializationException -> UploadIssue.INVALID_RESPONSE
-                is ApiFailure -> when (error.status) {
-                    401 -> UploadIssue.AUTH; 426 -> UploadIssue.UPDATE_REQUIRED; 404 -> UploadIssue.EXPIRED
-                    413 -> UploadIssue.OVERSIZE
-                    409 -> if (error.detail?.contains("changed", true) == true) UploadIssue.PACKAGE_CHANGED else UploadIssue.CAPACITY
-                    400 -> if (operation == "range") UploadIssue.CHECKSUM else UploadIssue.SERVER
-                    else -> if (error.status == 0) UploadIssue.NETWORK else UploadIssue.SERVER
-                }
-                else -> UploadIssue.FILE_ACCESS
-            }
+            val issue = uploadIssue(error)
             val failures = if (automatic) minOf(5, row.failures + 1) else row.failures
             val phase = when (issue) {
                 UploadIssue.FILE_ACCESS, UploadIssue.WRONG_FILE -> UploadPhase.NEEDS_FILE
                 UploadIssue.EXPIRED -> UploadPhase.EXPIRED
-                UploadIssue.NETWORK, UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED -> UploadPhase.RETRYABLE
+                UploadIssue.NETWORK, UploadIssue.TIMEOUT, UploadIssue.DNS, UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED -> UploadPhase.RETRYABLE
                 else -> if (automatic || (error is ApiFailure && (error.status == 408 || error.status == 429 || error.status >= 500))) UploadPhase.RETRYABLE else UploadPhase.FAILED
             }
             val current = store.rows.value.find { it.id == row.id }

@@ -8,6 +8,36 @@ import org.junit.Test
 
 /** These checks require a dedicated, unlocked API 33 or API 34+ test emulator. */
 class BackgroundUploadTest {
+    @Test fun foregroundRefreshCannotCancelUnacknowledgedInitialization() {
+        UploadDeviceFixture().use { f ->
+            val gate = java.util.concurrent.CountDownLatch(1)
+            f.initializationGate = gate
+            try {
+                f.select(f.document(3))
+                f.await { f.initializationCount.get() == 1 && f.runtime.rows.value.singleOrNull()?.status == null }
+                runBlocking { f.runtime.refresh() }
+                assertNull(f.runtime.rows.value.single().status)
+            } finally { gate.countDown() }
+            f.await { f.runtime.rows.value.singleOrNull()?.phase == UploadPhase.QUEUED }
+            assertEquals(1, f.initializationCount.get())
+            assertEquals(0, f.runtime.rows.value.single().failures)
+        }
+    }
+    @Test fun newSelectionCannotCancelUnacknowledgedInitialization() {
+        UploadDeviceFixture().use { f ->
+            val gate = java.util.concurrent.CountDownLatch(1)
+            f.initializationGate = gate
+            try {
+                f.select(f.document(3))
+                f.await { f.initializationCount.get() == 1 && f.runtime.rows.value.singleOrNull()?.status == null }
+                f.select(f.document(3))
+                assertTrue(f.runtime.rows.value.all { it.status == null })
+            } finally { gate.countDown() }
+            f.await { f.runtime.rows.value.size == 2 && f.runtime.rows.value.all { it.phase == UploadPhase.QUEUED } }
+            assertEquals(2, f.initializationCount.get())
+            assertTrue(f.runtime.rows.value.all { it.failures == 0 })
+        }
+    }
     @Test fun offlineReconnectPreservesProgressInBackground() {
         UploadDeviceFixture().use { f ->
             f.delayMillis = 1500

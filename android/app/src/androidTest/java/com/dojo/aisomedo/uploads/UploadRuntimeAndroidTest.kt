@@ -10,6 +10,7 @@ import com.dojo.aisomedo.MainActivity
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -37,6 +38,8 @@ internal class UploadDeviceFixture : AutoCloseable {
     @Volatile var failure = 0
     @Volatile var losePut = false
     @Volatile var delayMillis = 0L
+    @Volatile var initializationGate: java.util.concurrent.CountDownLatch? = null
+    @Volatile var initialPhase = "receiving"
     val origin: String
     val binding: String
     val scenario: ActivityScenario<MainActivity>
@@ -61,7 +64,7 @@ internal class UploadDeviceFixture : AutoCloseable {
                 val id = if (path == "/api/media/uploads") {
                     val json = kotlinx.serialization.json.Json.parseToJsonElement(request.body.readUtf8()) as kotlinx.serialization.json.JsonObject
                     val size = json["declared_size_bytes"].toString().toLong()
-                    "synthetic-${initializationCount.incrementAndGet()}".also { uploads[it] = Remote(size) }
+                    "synthetic-${initializationCount.incrementAndGet()}".also { uploads[it] = Remote(size, phase = initialPhase) }
                 } else path.removePrefix("/api/media/uploads/").substringBefore('/')
                 val remote = uploads[id] ?: return MockResponse().setResponseCode(404)
                 if (request.method == "PUT") {
@@ -73,7 +76,12 @@ internal class UploadDeviceFixture : AutoCloseable {
                 if (path.endsWith("complete")) remote.phase = "queued"
                 val ranges = if (remote.received == 0L) "[]" else "[[0,${remote.received}]]"
                 return MockResponse().setBody("""{"upload_id":"$id","declared_size_bytes":${remote.size},"received_bytes":${remote.received},"received_ranges":$ranges,"status":"${remote.phase}"}""")
-                    .apply { if (request.method == "PUT") setBodyDelay(delayMillis, TimeUnit.MILLISECONDS) }
+                    .apply {
+                        if (request.method == "PUT") setBodyDelay(delayMillis, TimeUnit.MILLISECONDS)
+                        if (request.method == "POST" && path == "/api/media/uploads") initializationGate?.let {
+                            check(it.await(30, TimeUnit.SECONDS)) { "Initialization response was not released" }
+                        }
+                    }
             }
         }
         server.start()
@@ -153,6 +161,32 @@ internal class UploadDeviceFixture : AutoCloseable {
 }
 
 class UploadRuntimeAndroidTest {
+    @Test fun queuedConflictResolutionCannotBlockPauseOfRunningInitialization() = runBlocking {
+        UploadDeviceFixture().use { f ->
+            f.initialPhase = "conflict"
+            f.select(f.document(1))
+            f.await { f.runtime.rows.value.singleOrNull()?.phase == UploadPhase.CONFLICT }
+            val conflict = f.runtime.rows.value.single()
+            f.initialPhase = "receiving"
+            val gate = java.util.concurrent.CountDownLatch(1)
+            f.initializationGate = gate
+            try {
+                f.select(f.document(1))
+                f.await { f.initializationCount.get() == 2 }
+                val active = f.runtime.rows.value.single { it.id != conflict.id }
+                f.runtime.resolve(conflict.id, com.dojo.aisomedo.api.ResolveConflictIn(decision = "keep_both"))
+                kotlinx.coroutines.delay(200)
+                f.runtime.pause(active.id)
+                kotlinx.coroutines.withTimeout(3000) {
+                    f.runtime.rows.first { rows -> rows.any { it.id == active.id && it.intent == UploadIntent.PAUSED } }
+                }
+                val paused = f.runtime.rows.value.single { it.id == active.id }
+                assertEquals(UploadPhase.RETRYABLE, paused.phase)
+                assertNull(paused.status)
+                assertEquals(2, f.initializationCount.get())
+            } finally { gate.countDown(); f.initializationGate = null }
+        }
+    }
     @Test fun enqueuedSelectionWaitsForForegroundWriteAccess() {
         UploadDeviceFixture().use { f ->
             f.awaitWritable()

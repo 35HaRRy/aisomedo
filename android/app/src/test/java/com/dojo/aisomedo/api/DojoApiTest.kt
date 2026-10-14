@@ -16,6 +16,142 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 class DojoApiTest {
+    @Test fun uploadRequestsWaitWithoutTransferDeadlinesButKeepConnectionDeadline() = runBlocking {
+        MockWebServer().use { server ->
+            val deadlines = CopyOnWriteArrayList<List<Long>>()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                deadlines.add(listOf(chain.connectTimeoutMillis().toLong(), chain.readTimeoutMillis().toLong(),
+                    chain.writeTimeoutMillis().toLong(), chain.call().timeout().timeoutNanos()))
+                chain.proceed(chain.request())
+            }.build()
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, http)
+            for ((method, path) in listOf("GET" to "/api/media/upload-limits", "GET" to "/api/media/uploads/saved",
+                "POST" to "/api/media/uploads", "PUT" to "/api/media/uploads/saved/ranges?offset=0",
+                "POST" to "/api/media/uploads/saved/complete")) {
+                server.enqueue(MockResponse().setBody("{}"))
+                api.request(method, path, waitForUpload = true)
+            }
+            assertEquals(List(5) { listOf(10_000L, 0L, 0L, 0L) }, deadlines)
+            server.enqueue(MockResponse().setBody("{}"))
+            api.request("GET", "/api/dashboard")
+            assertEquals(listOf(10_000L, 10_000L, 10_000L, 30_000_000_000L), deadlines.last())
+        }
+    }
+
+    @Test fun transportFailuresRetainSafeDistinctReasonsWithoutReplayingUpload() = runBlocking {
+        for ((exception, expected) in listOf(
+            java.net.SocketTimeoutException("SECRET") to "TIMEOUT",
+            java.io.InterruptedIOException("SECRET") to "TIMEOUT",
+            java.net.UnknownHostException("SECRET") to "DNS",
+            javax.net.ssl.SSLHandshakeException("SECRET") to "TLS",
+            java.net.ConnectException("SECRET") to "CONNECTION",
+            java.net.ProtocolException("SECRET") to "INVALID_RESPONSE",
+        )) {
+            val attempts = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { attempts.incrementAndGet(); throw exception }.build()
+            val api = DojoApi("https://example.test", "SECRET", 5, http)
+            val failure = runCatching { api.request("POST", "/api/media/uploads") }.exceptionOrNull() as ApiFailure
+            assertEquals(expected, failure.transportIssue?.name)
+            assertFalse(failure.toString().contains("SECRET"))
+            assertNull(failure.cause)
+            assertEquals(1, attempts.get())
+        }
+    }
+    @Test fun backgroundUploadReadsAndConflictActionsHaveFiniteDeadlines() = runBlocking {
+        MockWebServer().use { server ->
+            val deadlines = CopyOnWriteArrayList<List<Long>>()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                deadlines.add(listOf(chain.readTimeoutMillis().toLong(), chain.writeTimeoutMillis().toLong(),
+                    chain.call().timeout().timeoutNanos()))
+                chain.proceed(chain.request())
+            }.build()
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, http)
+            server.enqueue(MockResponse().setBody(upload))
+            api.uploadStatus("saved")
+            assertEquals(listOf(10_000L, 10_000L, 30_000_000_000L), deadlines.last())
+            server.enqueue(MockResponse().setBody(upload))
+            api.resolveUpload("saved", ResolveConflictIn(decision = "keep_both"))
+            assertEquals(listOf(60_000L, 60_000L, 180_000_000_000L), deadlines.last())
+        }
+    }
+
+    @Test fun cancellingIndefiniteUploadResponseCancelsCallWithoutReplaying() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            val cancelled = CompletableDeferred<Unit>()
+            val http = OkHttpClient.Builder().eventListener(object : okhttp3.EventListener() {
+                override fun canceled(call: okhttp3.Call) { cancelled.complete(Unit) }
+            }).build()
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, http)
+            val pending = async { api.request("POST", "/api/media/uploads", waitForUpload = true) }
+            withContext(Dispatchers.IO) { server.takeRequest() }
+            pending.cancelAndJoin()
+            withTimeout(3000) { cancelled.await() }
+            assertTrue(pending.isCancelled)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun safeReadRecoversFromTwoTransportTimeoutsWithoutUserRetry() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}"""))
+            val attempts = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (attempts.incrementAndGet() <= 2) throw java.net.SocketTimeoutException("Synthetic timeout")
+                chain.proceed(chain.request())
+            }.build()
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, http)
+            assertEquals(1, api.me().id)
+            assertEquals(3, attempts.get())
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun safeReadTransportRetriesAreBounded() = runBlocking {
+        val attempts = AtomicInteger()
+        val http = OkHttpClient.Builder().addInterceptor {
+            attempts.incrementAndGet()
+            throw java.net.SocketTimeoutException("Synthetic timeout")
+        }.build()
+        val api = DojoApi("https://example.test", "DEVICE", 5, http)
+        assertEquals(0, (runCatching { api.me() }.exceptionOrNull() as ApiFailure).status)
+        assertEquals(3, attempts.get())
+    }
+
+    @Test fun safeReadDoesNotRetryHttpRejection() = runBlocking {
+        for (status in listOf(401, 426, 429, 503)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(status))
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, OkHttpClient())
+            assertEquals(status, (runCatching { api.me() }.exceptionOrNull() as ApiFailure).status)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun cancellingSafeReadStopsTransportRetries() = runBlocking {
+        val failed = CompletableDeferred<Unit>()
+        val attempts = AtomicInteger()
+        val http = OkHttpClient.Builder().addInterceptor {
+            attempts.incrementAndGet()
+            throw java.net.SocketTimeoutException("Synthetic timeout")
+        }.build()
+        val api = DojoApi("https://example.test", "DEVICE", 5, http) { trace ->
+            if (trace.contains("stage=failed")) failed.complete(Unit)
+        }
+        val pending = async { api.me() }
+        failed.await()
+        pending.cancelAndJoin()
+        assertEquals(1, attempts.get())
+    }
+
+    @Test fun slowUploadResponseSurvivesOrdinaryReadDeadline() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(upload).setHeadersDelay(11, TimeUnit.SECONDS))
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, OkHttpClient())
+            assertEquals("saved", api.uploadRange("saved", 0, "a".repeat(64), byteArrayOf(7)).uploadId)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
     @Test fun getRecoversWhenReusedConnectionClosesBeforeResponse() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("{}"))

@@ -49,6 +49,7 @@ class UploadRuntime private constructor(private val context: Context) {
         if (row.bindingId in blocked) null else sessionStore.readSession(row.origin)?.takeIf { it.bindingId == row.bindingId }
     }, { row, credential -> DojoApi(row.origin, credential.token, BuildConfig.VERSION_CODE, http) }, System::currentTimeMillis,
         { network.state.value.connected }, ::recordUpdateRequired)
+    val runningSinceMillis = engine.runningSinceMillis
     init {
         // Remove only this feature's abandoned private previews after process death.
         context.cacheDir.resolve("conflict-previews").listFiles()?.filter { it.isFile }?.forEach { it.delete() }
@@ -135,6 +136,7 @@ class UploadRuntime private constructor(private val context: Context) {
         catch (e: CancellationException) { throw e }
         catch (e: UploadFailure) { currentIssue.value = e.issue }
         catch (_: CredentialUnavailable) { currentIssue.value = UploadIssue.AUTH }
+        catch (e: ApiFailure) { currentIssue.value = uploadIssue(e) }
         catch (_: Exception) { currentIssue.value = UploadIssue.SCHEDULING }
     }
     fun attach(origin: String, clientId: Int) = launchAction {
@@ -149,7 +151,8 @@ class UploadRuntime private constructor(private val context: Context) {
         publishWriteAccess()
         currentIssue.value = null
         publishRows()
-        if (store.rows.value.any { it.bindingId == credential.bindingId && eligible(it) }) schedule(credential.bindingId)
+        if (store.rows.value.any { it.bindingId == credential.bindingId && eligible(it) } && !scheduler.wake(credential.bindingId))
+            schedulingFailed(credential.bindingId, UploadIssue.SCHEDULING)
     }
     suspend fun select(uris: List<Uri>, expectedPackageId: Int? = null, expectedBindingId: String? = null) = withContext(Dispatchers.IO) {
         safely {
@@ -199,9 +202,15 @@ class UploadRuntime private constructor(private val context: Context) {
         } }
     }
     private fun schedule(binding: String) {
-        if (binding in blocked) return
-        if (!UploadNotifications(context).visible()) currentIssue.value = UploadIssue.NOTIFICATIONS
-        if (!scheduler.schedule(binding)) schedulingFailed(binding, UploadIssue.SCHEDULING)
+        scope.launch {
+            // Replacing a platform job stops it. Wait for the active queue to finish,
+            // especially while an initialization POST has no acknowledged upload ID.
+            queue.withLock {
+                if (!pending(binding)) return@withLock
+                if (!UploadNotifications(context).visible()) currentIssue.value = UploadIssue.NOTIFICATIONS
+                if (!scheduler.schedule(binding)) schedulingFailed(binding, UploadIssue.SCHEDULING)
+            }
+        }
     }
     fun schedulingFailed(binding: String, error: UploadIssue) = launchAction {
         if (!matches(binding)) return@launchAction
@@ -214,10 +223,7 @@ class UploadRuntime private constructor(private val context: Context) {
     fun pending(binding: String) = matches(binding) && store.rows.value.any { it.bindingId == binding && eligible(it) }
     fun pause(id: String) = launchAction {
         val row = bound(id) ?: return@launchAction
-        if (row.intent == UploadIntent.PAUSED) return@launchAction
-        if (!eligible(row)) return@launchAction
-        store.mutate(id) { it.copy(intent = UploadIntent.PAUSED, phase = UploadPhase.PAUSED, retryAtMillis = null) }
-        engine.cancel(id)
+        if (!engine.pause(id)) return@launchAction
         if (!pending(row.bindingId)) scheduler.cancel(row.bindingId)
     }
     fun resume(id: String, replacement: Uri? = null) = activate(id, replacement, false)
@@ -225,10 +231,11 @@ class UploadRuntime private constructor(private val context: Context) {
     fun resolve(id: String, body: ResolveConflictIn) {
         if (!mutableResolving.compareAndSet(null, id)) return
         scope.launch {
-            try { actions.withLock { safely {
-                val row = bound(id)?.takeIf { it.phase == UploadPhase.CONFLICT } ?: return@safely
-                if (!canWrite(row.bindingId)) return@safely
-                currentIssue.value = null
+            try { safely {
+                val row = actions.withLock {
+                    bound(id)?.takeIf { it.phase == UploadPhase.CONFLICT && canWrite(it.bindingId) }?.also { currentIssue.value = null }
+                } ?: return@safely
+                // Queue/network waits must not hold the action lock needed by transfer pause.
                 try { queue.withLock {
                     if (!canWrite(row.bindingId)) return@withLock
                     engine.refresh()
@@ -238,7 +245,7 @@ class UploadRuntime private constructor(private val context: Context) {
                 catch (e: Exception) { handleConflictFailure(row, e); throw e }
                 publishRows()
                 if (pending(row.bindingId)) schedule(row.bindingId)
-            } } } finally { mutableResolving.value = null }
+            } } finally { mutableResolving.value = null }
         }
     }
     suspend fun preview(id: String, target: ConflictTarget, file: File) {
@@ -378,7 +385,7 @@ class UploadRuntime private constructor(private val context: Context) {
                 if (origin != null && binding != null && e.issue in setOf(UploadIssue.AUTH, UploadIssue.UPDATE_REQUIRED)) sessionFailure(origin, binding, if (e.issue == UploadIssue.AUTH) QueueOutcome.AUTH_REQUIRED else QueueOutcome.UPDATE_REQUIRED)
                 else throw e
             }
-            if (binding != null && pending(binding)) schedule(binding)
+            if (binding != null && pending(binding) && !scheduler.wake(binding)) schedulingFailed(binding, UploadIssue.SCHEDULING)
         }
     }
     companion object {

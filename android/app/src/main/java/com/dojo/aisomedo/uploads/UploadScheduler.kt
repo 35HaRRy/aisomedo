@@ -13,24 +13,25 @@ enum class SchedulerKind { UIDT, WORK_MANAGER }
 fun schedulerKind(apiLevel: Int) = if (apiLevel >= 34) SchedulerKind.UIDT else SchedulerKind.WORK_MANAGER
 
 class UploadScheduler(private val context: Context) {
-    fun wake(bindingId: String): Boolean = try {
-        if (Build.VERSION.SDK_INT >= 34 && context.getSystemService(JobScheduler::class.java).forNamespace("dojo-uploads")
-                .getPendingJob(3300)?.extras?.getString("binding") == bindingId) true
-        else schedule(bindingId)
-    } catch (_: Exception) { false }
-    fun schedule(bindingId: String): Boolean = try {
+    fun wake(bindingId: String) = schedule(bindingId, restart = false)
+    fun schedule(bindingId: String) = schedule(bindingId, restart = true)
+    private fun schedule(bindingId: String, restart: Boolean): Boolean = try {
         require(bindingId.matches(Regex("[a-f0-9]{64}")))
         if (Build.VERSION.SDK_INT >= 34) {
-            val extras = PersistableBundle().apply { putString("binding", bindingId) }
-            val job = JobInfo.Builder(3300, ComponentName(context, UploadJobService::class.java))
-                .setUserInitiated(true).setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .setEstimatedNetworkBytes(JobInfo.NETWORK_BYTES_UNKNOWN.toLong(), JobInfo.NETWORK_BYTES_UNKNOWN.toLong())
-                .setBackoffCriteria(30_000, JobInfo.BACKOFF_POLICY_EXPONENTIAL).setExtras(extras).build()
-            context.getSystemService(JobScheduler::class.java).forNamespace("dojo-uploads").schedule(job) == JobScheduler.RESULT_SUCCESS
+            val manager = context.getSystemService(JobScheduler::class.java).forNamespace("dojo-uploads")
+            if (!restart && manager.getPendingJob(3300)?.extras?.getString("binding") == bindingId) true
+            else {
+                val extras = PersistableBundle().apply { putString("binding", bindingId) }
+                val job = JobInfo.Builder(3300, ComponentName(context, UploadJobService::class.java))
+                    .setUserInitiated(true).setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .setEstimatedNetworkBytes(JobInfo.NETWORK_BYTES_UNKNOWN.toLong(), JobInfo.NETWORK_BYTES_UNKNOWN.toLong())
+                    .setBackoffCriteria(30_000, JobInfo.BACKOFF_POLICY_EXPONENTIAL).setExtras(extras).build()
+                manager.schedule(job) == JobScheduler.RESULT_SUCCESS
+            }
         } else {
             val manager = WorkManager.getInstance(context)
-            // Explicit user actions wake the queue, even if a previous runner is finishing.
-            manager.cancelUniqueWork("dojo-upload-$bindingId").result.get()
+            // Background reads must not cancel a runner or reset its retry backoff.
+            if (restart) manager.cancelUniqueWork("dojo-upload-$bindingId").result.get()
             val work = OneTimeWorkRequestBuilder<UploadWorker>()
                 .setInputData(workDataOf("binding" to bindingId))
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())

@@ -94,6 +94,50 @@ class UploadPanelTest {
         show(UploadPhase.RETRYABLE)
         compose.onNodeWithText("Tekrar dene").assertExists()
     }
+    @Test fun longOperationAsksWithoutAutomaticallyPausing() {
+        var pauses = 0
+        val row = row(UploadPhase.PREPARING)
+        val started = System.currentTimeMillis() - 61_000
+        compose.setContent { DojoTheme {
+            UploadPanel(listOf(row), null, {}, { pauses++ }, { _, _ -> }, { _, _ -> }, {},
+                runningSinceMillis = mapOf(row.id to started))
+        } }
+        compose.waitUntil(5000) { compose.onAllNodesWithText("İşlem uzun sürüyor. Durdurulsun mu?").fetchSemanticsNodes().isNotEmpty() }
+        compose.runOnIdle { assertEquals(0, pauses) }
+        compose.onNodeWithText("Devam et").performClick()
+        compose.onNodeWithText("İşlem uzun sürüyor. Durdurulsun mu?").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, pauses) }
+    }
+    @Test fun longOperationStopsOnlyAfterConfirmationAndClosesWhenFinished() {
+        val row = row(UploadPhase.UPLOADING)
+        val running = androidx.compose.runtime.mutableStateOf(mapOf(row.id to System.currentTimeMillis() - 61_000))
+        val pauses = mutableListOf<String>()
+        compose.setContent { DojoTheme {
+            UploadPanel(listOf(row), null, {}, { pauses.add(it) }, { _, _ -> }, { _, _ -> }, {}, runningSinceMillis = running.value)
+        } }
+        compose.waitUntil(5000) { compose.onAllNodesWithText("Durdur").fetchSemanticsNodes().isNotEmpty() }
+        compose.runOnIdle { assertTrue(pauses.isEmpty()) }
+        compose.onNodeWithText("Durdur").performClick()
+        compose.runOnIdle { assertEquals(listOf(row.id), pauses) }
+        compose.onNodeWithText("İşlem uzun sürüyor. Durdurulsun mu?").assertDoesNotExist()
+        compose.runOnIdle { running.value = mapOf(row.id to System.currentTimeMillis() - 62_000) }
+        compose.waitUntil(5000) { compose.onAllNodesWithText("Durdur").fetchSemanticsNodes().isNotEmpty() }
+        compose.runOnIdle { running.value = emptyMap() }
+        compose.onNodeWithText("İşlem uzun sürüyor. Durdurulsun mu?").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(listOf(row.id), pauses) }
+    }
+    @Test fun uncertainInitializationCanBeStoppedButNotRetriedWhileRunning() {
+        val row = row(UploadPhase.RETRYABLE).copy(status = null, issue = UploadIssue.NETWORK)
+        var pauses = 0
+        compose.setContent { DojoTheme {
+            UploadPanel(listOf(row), null, {}, { pauses++ }, { _, _ -> }, { _, _ -> }, {},
+                runningSinceMillis = mapOf(row.id to System.currentTimeMillis() - 61_000))
+        } }
+        compose.waitUntil(5000) { compose.onAllNodesWithText("Durdur").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Durdur").performClick()
+        compose.onNodeWithText("Tekrar dene").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(1, pauses) }
+    }
     @Test fun offlineControlsDisabledExceptTransferPauseResume() {
         val active = row(UploadPhase.UPLOADING).copy(filename = "active", status = null)
         val paused = row(UploadPhase.PAUSED).copy(id = "paused", filename = "paused", status = null)

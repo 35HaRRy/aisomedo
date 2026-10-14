@@ -3,6 +3,7 @@ package com.dojo.aisomedo.api
 import android.util.Log
 import com.dojo.aisomedo.BuildConfig
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.delay
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.*
 import okhttp3.*
@@ -19,7 +20,19 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class ApiFailure(val status: Int, val updateUrl: String? = null, val detail: String? = null) : Exception("API failure: $status")
+enum class ApiTransportIssue { TIMEOUT, DNS, TLS, CONNECTION, STORAGE, INVALID_RESPONSE }
+class ApiFailure(val status: Int, val updateUrl: String? = null, val detail: String? = null,
+    val transportIssue: ApiTransportIssue? = null) : Exception("API failure: $status")
+
+private fun transportFailure(error: Exception) = ApiFailure(0, transportIssue = when (error) {
+    is java.io.InterruptedIOException -> ApiTransportIssue.TIMEOUT
+    is java.net.UnknownHostException -> ApiTransportIssue.DNS
+    is javax.net.ssl.SSLException -> ApiTransportIssue.TLS
+    is java.net.ProtocolException -> ApiTransportIssue.INVALID_RESPONSE
+    is java.io.FileNotFoundException -> ApiTransportIssue.STORAGE
+    is IOException -> ApiTransportIssue.CONNECTION
+    else -> ApiTransportIssue.INVALID_RESPONSE
+})
 
 private val diagnosticIds = AtomicLong()
 // Allow only fixed route words. Dynamic identities and all query values stay out of logs.
@@ -37,9 +50,16 @@ class DojoApi(private val origin: String, private val token: String?, private va
     private val client = http.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
     private val readClient = client.newBuilder().retryOnConnectionFailure(true).build()
+    // Slow uploads wait for user cancellation, not a transfer deadline. Connection setup stays bounded.
+    // Mutations remain non-replayable; the upload engine reconciles acknowledged ranges.
+    private val uploadClient = client.newBuilder().writeTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS).callTimeout(180, TimeUnit.SECONDS).build()
+    private val waitingUploadClient = uploadClient.newBuilder().writeTimeout(0, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
+    private val waitingUploadReadClient = waitingUploadClient.newBuilder().retryOnConnectionFailure(true).build()
 
     private suspend fun bytes(method: String, path: String, body: RequestBody? = null, authenticated: Boolean = true,
-        destination: File? = null, limit: Long = 10L * 1024 * 1024): ByteArray {
+        destination: File? = null, limit: Long = 10L * 1024 * 1024, waitForUpload: Boolean = false): ByteArray {
         require(path.startsWith("/api/") && !path.contains('\\'))
         val base = origin.toHttpUrl()
         val url = base.resolve(path) ?: throw IllegalArgumentException("path")
@@ -48,7 +68,10 @@ class DojoApi(private val origin: String, private val token: String?, private va
         if (authenticated && token != null) builder.header("Authorization", "Bearer $token")
         builder.method(method, body ?: if (method == "POST" || method == "PUT" || method == "PATCH") ByteArray(0).toRequestBody() else null)
         val transport = when {
+            waitForUpload && (path == "/api/media/upload-limits" || path == "/api/media/uploads" || path.startsWith("/api/media/uploads/")) ->
+                if (method == "GET") waitingUploadReadClient else waitingUploadClient
             method == "GET" -> readClient
+            path == "/api/media/uploads" || path.startsWith("/api/media/uploads/") -> uploadClient
             method == "POST" && path.startsWith("/api/reviews/") && path.endsWith("/approve") ->
                 client.newBuilder().readTimeout(120, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()
             else -> client
@@ -74,7 +97,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
                     destination?.delete()
                     if (continuation.isActive) {
                         trace("failed", error = e)
-                        continuation.resumeWithException(ApiFailure(0))
+                        continuation.resumeWithException(transportFailure(e))
                     }
                 }
                 override fun onResponse(call: Call, response: Response) {
@@ -121,7 +144,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
                             destination?.delete()
                             if (continuation.isActive) {
                                 trace("failed", response.code, e)
-                                continuation.resumeWithException(if (e is ApiFailure) e else ApiFailure(0))
+                                continuation.resumeWithException(if (e is ApiFailure) e else transportFailure(e))
                             }
                         }
                     }
@@ -130,11 +153,20 @@ class DojoApi(private val origin: String, private val token: String?, private va
         }
     }
 
-    suspend fun request(method: String, path: String, body: JsonElement? = null): JsonElement {
+    suspend fun request(method: String, path: String, body: JsonElement? = null, waitForUpload: Boolean = false): JsonElement {
         val public = path == "/api/compat" || path == "/api/pairing/validate"
-        val data = bytes(method, path, body?.toString()?.toRequestBody("application/json".toMediaType()), !public)
-        return try { if (data.isEmpty()) JsonNull else json.parseToJsonElement(data.toString(Charsets.UTF_8)) }
-        catch (_: SerializationException) { throw SerializationException("Invalid server response") }
+        var retries = 0
+        while (true) {
+            try {
+                val data = bytes(method, path, body?.toString()?.toRequestBody("application/json".toMediaType()), !public, waitForUpload = waitForUpload)
+                return try { if (data.isEmpty()) JsonNull else json.parseToJsonElement(data.toString(Charsets.UTF_8)) }
+                catch (_: SerializationException) { throw SerializationException("Invalid server response") }
+            } catch (e: ApiFailure) {
+                // OkHttp connection recovery does not cover read timeouts after a request was sent.
+                if (method != "GET" || e.status != 0 || retries == 2) throw e
+                delay(250L shl retries++)
+            }
+        }
     }
     private inline fun <reified T> decode(value: JsonElement): T = try { json.decodeFromJsonElement<T>(value) }
         catch (_: SerializationException) { throw SerializationException("Invalid server response") }
@@ -186,10 +218,10 @@ class DojoApi(private val origin: String, private val token: String?, private va
         json.encodeToJsonElement(SelectionIn(expectedFolderName = folder, selections = selections)))
     suspend fun removeMedia(folder: String, id: String) = request("POST", "/api/packages/active/media/${segment(id)}/remove?expected_folder_name=${segment(folder)}")
     suspend fun restoreMedia(folder: String, id: String) = request("POST", "/api/packages/active/media/${segment(id)}/restore?expected_folder_name=${segment(folder)}")
-    suspend fun uploadLimits(): UploadLimitsOut = decode(request("GET", "/api/media/upload-limits"))
-    suspend fun startUpload(body: UploadInitIn): UploadOut = decode(request("POST", "/api/media/uploads", json.encodeToJsonElement(body)))
-    suspend fun uploadStatus(id: String): UploadOut = decode(request("GET", "/api/media/uploads/${segment(id)}"))
-    suspend fun completeUpload(id: String): UploadOut = decode(request("POST", "/api/media/uploads/${segment(id)}/complete"))
+    suspend fun uploadLimits(): UploadLimitsOut = decode(request("GET", "/api/media/upload-limits", waitForUpload = true))
+    suspend fun startUpload(body: UploadInitIn): UploadOut = decode(request("POST", "/api/media/uploads", json.encodeToJsonElement(body), waitForUpload = true))
+    suspend fun uploadStatus(id: String, waitForUpload: Boolean = false): UploadOut = decode(request("GET", "/api/media/uploads/${segment(id)}", waitForUpload = waitForUpload))
+    suspend fun completeUpload(id: String): UploadOut = decode(request("POST", "/api/media/uploads/${segment(id)}/complete", waitForUpload = true))
     suspend fun resolveUpload(id: String, body: ResolveConflictIn): UploadOut = decode(request("POST", "/api/media/uploads/${segment(id)}/resolve", json.encodeToJsonElement(body)))
     suspend fun conflictPreview(id: String, targetId: String, file: File, limit: Long) {
         require(limit > 0)
@@ -229,7 +261,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun uploadRange(id: String, offset: Long, checksum: String, bytes: ByteArray): UploadOut {
         require(offset >= 0 && checksum.matches(Regex("[a-f0-9]{64}")) && bytes.isNotEmpty() && bytes.size <= 2 * 1024 * 1024)
         val result = this.bytes("PUT", "/api/media/uploads/${segment(id)}/ranges?offset=$offset&checksum_sha256=$checksum",
-            bytes.toRequestBody("application/octet-stream".toMediaType()))
+            bytes.toRequestBody("application/octet-stream".toMediaType()), waitForUpload = true)
         return try { json.decodeFromString<UploadOut>(result.toString(Charsets.UTF_8)) }
         catch (_: SerializationException) { throw SerializationException("Invalid server response") }
     }

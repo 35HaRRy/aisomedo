@@ -22,17 +22,21 @@ import androidx.core.content.ContextCompat
 import com.dojo.aisomedo.R
 import com.dojo.aisomedo.uploads.*
 import com.dojo.aisomedo.api.ResolveConflictIn
+import kotlinx.coroutines.delay
 import java.io.File
 
 fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
-    UploadIssue.NETWORK -> R.string.network_error; UploadIssue.OVERSIZE -> R.string.upload_oversize
+    UploadIssue.NETWORK -> R.string.upload_network_error; UploadIssue.OVERSIZE -> R.string.upload_oversize
+    UploadIssue.TIMEOUT -> R.string.upload_timeout; UploadIssue.DNS -> R.string.upload_dns
+    UploadIssue.TLS -> R.string.upload_tls; UploadIssue.RATE_LIMIT -> R.string.upload_rate_limit
+    UploadIssue.FORBIDDEN -> R.string.upload_forbidden; UploadIssue.INVALID_INPUT -> R.string.upload_invalid_input
     UploadIssue.CAPACITY -> R.string.upload_capacity; UploadIssue.PACKAGE_CHANGED -> R.string.upload_package_changed
     UploadIssue.CHECKSUM -> R.string.upload_checksum; UploadIssue.WRONG_FILE -> R.string.upload_wrong_file
     UploadIssue.FILE_ACCESS -> R.string.upload_file_access; UploadIssue.STORAGE -> R.string.upload_storage
     UploadIssue.SCHEDULING -> R.string.upload_scheduling; UploadIssue.NOTIFICATIONS -> R.string.upload_notifications
     UploadIssue.EXPIRED -> R.string.upload_expired; UploadIssue.CONFLICT -> R.string.upload_conflict
     UploadIssue.AUTH -> R.string.pair_help; UploadIssue.UPDATE_REQUIRED -> R.string.update_help
-    UploadIssue.SERVER -> R.string.upload_server_error; UploadIssue.INVALID_RESPONSE -> R.string.unknown_error
+    UploadIssue.SERVER -> R.string.upload_server_error; UploadIssue.INVALID_RESPONSE -> R.string.upload_invalid_response
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -45,6 +49,7 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
     onSelectPackage: (List<Uri>, Int?) -> Unit = { uris, _ -> onSelect(uris) },
     canMutate: Boolean = true,
     selectionContext: String? = "local",
+    runningSinceMillis: Map<String, Long> = emptyMap(),
 ) {
     val currentSelectionContext by rememberUpdatedState(selectionContext)
     val context = LocalContext.current
@@ -101,7 +106,10 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
                 catch (_: Exception) { pickerIssue = UploadIssue.NOTIFICATIONS }
             }) { Text(stringResource(R.string.upload_notification_settings)) }
         }
-        rows.forEach { row -> key(row.id) {
+        rows.forEach { row -> key(row.id, row.bindingId) {
+            val runningSince = runningSinceMillis[row.id]?.takeIf { row.intent == UploadIntent.ACTIVE &&
+                row.phase in setOf(UploadPhase.WAITING, UploadPhase.PREPARING, UploadPhase.UPLOADING, UploadPhase.RETRYABLE) }
+            UploadDelayWarning(row.filename, runningSince) { onPause(row.id) }
             Column(Modifier.fillMaxWidth().testTag("upload-row-${row.id}"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 HorizontalDivider()
                 Text(row.filename, style = MaterialTheme.typography.titleMedium)
@@ -125,8 +133,8 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
                         UploadPhase.PREPARING, UploadPhase.WAITING, UploadPhase.UPLOADING -> OutlinedButton(onClick = { onPause(row.id) }) { Text(stringResource(R.string.upload_pause)) }
                         UploadPhase.PAUSED -> OutlinedButton(onClick = { onResume(row.id, null) }) { Text(stringResource(R.string.upload_resume)) }
                         UploadPhase.RETRYABLE, UploadPhase.FAILED, UploadPhase.EXPIRED -> {
-                            if (eligible(row)) OutlinedButton(onClick = { onPause(row.id) }) { Text(stringResource(R.string.upload_pause)) }
-                            OutlinedButton(onClick = { onRetry(row.id, null) }, enabled = canMutate) { Text(stringResource(R.string.retry)) }
+                            if (eligible(row) || runningSince != null) OutlinedButton(onClick = { onPause(row.id) }) { Text(stringResource(R.string.upload_pause)) }
+                            OutlinedButton(onClick = { onRetry(row.id, null) }, enabled = canMutate && runningSince == null) { Text(stringResource(R.string.retry)) }
                         }
                         UploadPhase.NEEDS_FILE -> OutlinedButton(enabled = canMutate, onClick = {
                             replacementId = row.id
@@ -141,4 +149,26 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
             }
         } }
     }
+}
+
+@Composable private fun UploadDelayWarning(filename: String, startedAtMillis: Long?, onStop: () -> Unit) {
+    var acknowledged by rememberSaveable(startedAtMillis) { mutableStateOf(false) }
+    var show by remember(startedAtMillis) { mutableStateOf(false) }
+    LaunchedEffect(startedAtMillis, acknowledged) {
+        if (startedAtMillis != null && !acknowledged) {
+            delay((60_000L - (System.currentTimeMillis() - startedAtMillis)).coerceIn(0L, 60_000L))
+            show = true
+        }
+    }
+    fun continueUpload() { acknowledged = true; show = false }
+    if (show && startedAtMillis != null) AlertDialog(
+        onDismissRequest = ::continueUpload,
+        title = { Text(stringResource(R.string.upload_slow_title)) },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(filename, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(stringResource(R.string.upload_slow_help))
+        } },
+        confirmButton = { TextButton(onClick = { continueUpload(); onStop() }) { Text(stringResource(R.string.upload_stop)) } },
+        dismissButton = { TextButton(onClick = ::continueUpload) { Text(stringResource(R.string.upload_resume)) } },
+    )
 }
