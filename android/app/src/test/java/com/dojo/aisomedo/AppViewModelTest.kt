@@ -111,6 +111,58 @@ class AppViewModelTest {
         assertTrue(model.state.value.review.canApprove)
     }
 
+    @Test fun brandingSelectionSurvivesReturnRefresh() = runTest(main.scheduler) {
+        for (field in listOf("logo_asset", "intro_asset", "outro_asset")) Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.SETTINGS)
+            f.await { it.canConfigure("logo") && it.canConfigure("cards") }
+            f.bodies["/api/settings/branding/assets"] = """{"asset":"branding/assets/image.png","preview_url":"/api/settings/branding/assets/image.png"}"""
+            f.bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":null,"intro_duration":3,"logo_asset":null,"outro_asset":null,"outro_duration":3}"""
+                .replace("\"$field\":null", "\"$field\":\"branding/assets/image.png\"")
+            f.delayPath = "/api/compat"
+            f.model.refresh()
+            assertTrue(f.model.state.value.busy)
+            f.model.uploadAsset(field, byteArrayOf(1, 2, 3))
+            f.await { !it.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/settings/branding/assets" })
+            val branding = f.model.state.value.branding!!
+            assertEquals("branding/assets/image.png", when (field) {
+                "intro_asset" -> branding.introAsset
+                "outro_asset" -> branding.outroAsset
+                else -> branding.logoAsset
+            })
+        }
+    }
+
+    @Test fun queuedBrandingSelectionCannotCrossSessionChange() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("logo")
+            f.await { it.canConfigure("logo") }
+            val binding = f.model.currentBinding
+            f.model.refresh()
+            f.model.uploadAsset("logo_asset", byteArrayOf(1), binding)
+            f.model.changeServer()
+            main.scheduler.runCurrent()
+            assertEquals(Phase.ADDRESS, f.model.state.value.phase)
+            assertTrue(f.seen.none { it == "POST /api/settings/branding/assets" })
+        }
+    }
+
+    @Test fun queuedBrandingSelectionRequiresFreshConfiguration() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("logo")
+            f.await { it.canConfigure("logo") }
+            f.codes["/api/settings/branding"] = 503
+            f.model.refresh()
+            f.model.uploadAsset("logo_asset", byteArrayOf(1))
+            f.await { !it.busy }
+            assertFalse(f.model.state.value.canConfigure("logo"))
+            assertTrue(f.seen.none { it == "POST /api/settings/branding/assets" })
+        }
+    }
+
     @Test fun preparedPreviewSurvivesSameRevisionRefresh() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.openPreparedReview()

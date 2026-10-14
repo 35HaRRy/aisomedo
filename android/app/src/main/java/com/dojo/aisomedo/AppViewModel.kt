@@ -654,8 +654,17 @@ class AppViewModel(
             mutable.update { it.copy(instagram = status, attempt = AttemptOut(emptyList(), attempt.id, "selected")) }
         }
     }
-    fun uploadAsset(field: String, bytes: ByteArray) {
+    fun uploadAsset(field: String, bytes: ByteArray, selectionBinding: String? = currentBinding) {
         require(field in listOf("logo_asset", "intro_asset", "outro_asset"))
+        if (selectionBinding == null || selectionBinding != currentBinding) return
+        if (state.value.busy) {
+            val current = generation
+            viewModelScope.launch {
+                state.first { !it.busy || generation != current || currentBinding != selectionBinding }
+                if (generation == current && currentBinding == selectionBinding) uploadAsset(field, bytes, selectionBinding)
+            }
+            return
+        }
         if (!admit(if (field == "logo_asset") "logo" else "cards")) return
         if (bytes.isEmpty() || bytes.size > 10 * 1024 * 1024 || (field != "logo_asset" && cardDuration(field) == null)) {
             mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return

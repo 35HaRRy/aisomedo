@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -26,18 +27,21 @@ fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var reading by remember { mutableStateOf(false) }
-    var selectedField by remember { mutableStateOf("logo_asset") }
+    var selectedField by rememberSaveable { mutableStateOf("logo_asset") }
+    var selectionBinding by rememberSaveable { mutableStateOf<String?>(null) }
     val step = if (cards) "cards" else "logo"
     val access = state.canConfigure(step)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (model.state.value.canConfigure(step) && uri != null) scope.launch {
+        if (uri != null && selectionBinding != null && selectionBinding == model.currentBinding) scope.launch {
+            val field = selectedField
+            val binding = selectionBinding
             reading = true
             try {
                 val bytes = withContext(Dispatchers.IO) {
                     require(context.contentResolver.getType(uri) in listOf("image/png", "image/jpeg"))
                     context.contentResolver.openInputStream(uri)?.use(::readBrandingImage) ?: throw IllegalArgumentException("document")
                 }
-                if (model.state.value.canConfigure(step)) model.uploadAsset(selectedField, bytes)
+                model.uploadAsset(field, bytes, binding)
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { model.pickerFailed() }
             finally { reading = false }
@@ -46,7 +50,7 @@ fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1
     val fields = if (cards) listOf("intro_asset", "outro_asset") else listOf("logo_asset")
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(stringResource(R.string.branding_help))
-        if (reading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (reading || state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         fields.forEach { field ->
             val label = when (field) { "intro_asset" -> R.string.intro_card; "outro_asset" -> R.string.outro_card; else -> R.string.logo }
             val asset = when (field) { "intro_asset" -> state.branding?.introAsset; "outro_asset" -> state.branding?.outroAsset; else -> state.branding?.logoAsset }
@@ -57,7 +61,7 @@ fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1
                 OutlinedTextField(state.drafts[key].orEmpty(), { model.setDraft(key, it, "cards") }, label = { Text(stringResource(R.string.card_duration)) }, singleLine = true,
                     enabled = state.networkConnected && state.authoritative && step in state.configurationFresh)
             }
-            Button(onClick = { selectedField = field; picker.launch(arrayOf("image/png", "image/jpeg")) }, enabled = !reading && access) { Text(stringResource(R.string.choose_image)) }
+            Button(onClick = { selectedField = field; selectionBinding = model.currentBinding; picker.launch(arrayOf("image/png", "image/jpeg")) }, enabled = !reading && access) { Text(stringResource(R.string.choose_image)) }
             if (field in state.pendingAssets) {
                 Text(stringResource(R.string.upload_pending))
                 OutlinedButton(onClick = { model.retryAsset(field) }, enabled = access && !reading) { Text(stringResource(R.string.retry_asset)) }
