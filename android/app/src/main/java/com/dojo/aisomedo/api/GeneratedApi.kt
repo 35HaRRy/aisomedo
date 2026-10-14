@@ -286,6 +286,22 @@ data class PushTokenIn(
 )
 
 @Serializable
+data class ReminderPolicyIn(
+    @SerialName("delivery_end") val deliveryEnd: String,
+    @SerialName("delivery_start") val deliveryStart: String,
+    @SerialName("interval_minutes") val intervalMinutes: Int,
+    @SerialName("timezone") val timezone: String = "Europe/Istanbul",
+)
+
+@Serializable
+data class ReminderPolicyOut(
+    @SerialName("delivery_end") val deliveryEnd: String,
+    @SerialName("delivery_start") val deliveryStart: String,
+    @SerialName("interval_minutes") val intervalMinutes: Int,
+    @SerialName("timezone") val timezone: String,
+)
+
+@Serializable
 data class RenderIn(
     @SerialName("expected_folder_name") val expectedFolderName: String,
     @SerialName("retry") val retry: Boolean = false,

@@ -45,12 +45,7 @@ import java.util.Locale
                 ConsentStep(state.consent, state.busy, { version -> model.acknowledgeConsent(true); model.acceptConsent(version) }, canMutate = state.canConfigure("consent"))
                 TextButton(onClick = { model.reloadStep("consent") }, enabled = !state.busy) { Text(stringResource(R.string.retry)) }
             }
-            "caption_template" -> {
-                val text = state.drafts["caption"].orEmpty()
-                OutlinedTextField(text, { model.setDraft("caption", it, "caption_template") }, label = { Text(stringResource(R.string.caption_template)) }, modifier = Modifier.fillMaxWidth(), minLines = 3,
-                    enabled = state.networkConnected && state.authoritative && "caption_template" in state.configurationFresh)
-                Button(onClick = { model.saveCaption(text) }, enabled = state.canConfigure("caption_template") && text.isNotBlank()) { Text(stringResource(R.string.save)) }
-            }
+            "caption_template" -> CaptionStep(state, model)
             "summary" -> {
                 Text(stringResource(if (state.setup?.ready == true) R.string.setup_ready else R.string.setup_incomplete))
                 Button(onClick = model::finishSetup, enabled = state.canMutate && state.setup?.ready == true) { Text(stringResource(R.string.finish_setup)) }
@@ -70,7 +65,14 @@ import java.util.Locale
     }
 }
 
-@Composable private fun ScheduleStep(state: AppUiState, model: AppViewModel) {
+@Composable fun CaptionStep(state: AppUiState, model: AppViewModel) {
+    val text = state.drafts["caption"].orEmpty()
+    OutlinedTextField(text, { model.setDraft("caption", it, "caption_template") }, label = { Text(stringResource(R.string.caption_template)) }, modifier = Modifier.fillMaxWidth(), minLines = 3,
+        enabled = state.networkConnected && state.authoritative && "caption_template" in state.configurationFresh)
+    Button(onClick = { model.saveCaption(text) }, enabled = state.canConfigure("caption_template") && text.isNotBlank()) { Text(stringResource(R.string.save)) }
+}
+
+@Composable fun ScheduleStep(state: AppUiState, model: AppViewModel) {
     val context = LocalContext.current
     val date = state.drafts["date"].orEmpty()
     val time = state.drafts["time"].orEmpty()
@@ -97,7 +99,7 @@ import java.util.Locale
     ConsentStep(policy, busy, onAccept, canMutate = true)
 }
 
-@Composable fun ConsentStep(policy: ConsentOut?, busy: Boolean, onAccept: (Int) -> Unit, canMutate: Boolean) {
+@Composable fun ConsentStep(policy: ConsentOut?, busy: Boolean, onAccept: (Int) -> Unit, canMutate: Boolean, readOnly: Boolean = false) {
     var acknowledged by remember(policy) { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         if (policy == null) Text(stringResource(R.string.policy_missing))
@@ -105,6 +107,7 @@ import java.util.Locale
             Text(stringResource(R.string.policy_version, policy.version))
             Text(policy.text)
             if (policy.acceptedAt != null) Text(stringResource(R.string.policy_accepted, formattedTime(policy.acceptedAt)))
+            else if (readOnly) Text(stringResource(R.string.policy_not_accepted))
             else {
                 val acknowledgement = stringResource(R.string.policy_acknowledgement)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

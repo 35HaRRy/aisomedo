@@ -237,6 +237,7 @@ def main() -> None:
         "ConsentOut", "AcceptanceIn", "AcceptanceOut", "PlanIn", "PlanOut",
         "BrandingDefaultsOut", "BrandingAssetOut", "StatusOut", "StartIn", "StartOut",
         "AttemptOut", "SelectIn",
+        "ReminderPolicyIn", "ReminderPolicyOut",
         "UploadLimitsOut", "UploadInitIn", "UploadOut",
         "ActiveEditorOut", "SelectionIn", "OrderIn", "ResolveConflictIn", "ActivityPageOut",
         "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn", "RenderIn", "RenderOut",

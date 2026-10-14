@@ -196,6 +196,8 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun acceptConsent(version: Int): AcceptanceOut = decode(request("POST", "/api/setup/consent/accept", buildJsonObject { put("version", version) }))
     suspend fun plan(): PlanOut = decode(request("GET", "/api/settings/plan"))
     suspend fun savePlan(body: PlanIn): PlanOut = decode(request("PUT", "/api/settings/plan", json.encodeToJsonElement(body)))
+    suspend fun reminders(): ReminderPolicyOut = decode(request("GET", "/api/settings/reminders"))
+    suspend fun saveReminders(body: ReminderPolicyIn): ReminderPolicyOut = decode(request("PUT", "/api/settings/reminders", json.encodeToJsonElement(body)))
     suspend fun branding(): BrandingDefaultsOut = decode(request("GET", "/api/settings/branding"))
     suspend fun patchBranding(changes: JsonObject): BrandingDefaultsOut = decode(request("PATCH", "/api/settings/branding", changes))
     suspend fun skipCards(): SetupOut = decode(request("POST", "/api/setup/cards/skip"))

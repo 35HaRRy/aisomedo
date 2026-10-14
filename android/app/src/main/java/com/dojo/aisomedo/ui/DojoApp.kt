@@ -141,7 +141,7 @@ import kotlinx.coroutines.delay
                                 ActivityScreen(state.activity, state.activityFetchedAt, state.busy || !state.networkConnected, model::refresh)
                             }
                             Destination.SETTINGS -> {
-                                SettingsScreen(state, model)
+                                SettingsScreen(state, model, openUrl)
                                 if (push != null) {
                                     val availability by push.availability.collectAsStateWithLifecycle()
                                     Text(stringResource(when (availability) {
@@ -206,19 +206,6 @@ fun destinationLabel(item: Destination) = when (item) {
             else -> Text(stringResource(R.string.loading))
         }
     }
-}
-@Composable private fun SettingsScreen(state: AppUiState, model: AppViewModel) {
-    var confirm by remember { mutableStateOf(false) }
-    Heading(R.string.settings); Text(state.origin)
-    state.client?.let { Text(stringResource(R.string.device_identity, it.name, it.id)) }
-    state.compat?.let { Text(stringResource(R.string.version_context, BuildConfig.VERSION_CODE, it.androidMinVersionCode, it.androidCurrentVersionCode)) }
-    Text(stringResource(if (state.setup?.ready == true) R.string.setup_ready else R.string.setup_incomplete))
-    Button(onClick = model::openSetup, enabled = !state.busy) { Text(stringResource(R.string.open_setup)) }
-    OutlinedButton(onClick = { confirm = true }, enabled = !state.busy) { Text(stringResource(R.string.change_server)) }
-    if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text(stringResource(R.string.change_server)) },
-        text = { Text(stringResource(R.string.change_server_warning)) },
-        confirmButton = { TextButton(onClick = { confirm = false; model.changeServer() }) { Text(stringResource(R.string.confirm_change)) } },
-        dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.cancel)) } })
 }
 fun issueLabel(issue: UiIssue) = when (issue) {
     UiIssue.INVALID_SERVER -> R.string.invalid_server; UiIssue.NETWORK -> R.string.network_error

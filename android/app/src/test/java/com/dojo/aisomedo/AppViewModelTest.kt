@@ -44,6 +44,7 @@ class AppViewModelTest {
         val origin: String
         var model: AppViewModel
         val saved = SavedStateHandle()
+        val network = kotlinx.coroutines.flow.MutableStateFlow(com.dojo.aisomedo.offline.NetworkStatus(true))
         var stopped = 0
         var tokenAtStop: String? = null
         private val owner = ViewModelStore()
@@ -55,6 +56,7 @@ class AppViewModelTest {
             bodies["/api/dashboard"] = """{"generated_at":"2026-10-05T12:00:00Z","package":{"id":1,"folder_name":"active","created_at":"2026-10-10T12:00:00Z","status":"active"},"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
             bodies["/api/activity?limit=50"] = """{"events":[],"next_cursor":null}"""
             bodies["/api/settings/plan"] = """{"anchor_date":"2026-10-05","anchor_time":"18:30:00","enabled":false,"timezone":"Europe/Istanbul"}"""
+            bodies["/api/settings/reminders"] = """{"interval_minutes":60,"delivery_start":"09:00:00","delivery_end":"21:00:00","timezone":"Europe/Istanbul"}"""
             bodies["/api/settings/branding"] = """{"caption_template":"Eski","intro_asset":null,"intro_duration":null,"logo_asset":"logo.png","outro_asset":null,"outro_duration":null}"""
             bodies["/api/setup/consent"] = """{"accepted_at":null,"text":"Politika metni","version":1}"""
             bodies["/api/setup/consent/accept"] = """{"accepted_at":"2026-10-05T12:00:00Z","version":1}"""
@@ -65,6 +67,11 @@ class AppViewModelTest {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     seen.add("${request.method} ${request.path}")
+                    if (request.method == "PUT" && request.path == "/api/settings/reminders" && (codes[request.path] ?: 200) == 200) {
+                        val input = kotlinx.serialization.json.Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject
+                        bodies[request.path!!] = kotlinx.serialization.json.JsonObject(input +
+                            ("timezone" to kotlinx.serialization.json.JsonPrimitive("Europe/Istanbul"))).toString()
+                    }
                     return MockResponse().setResponseCode(codes[request.path] ?: 200)
                         .setBody(bodies[request.path] ?: "{}")
                         .also { if (request.path == delayPath) it.setBodyDelay(1, TimeUnit.SECONDS) }
@@ -74,7 +81,7 @@ class AppViewModelTest {
             origin = server.url("/").toString().trimEnd('/')
             if (configure) store.setOrigin(origin)
             if (paired) store.saveToken(origin, "DEVICE")
-            model = AppViewModel(store, OkHttpClient(), 1, true, saved) {
+            model = AppViewModel(store, OkHttpClient(), 1, true, saved, network = network) {
                 stopped++
                 tokenAtStop = store.readToken(origin)
             }
@@ -86,7 +93,7 @@ class AppViewModelTest {
         }
         fun recreate() {
             owner.clear()
-            model = AppViewModel(store, OkHttpClient(), 1, true, saved)
+            model = AppViewModel(store, OkHttpClient(), 1, true, saved, network = network)
             owner.put("model", model)
         }
         override fun close() { owner.clear(); server.shutdown(); dir.deleteRecursively() }
@@ -647,8 +654,101 @@ class AppViewModelTest {
         }
     }
 
+    @Test fun settingsLoadsConfigurationWithoutOpeningOnboardingAndRestoresDestination() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[],"ready":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
+            assertNull(f.model.state.value.step)
+            assertEquals("60", f.model.state.value.drafts["reminder_interval"])
+            assertEquals("09:00:00", f.model.state.value.drafts["reminder_start"])
+            assertTrue(f.model.state.value.canConfigure("reminders"))
+            f.model.setDraft("reminder_interval", "90", "reminders")
+            f.recreate(); f.await { it.phase == Phase.READY && !it.busy }
+            assertEquals(Destination.SETTINGS, f.model.state.value.destination)
+            assertNull(f.model.state.value.step)
+            assertEquals("90", f.model.state.value.drafts["reminder_interval"])
+            assertTrue(f.model.state.value.canConfigure("reminders"))
+        }
+    }
+
     @Test fun noOriginRequiresAddressWithoutNetwork() = runTest(main.scheduler) {
         Fixture(configure = false).use { f -> f.await { it.phase == Phase.ADDRESS }; assertEquals(0, f.server.requestCount) }
+    }
+    @Test fun reminderSavePersistsOvernightWindowAndReloadsAfterRecreation() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
+            f.model.setDraft("reminder_interval", "90", "reminders")
+            f.model.saveReminders("90", "21:00", "09:00"); f.await { !it.busy }
+            assertEquals("90", f.model.state.value.drafts["reminder_interval"])
+            assertEquals("21:00", f.model.state.value.drafts["reminder_start"])
+            assertFalse("reminders" in f.model.state.value.dirtySteps)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val put = requests.single { it.method == "PUT" }
+            assertEquals("/api/settings/reminders", put.path)
+            assertEquals("Bearer DEVICE", put.getHeader("Authorization"))
+            assertEquals("Europe/Istanbul", f.model.state.value.reminders?.timezone)
+            assertEquals(kotlinx.serialization.json.Json.parseToJsonElement("""{"interval_minutes":90,"delivery_start":"21:00","delivery_end":"09:00"}"""),
+                kotlinx.serialization.json.Json.parseToJsonElement(put.body.readUtf8()))
+            f.recreate(); f.await { it.phase == Phase.READY && !it.busy }
+            assertEquals("90", f.model.state.value.drafts["reminder_interval"])
+            assertEquals("21:00", f.model.state.value.drafts["reminder_start"])
+        }
+    }
+    @Test fun remindersRejectInvalidInputAndRetainDraftOnRejectedSave() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
+            val count = f.server.requestCount
+            for ((interval, start, end) in listOf(Triple("0", "09:00", "21:00"), Triple("1.5", "09:00", "21:00"),
+                Triple("2147483648", "09:00", "21:00"), Triple("60", "24:00", "21:00"), Triple("60", "09:00", "09:00"))) {
+                f.model.saveReminders(interval, start, end)
+                assertEquals(UiIssue.INVALID_INPUT, f.model.state.value.issue)
+            }
+            main.scheduler.runCurrent(); assertEquals(count, f.server.requestCount)
+            f.model.setDraft("reminder_interval", "90", "reminders")
+            f.codes["/api/settings/reminders"] = 422
+            f.model.saveReminders("90", "09:00", "21:00"); f.await { !it.busy }
+            assertEquals(UiIssue.INVALID_INPUT, f.model.state.value.issue)
+            assertEquals("90", f.model.state.value.drafts["reminder_interval"])
+            assertTrue("reminders" in f.model.state.value.dirtySteps)
+        }
+    }
+    @Test fun reminderIntervalOnlyEditPreservesSecondBearingWindow() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.bodies["/api/settings/reminders"] = """{"interval_minutes":60,"delivery_start":"09:00:10","delivery_end":"09:00:50","timezone":"Europe/Istanbul"}"""
+            f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
+            assertEquals("09:00:10", f.model.state.value.drafts["reminder_start"])
+            assertEquals("09:00:50", f.model.state.value.drafts["reminder_end"])
+            f.model.setDraft("reminder_interval", "90", "reminders")
+            f.model.saveReminders("90", f.model.state.value.drafts["reminder_start"]!!, f.model.state.value.drafts["reminder_end"]!!)
+            f.await { !it.busy }
+            assertEquals(90, f.model.state.value.reminders?.intervalMinutes)
+            assertEquals("09:00:10", f.model.state.value.reminders?.deliveryStart)
+            assertEquals("09:00:50", f.model.state.value.reminders?.deliveryEnd)
+            assertFalse("reminders" in f.model.state.value.dirtySteps)
+        }
+    }
+    @Test fun reminderRefreshPreservesDirtyFieldsUntilExplicitReloadAndOfflineSaveNeverSends() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
+            f.model.setDraft("reminder_interval", "90", "reminders")
+            f.bodies["/api/settings/reminders"] = """{"interval_minutes":120,"delivery_start":"10:00:00","delivery_end":"22:00:00","timezone":"Europe/Istanbul"}"""
+            f.model.refresh(); f.await { !it.busy }
+            assertEquals("90", f.model.state.value.drafts["reminder_interval"])
+            assertEquals("10:00:00", f.model.state.value.drafts["reminder_start"])
+            assertTrue("reminders" in f.model.state.value.changedSteps)
+            f.model.reloadStep("reminders"); f.await { !it.busy }
+            assertEquals("120", f.model.state.value.drafts["reminder_interval"])
+            val count = f.server.requestCount
+            f.network.value = com.dojo.aisomedo.offline.NetworkStatus(false, 1)
+            f.model.saveReminders("90", "09:00", "21:00")
+            main.scheduler.runCurrent(); assertEquals(count, f.server.requestCount)
+            assertFalse(f.model.state.value.canConfigure("reminders"))
+        }
     }
     @Test fun packageOrderAndRemovalUseLoadedFolderAndReadBackAfterWrite() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->

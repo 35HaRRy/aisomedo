@@ -1,4 +1,11 @@
 <resources>
+    <string name="reminders">İnceleme hatırlatmaları</string>
+    <string name="reminder_help">Bekleyen incelemeler için hatırlatma aralığını ve bildirim saatlerini seçin. Geceyi geçen bir aralık seçilebilir; başlangıç ve bitiş farklı olmalı.</string>
+    <string name="reminder_interval">Hatırlatma aralığı (dakika, pozitif tam sayı)</string>
+    <string name="reminder_start">Bildirim başlangıcı: %1$s</string>
+    <string name="reminder_end">Bildirim bitişi: %1$s</string>
+    <string name="save_reminders">Hatırlatmaları kaydet</string>
+    <string name="policy_not_accepted">Bu sürüm için henüz rıza kaydedilmedi. Metni kabul etmek için kurulumu açın.</string>
     <string name="push_registering">Bildirim kaydı doğrulanıyor</string>
     <string name="review_continue_title">Bekleyen Yayın Zamanı</string>
     <string name="review_continue_help">Aşağıdan medya yükleyin ve montajı düzenleyin. Aynı Yayın Zamanı için Reel hazırlanacak.</string>

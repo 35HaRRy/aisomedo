@@ -39,6 +39,12 @@ class DojoAppTest {
                     "/api/compat" -> """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":1,"update_url":"https://example.com/update"}"""
                     "/api/pairing/me" -> """{"id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
                     "/api/setup" -> """{"checklist":[],"ready":true}"""
+                    "/api/settings/plan" -> """{"anchor_date":"2026-10-05","anchor_time":"18:30:00","enabled":false,"timezone":"Europe/Istanbul"}"""
+                    "/api/settings/branding" -> """{"caption_template":"Dojo #training","intro_asset":null,"intro_duration":null,"logo_asset":null,"outro_asset":null,"outro_duration":null}"""
+                    "/api/settings/reminders" -> """{"interval_minutes":60,"delivery_start":"09:00:00","delivery_end":"21:00:00","timezone":"Europe/Istanbul"}"""
+                    "/api/meta/status" -> """{"health":"expired","ig_username":"dojo"}"""
+                    "/api/meta/oauth/start" -> """{"attempt_id":"attempt-1","auth_url":"https://www.facebook.com/oauth?state=synthetic"}"""
+                    "/api/setup/consent" -> """{"accepted_at":null,"text":"Politika metni","version":2}"""
                     "/api/activity?limit=50" -> """{"events":[{"id":1,"action":"package.created","actor":"system","occurred_at":"2026-10-12T12:00:00Z","details":{}}],"next_cursor":null}"""
                     "/api/reviews/7" -> """{"next_regular_at":"2099-10-19T10:00:00+03:00","preview_url":"/api/packages/active/render/preview","render_ready":true,"review":{"caption":"Exact caption","created_at":"2026-10-11T10:00:00+03:00","id":7,"occurrence_id":2,"package_folder":"active","revision_digest":"exact","status":"pending","version":3}}"""
                     else -> """{"generated_at":"2026-10-05T12:00:00Z","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
@@ -120,6 +126,40 @@ class DojoAppTest {
             compose.onNodeWithText(it).assertExists()
         }
         compose.onNodeWithText("Bilgiler henüz alınamadı. Tekrar deneyin.").assertDoesNotExist()
+    }
+    @Test fun settingsExposeEditorsReconnectAndReadOnlyConsentWithoutWizard() {
+        val urls = mutableListOf<String>()
+        compose.setContent { DojoApp(model) { urls.add(it) } }
+        compose.waitUntil(10000) { model.state.value.canMutate }
+        compose.onNodeWithText("Ayarlar", useUnmergedTree = true).performClick()
+        compose.waitUntil(10000) { model.state.value.canConfigure("reminders") }
+        Assert.assertNull(model.state.value.step)
+        compose.onNodeWithTag("settings-schedule").assertExists()
+        compose.onNodeWithTag("reminder-interval").performScrollTo().assertTextContains("60")
+        compose.onNodeWithTag("reminder-save").assertIsEnabled()
+        compose.onNodeWithTag("settings-logo").assertExists()
+        compose.onNodeWithTag("settings-cards").assertExists()
+        compose.onNodeWithText("Dojo #training").performScrollTo().assertExists()
+        compose.onNodeWithText("Instagram ile yetkilendir").performScrollTo().performClick()
+        compose.waitUntil(10000) { urls.isNotEmpty() }
+        Assert.assertEquals(listOf("https://www.facebook.com/oauth?state=synthetic"), urls)
+        compose.onNodeWithText("Politika metni").performScrollTo().assertExists()
+        compose.onNodeWithTag("consent-acknowledgement").assertDoesNotExist()
+        compose.onNodeWithText("Bu sürümü kabul et").assertDoesNotExist()
+        compose.onNodeWithText("Kartları değiştirmeden devam et").assertDoesNotExist()
+        Assert.assertTrue(paths.none { it == "POST /api/setup/consent/accept" })
+    }
+    @Test fun settingsOfflineDisablesReminderWritesAndReconnect() {
+        compose.setContent { DojoApp(model) {} }
+        compose.waitUntil(10000) { model.state.value.canMutate }
+        compose.runOnIdle { model.navigate(Destination.SETTINGS) }
+        compose.waitUntil(10000) { model.state.value.canConfigure("reminders") }
+        compose.runOnIdle { network.value = NetworkStatus(false, 1) }
+        compose.waitUntil(5000) { !model.state.value.networkConnected }
+        compose.onNodeWithTag("reminder-save").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Instagram ile yetkilendir").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("Politika metni").performScrollTo().assertExists()
+        compose.onNodeWithTag("navigation-bar").assertExists()
     }
     @Test fun offlineCacheRemainsNavigableWithTimestampAndApprovalInbox() {
         compose.setContent { DojoApp(model) {} }

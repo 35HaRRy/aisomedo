@@ -21,7 +21,7 @@ import java.io.InputStream
 
 fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1024 * 1024)
 
-@Composable fun BrandingSteps(model: AppViewModel, cards: Boolean) {
+@Composable fun BrandingSteps(model: AppViewModel, cards: Boolean, onboarding: Boolean = true) {
     val state by model.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -76,7 +76,7 @@ fun readBrandingImage(input: InputStream): ByteArray = readBounded(input, 10 * 1
                 model.saveCards(branding.introAsset, if (branding.introAsset != null) state.drafts["intro_duration"]?.toDoubleOrNull() else null,
                     branding.outroAsset, if (branding.outroAsset != null) state.drafts["outro_duration"]?.toDoubleOrNull() else null)
             }, enabled = access && !reading && state.branding != null) { Text(stringResource(R.string.save_cards)) }
-            TextButton(onClick = model::skipCards, enabled = access && !reading) { Text(stringResource(R.string.skip_cards)) }
+            if (onboarding) TextButton(onClick = model::skipCards, enabled = access && !reading) { Text(stringResource(R.string.skip_cards)) }
         }
     }
 }

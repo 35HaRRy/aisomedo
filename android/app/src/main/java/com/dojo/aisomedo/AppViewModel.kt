@@ -42,6 +42,7 @@ data class AppUiState(
     val issue: UiIssue? = null,
     val updateUrl: String? = null,
     val plan: PlanOut? = null,
+    val reminders: ReminderPolicyOut? = null,
     val branding: BrandingDefaultsOut? = null,
     val consent: ConsentOut? = null,
     val instagram: StatusOut? = null,
@@ -294,7 +295,7 @@ class AppViewModel(
             mutable.update { it.copy(activity = activity, activityFetchedAt = now()) }
             persistState(current)
         }
-        if (step != null) loadConfiguration(current)
+        if (step != null || state.value.destination == Destination.SETTINGS) loadConfiguration(current)
         checkKnownAttempt(current)
         if (state.value.dashboard?.`package` != null || state.value.destination == Destination.PACKAGE) readSection(current) { loadEditor(current) }
         persistState(current)
@@ -434,6 +435,9 @@ class AppViewModel(
         saved["destination"] = destination.name
         closeSetup(); mutable.update { it.copy(destination = destination) }
         if (destination == Destination.PACKAGE && network.value.connected) refreshEditor()
+        if (destination == Destination.SETTINGS && network.value.connected) {
+            if (state.value.busy) refreshRequested = true else launch { loadConfiguration(it) }
+        }
     }
     fun openSetup() {
         if (state.value.phase != Phase.READY) return
@@ -463,6 +467,7 @@ class AppViewModel(
             "schedule" -> listOf("date", "time", "enabled")
             "caption_template" -> listOf("caption")
             "cards" -> listOf("intro_duration", "outro_duration")
+            "reminders" -> listOf("reminder_interval", "reminder_start", "reminder_end")
             else -> emptyList()
         }
         keys.forEach { saved.remove<Boolean>("edited_$it") }
@@ -520,6 +525,14 @@ class AppViewModel(
             checkRead(current, epoch)
             if (generation == current) mutable.update { it.copy(instagram = instagram, configurationFresh = it.configurationFresh + "instagram") }
         }
+        if (state.value.destination == Destination.SETTINGS) load {
+            val reminders = api().reminders()
+            checkRead(current, epoch)
+            remoteDrafts("reminders", mapOf("reminder_interval" to reminders.intervalMinutes.toString(),
+                "reminder_start" to reminders.deliveryStart, "reminder_end" to reminders.deliveryEnd),
+                state.value.reminders != null && state.value.reminders != reminders)
+            mutable.update { it.copy(reminders = reminders, configurationFresh = it.configurationFresh + "reminders") }
+        }
     }
     fun reloadStep(step: String) {
         if (state.value.phase != Phase.READY || state.value.busy || !network.value.connected) return
@@ -556,6 +569,12 @@ class AppViewModel(
     fun saveCaption(text: String) {
         if (text.isBlank()) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
         mutation("caption_template") { api().patchBranding(buildJsonObject { put("caption_template", text) }) }
+    }
+    fun saveReminders(interval: String, start: String, end: String) {
+        val minutes = interval.toIntOrNull()
+        val valid = runCatching { LocalTime.parse(start) != LocalTime.parse(end) }.getOrDefault(false)
+        if (minutes == null || minutes <= 0 || !valid) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
+        mutation("reminders") { api().saveReminders(ReminderPolicyIn(end, start, minutes)) }
     }
     fun acceptConsent(displayedVersion: Int) {
         val policy = state.value.consent ?: return
