@@ -17,6 +17,9 @@ archive. Move completed archives off-server yourself.
 - Existing-target restore retains application database/role and volume identities.
   It does not restore cluster roles, unrelated databases, or external reverse-proxy
   configuration. Caddy regenerates its TLS cache; Android signing keys are separate.
+- Only distinct local named volumes and expected application mounts are supported.
+  External volumes, bind-backed drivers and shared volume aliases are refused.
+  Fresh recovery checks all resolved volume names, including custom names, before mutation.
 - Unset shell variables interpolated by Compose: recovery uses the production env
   file, not shell overrides. Do not run another initializer or write directly to
   database/media during the maintenance window.
@@ -24,6 +27,9 @@ archive. Move completed archives off-server yourself.
   plus media size for capture, with an additional 64 MiB margin. Restore also needs
   decrypted staging and a complete safety backup. Large archives need substantial
   space; insufficient-space errors must be fixed before retrying.
+- Manifest metadata has an 8 MiB safety limit (not an 8 MiB media-file limit).
+  Creation refuses inventories beyond decoder capacity rather than publishing an
+  archive that cannot be restored by this version.
 - Backend and every worker replica stop during capture. Expect unavailable API/media
   requests. A backup restarts original replica counts and verifies service/public
   health. Fresh recovery starts one backend/worker; existing restore preserves counts.
@@ -90,6 +96,9 @@ complete while writers remain stopped before replacement starts. Archive checks
 reject unsupported versions, missing/extra members, unsafe paths, links, corrupt
 contents, incompatible images and changed storage identities. Firebase credentials
 are relocated into `config/firebase.json`; only their host-path env setting changes.
+Other environment bytes, including Windows CRLF/BOM and export/spacing formatting,
+are preserved. Invalid roots and shared sticky directories are rejected before
+changing permissions or creating lock files.
 
 The CLI verifies schema version, table row counts, full media inventory/checksums,
 container health and public HTTPS readiness. It does not run migrations during

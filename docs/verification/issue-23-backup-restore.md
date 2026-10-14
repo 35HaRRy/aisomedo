@@ -4,9 +4,14 @@ Date: 2026-10-14. Production data, credentials and `dojo-prod` were not used.
 
 ## Feature evidence
 
-- Linux backup/deployment unit tests: **87 passed**, no skips.
+- Linux backup/deployment unit tests on final source: **108 passed**, no skips.
+  Added regressions cover resolved custom-volume collisions, unsupported
+  external/bind-backed/aliased storage, fresh-target shell overrides, and signals
+  during application restart (SIGINT/SIGTERM/SIGHUP), unrelated-directory permission
+  preservation, CRLF/BOM/export formatting, and producer/consumer manifest-size consistency.
 - Real age checks cover round trip, wrong identity, changed ciphertext and truncation.
-- Real Linux Compose/PostgreSQL recovery: **4 passed**, no skips (263.85 s).
+- Real Linux Compose/PostgreSQL recovery: **4 passed**, no skips; all four also
+  passed in final-source full ops run (**148 passed, 3 Android-signing skips**, 529.37 s).
   - Existing installation: original database values and exact environment restored;
     binary/empty-directory media restored; post-backup extra file removed; two
     worker replicas retained.
@@ -30,7 +35,9 @@ Date: 2026-10-14. Production data, credentials and `dojo-prod` were not used.
 | Core Python suite | 737 passed; 22 upstream deprecation warnings |
 | Backend Python suite | 209 passed, 1 skipped; upstream Starlette warning |
 | Worker Python suite | 139 passed, 1 failed; repeat produced same failing test |
-| Full ops Python suite | Final run result will be recorded after completion |
+| Full ops Python suite before review fixes | 127 passed, 3 skipped (Android signing prerequisites) |
+| Full ops Python suite after initial review fixes | 136 passed, 3 skipped |
+| Full ops Python suite after final root/env guards | 148 passed, 3 skipped (Android signing prerequisites) |
 | Web unit suite | 288 passed |
 | Web production build | Passed, including TypeScript checking |
 | Browser suite | 21 passed, 1 skipped (mobile native-drag scenario) |
@@ -102,5 +109,69 @@ recovery scenarios subsequently passed; application business behavior was not ch
   target, not by restarting a partial installation or silently bypassing safety capture.
 - Plaintext staging is private and unlinked on handled exit, not securely erased.
 - Restores trust archive provenance: authenticated encryption is not sender signing.
+- Environment bytes, including CRLF/BOM, are preserved; monitoring changes only its
+  credential host-path assignment, preserving export/spacing/line endings.
+- Invalid/non-installation roots and shared sticky directories are rejected before
+  permission changes or installation-lock creation.
+- Manifest metadata is limited to 8 MiB on creation and restore, so backup cannot
+  claim success for an archive that its own decoder rejects on size.
 
-Review findings and final disposition will be added after independent review.
+## Independent review and disposition
+
+Pinned range: `ed9818a...c4ffb39`. Two read-only reviewers assessed standards and
+spec separately; no second review was dispatched after fixes.
+
+### Standards
+
+No hard documented-standard violations. Two Important findings were confirmed:
+restart interrupts escaped recovery, and fresh restores skipped shell-override
+refusal. Both were reproduced by failing tests and fixed. One Minor finding is
+deferred: generic validation failures suppress otherwise safe operator diagnostics.
+
+### Spec
+
+One Critical finding was confirmed: fresh restore could reuse a custom-named
+existing volume outside the project prefix. Prospective storage now rejects external,
+bind-backed and aliased volumes or unexpected mounts, and fresh recovery checks every
+resolved destination volume for existing resources. Regression tests failed before
+the fix and pass afterward. Two Important findings duplicate the standards findings
+and were fixed by the same regressions. One Minor finding is deferred: destructive
+failure guidance includes the safety archive but hides the original static step label.
+
+Review counts at pinned baseline: Standards **2 Important + 1 Minor**; Spec
+**1 Critical + 2 Important + 1 Minor**. Unique Critical/Important findings: **3**, all
+fixed with RED→GREEN evidence. Two diagnostic Minor findings remain deferred; neither
+permits mutation without safety capture or a success claim after failed restore.
+
+Final author checks also reproduced and fixed three safety/faithfulness gaps:
+oversized manifests could be emitted despite decoder limits; invalid root paths
+were chmodded before installation recognition; env text I/O normalized CRLF and
+discarded BOM/export formatting around relocated credentials. The failing cases
+now pass; monitoring integration additionally uses CRLF and compares exact bytes.
+
+The spec reviewer declined to judge live restore/external TLS, unrelated worker
+timing failure, and then-pending ops results. Those remain explicit environment/scope
+limits above, not implicit successful verification.
+
+### Execution decisions and costs
+
+- Current `development` branch used, as requested by implement workflow: no worktree isolation.
+- Shell Compose overrides refused: operator must unset those variables before recovery.
+- Failed destructive restore recovers on fresh target: spare clean host/resources required.
+- Exact PostgreSQL image required locally: operator must retain or fetch matching image.
+- Docker test runner substituted for disabled WSL integration: temporary runner/test-data volume needed.
+- Python suites run separately like CI: four commands, avoiding duplicate module-name collection.
+- Unrelated worker timing failure preserved: full regression suite remains red and is reported honestly.
+- Review starts at pre-implementation `ed9818a`: earlier unrelated branch history excluded.
+- Replace-not-merge coverage uses real Docker round trip rather than a separate
+  mocked unit name: that coverage requires Docker.
+- Unexercised production restore/DNS/TLS stays unverified: operator must prepare and
+  validate real host prerequisites separately.
+- Pending review-time ops status is settled by measured test outputs, never assumption.
+
+Final source is verified by the complete ops run, including real deployment rollback
+and all four encrypted recovery scenarios. Remaining regression failure is the
+unchanged worker timing test reported above; no entirely-green claim is made.
+
+Feature-specific checks passed, but this report does **not** certify an entirely
+green regression suite or authorize merging, deployment, publishing or production restore.

@@ -12,6 +12,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import sys
 import tarfile
 import tempfile
@@ -22,6 +23,7 @@ from typing import Any
 import deploy
 
 RESERVE = 64 * 1024**2
+MAX_MANIFEST_BYTES = 8 * 1024**2
 
 # Helpers run in the already-installed backend image with only the chosen volume.
 MEDIA_SCAN = """
@@ -119,7 +121,40 @@ def database_metadata(installation: dict[str, Any]) -> dict[str, Any]:
     return {"image": image, "major": major, "tables": tables, "schema_version": schema}
 
 
-def read_installation(root: Path) -> dict[str, Any]:
+def validate_storage(config: dict[str, Any]) -> None:
+    expected = {
+        "db": {("db-data", "/var/lib/postgresql")},
+        "backend": {("media-data", "/media"), ("worker-health", "/run/dojo-worker")},
+        "worker": {("media-data", "/media"), ("worker-health", "/run/dojo-worker")},
+        "gateway": {("caddy-data", "/data")},
+    }
+    volumes = config.get("volumes", {})
+    if set(volumes) != {"db-data", "media-data", "worker-health", "caddy-data"}:
+        raise ValueError("unexpected persistent volume declarations")
+    names = set()
+    for volume in volumes.values():
+        name = volume.get("name", "")
+        if (volume.get("external") or volume.get("driver_opts")
+                or volume.get("driver", "local") != "local"
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or name in names):
+            raise ValueError("external, bind-backed or aliased storage is unsupported")
+        names.add(name)
+    for service, required in expected.items():
+        mounts = config["services"][service].get("volumes", [])
+        if (len(mounts) != len(required) or any(m.get("type") != "volume" for m in mounts)
+                or {(m.get("source"), m.get("target")) for m in mounts} != required):
+            raise ValueError("unexpected application persistent mounts")
+
+
+def reject_shell_overrides(release: Path) -> None:
+    # Shell interpolation overrides would make the archived env file unreproducible.
+    variables = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", "\n".join(
+        (release / name).read_text() for name in deploy.FILES if name.endswith(".yml"))))
+    if variables.intersection(os.environ):
+        raise ValueError("unset Compose interpolation variables from the shell before recovery")
+
+
+def recorded_state(root: Path) -> dict[str, Any]:
     trusted(root)
     for path in (root / "config", root / "current.json", root / "config/production.env",
                  root / "releases"):
@@ -133,15 +168,31 @@ def read_installation(root: Path) -> dict[str, Any]:
     deploy.options(state["mode"], state["origin"])
     release = root / "releases" / state["sha"]
     trusted(release)
+    deploy.validate_bundle(release)
+    regular(root / "config/production.env")
+    return state
+
+
+def private_root(root: Path, *, allow_empty: bool = False) -> None:
+    trusted(root)
+    trusted(root / "deploy.lock")
+    if not root.is_dir() or root.stat().st_mode & stat.S_ISVTX:
+        raise ValueError("installation root must be a dedicated non-shared directory")
+    if not allow_empty or {p.name for p in root.iterdir()} - {"deploy.lock"}:
+        # Identify an installation before changing permissions or creating lock files.
+        recorded_state(root)
+    root.chmod(0o700)
+
+
+def read_installation(root: Path) -> dict[str, Any]:
+    state = recorded_state(root)
+    release = root / "releases" / state["sha"]
     images = deploy.validate_bundle(release)
-    # Shell interpolation overrides would make the archived env file unreproducible.
-    variables = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)", "\n".join(
-        (release / name).read_text() for name in deploy.FILES if name.endswith(".yml"))))
-    if variables.intersection(os.environ):
-        raise ValueError("unset Compose interpolation variables from the shell before recovery")
+    reject_shell_overrides(release)
     command = deploy.compose(release, root, state["mode"], state["monitoring"])
     config = json.loads(deploy.run(command + ["config", "--format", "json"],
                                    step="recovery configuration (docker compose config)"))
+    validate_storage(config)
     containers = deploy.running(command, images)
     if len(containers["db"]) != 1:
         raise ValueError("exactly one database container is required")
@@ -168,6 +219,11 @@ def read_installation(root: Path) -> dict[str, Any]:
         raise ValueError("database must use one durable named volume")
     if db_mounts[0]["Name"] != config["volumes"]["db-data"]["name"]:
         raise ValueError("runtime database storage differs from recorded configuration")
+    runtime_volumes = json.loads(deploy.run(
+        ["docker", "volume", "inspect", *[v["name"] for v in config["volumes"].values()]],
+        step="persistent volume driver validation (docker volume inspect)"))
+    if any(v["Driver"] != "local" or v.get("Options") for v in runtime_volumes):
+        raise ValueError("runtime volumes must not use bind-backed or external drivers")
     for key in ("POSTGRES_USER", "POSTGRES_DB", "POSTGRES_PASSWORD"):
         if f"{key}={config['services']['db']['environment'][key]}" not in db_info["Config"]["Env"]:
             raise ValueError("database runtime differs from recorded configuration")
@@ -247,7 +303,11 @@ def capture_archive(installation: dict[str, Any], staging: Path) -> Path:
                 "state": installation["state"], "database": database_metadata(installation),
                 "files": file_inventory(payload), "credentials": credentials}
     validate_manifest(manifest)
-    (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    metadata = json.dumps(manifest).encode("utf-8")
+    # ponytail: bounded in-memory manifest; stream it if inventories exceed 8 MiB.
+    if len(metadata) > MAX_MANIFEST_BYTES:
+        raise RuntimeError("archive manifest exceeds restore safety limit")
+    (payload / "manifest.json").write_bytes(metadata)
     for path in payload.rglob("*"):
         path.chmod(0o700 if path.is_dir() else 0o600)
     archive = staging / "recovery.tar"
@@ -316,9 +376,7 @@ def preflight_backup(root: Path, recipient: str, output: Path, staging: Path,
 
 
 def backup(root: Path, recipient: str, output: Path) -> None:
-    trusted(root)
-    trusted(root / "deploy.lock")
-    root.chmod(0o700)
+    private_root(root)
     with deploy.installation_lock(root):
         installation = read_installation(root)
         with tempfile.TemporaryDirectory(prefix=".dojo-backup-", dir=root) as scratch:
@@ -332,6 +390,7 @@ def backup(root: Path, recipient: str, output: Path) -> None:
                     stop_writers(installation)
                     archive = capture_archive(installation, staging)
                     encrypt_archive(archive, recipient, output)
+                    start_writers(installation)
                 except BaseException as original:
                     if attempted_stop:
                         for signum in handlers:
@@ -344,30 +403,32 @@ def backup(root: Path, recipient: str, output: Path) -> None:
                                 "check service health before retrying"
                             ) from original
                     raise
-                else:
-                    start_writers(installation)
 
 
-def ensure_fresh_project() -> None:
+def ensure_fresh_project(resolved_volumes: list[str] | None = None) -> None:
     containers = deploy.run(["docker", "ps", "-aq", "--filter",
                              f"label=com.docker.compose.project={deploy.PROJECT}"],
                             step="fresh target container check (docker ps)").strip()
     volumes = deploy.run(["docker", "volume", "ls", "--format", "{{.Name}}"],
                          step="fresh target volume check (docker volume ls)").decode().splitlines()
-    if containers or any(name.startswith(deploy.PROJECT + "_") for name in volumes):
+    if containers or any(name.startswith(deploy.PROJECT + "_") or name in (resolved_volumes or [])
+                         for name in volumes):
         raise ValueError("fresh restore refuses existing project containers or volumes")
 
 
 def relocated_environment(payload: Path, target: Path, monitoring: bool) -> str:
-    text = (payload / "config/production.env").read_text(encoding="utf-8")
+    text = (payload / "config/production.env").read_bytes().decode("utf-8")
     if monitoring:
         if any(c in str(target) for c in ("$", "\n", "\r", '"', "\\")):
             raise ValueError("unsupported secret destination path")
-        pattern = r"(?m)^(?:export\s+)?FCM_CREDENTIALS_FILE\s*=.*$"
+        pattern = (
+            r"(?m)^(\ufeff?(?:export[ \t]+)?FCM_CREDENTIALS_FILE[ \t]*=[ \t]*)"
+            r"[^\r\n]*(\r?)$"
+        )
         if len(re.findall(pattern, text)) != 1:
             raise ValueError("monitoring env must declare one FCM_CREDENTIALS_FILE")
-        text = re.sub(pattern, lambda _: "FCM_CREDENTIALS_FILE=" + json.dumps(
-            str(target / "config/firebase.json")), text)
+        text = re.sub(pattern, lambda match: match.group(1) + json.dumps(
+            str(target / "config/firebase.json")) + match.group(2), text)
     return text
 
 
@@ -375,15 +436,17 @@ def prepare_restore(root: Path, payload: Path, manifest: dict[str, Any],
                     previous: dict[str, Any] | None) -> dict[str, Any]:
     state = manifest["state"]
     images = deploy.validate_bundle(payload / "release")
+    reject_shell_overrides(payload / "release")
     if state["monitoring"]:
         shutil.copyfile(payload / "credentials/firebase.json", payload / "config/firebase.json")
     text = relocated_environment(payload, payload, state["monitoring"])
     # Keep original env for final installation; prospective rendering uses local staged secret.
     (payload / "config/original.env").write_bytes((payload / "config/production.env").read_bytes())
-    (payload / "config/production.env").write_text(text, encoding="utf-8")
+    (payload / "config/production.env").write_bytes(text.encode("utf-8"))
     command = deploy.compose(payload / "release", payload, state["mode"], state["monitoring"])
     config = json.loads(deploy.run(command + ["config", "--format", "json"],
                                    step="restore preflight configuration (docker compose config)"))
+    validate_storage(config)
     (payload / "config/production.env").write_bytes((payload / "config/original.env").read_bytes())
     for image in (*images.values(), config["services"]["db"]["image"]):
         deploy.run(["docker", "image", "inspect", image], step="restore image availability")
@@ -403,7 +466,7 @@ def prepare_restore(root: Path, payload: Path, manifest: dict[str, Any],
         if any(old_env[key] != new_env[key] for key in ("POSTGRES_USER", "POSTGRES_DB")):
             raise ValueError("restore requires the same application database and role")
     else:
-        ensure_fresh_project()
+        ensure_fresh_project([volume["name"] for volume in config["volumes"].values()])
     if config["services"]["db"]["environment"]["POSTGRES_DB"] in ("postgres", "template0",
                                                                      "template1"):
         raise ValueError("restore must target a dedicated application database")
@@ -430,7 +493,7 @@ def install_configuration(root: Path, payload: Path, manifest: dict[str, Any]) -
         shutil.copyfile(payload / "credentials/firebase.json", root / "config/firebase.json")
         (root / "config/firebase.json").chmod(0o600)
     text = relocated_environment(payload, root, manifest["state"]["monitoring"])
-    (root / "config/production.env").write_text(text, encoding="utf-8")
+    (root / "config/production.env").write_bytes(text.encode("utf-8"))
     (root / "config/production.env").chmod(0o600)
     deploy.write_state(root, release, manifest["state"]["mode"], manifest["state"]["monitoring"],
                        manifest["state"]["origin"])
@@ -497,9 +560,7 @@ def restore(root: Path, archive: Path, identity: Path, *, confirm_replace: bool,
             safety_recipient: str | None = None, safety_output: Path | None = None) -> None:
     if not confirm_replace:
         raise ValueError("explicit --confirm-replace is required")
-    trusted(root)
-    trusted(root / "deploy.lock")
-    root.chmod(0o700)
+    private_root(root, allow_empty=True)
     with deploy.installation_lock(root):
         entries = {p.name for p in root.iterdir()} - {"deploy.lock"}
         previous = read_installation(root) if entries else None
@@ -759,7 +820,7 @@ def validate_archive(archive: Path, staging: Path) -> dict[str, Any]:
                     raise ValueError("archive inventory is too large")
                 members[name] = entry
             metadata = members.get("manifest.json")
-            if not metadata or not metadata.isfile() or metadata.size > 8 * 1024**2:
+            if not metadata or not metadata.isfile() or metadata.size > MAX_MANIFEST_BYTES:
                 raise ValueError("missing or oversized archive manifest")
             source = tar.extractfile(metadata)
             assert source is not None

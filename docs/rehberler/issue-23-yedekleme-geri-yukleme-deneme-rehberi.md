@@ -10,7 +10,7 @@ yapılmadı; aşağıdaki denemeler yalnız sentetik ve geçici test kaynakları
 | --- | --- |
 | `docs/superpowers/specs/2026-10-14-manual-encrypted-backup-restore-design.md` | Onaylanan kapsam, şifreleme, güvenlik, bakım kesintisi ve kurtarma kuralları |
 | `docs/superpowers/plans/2026-10-14-manual-encrypted-backup-restore.md` | Kodlama görevleri, testler, CI ve doğrulama adımları |
-| Bu rehber | Mevcut belgeleri kontrol etme; uygulama tamamlandığında güvenli deneme yolu |
+| Bu rehber | Güvenli PowerShell/WSL testleri ve tarayıcı/Android gözlemleri |
 | `ops/backup.py` | Veritabanı, yapılandırma ve tüm medyanın tek şifreli arşivde saklanması/geri yüklenmesi |
 | `ops/tests/test_backup.py` | Yanlış anahtar, bozuk arşiv, güvensiz yollar, kesinti ve güvenlik yedeği kontrolleri |
 | `ops/tests/test_backup_integration.py` | Gerçek PostgreSQL/medya kurtarma; mevcut ve boş hedef; hata sonrası servislerin kapalı kalması |
@@ -24,6 +24,11 @@ geçerli sürüm paketi ve tüm medyanın tek `age` şifreli arşivde saklanmas�
 Yedekleme kısa bakım kesintisi gerektirir. Mevcut verinin geri yüklemeyle
 değiştirilmesi açık onay ve önce şifreli güvenlik yedeği gerektirir.
 Zamanlanmış yedek, uygulama ekranı veya otomatik buluta gönderim yoktur.
+Boş hedefte mevcut özel adlı volume de korunur; dış/bind-backed depolama ve
+shell'den gelen Compose ayarları reddedilir. Yeniden başlatma sırasında gelen
+sinyalde de eski servisleri toparlama girişimi yapılır.
+Yanlış kurulum yolu ilgisiz klasörün izinlerini değiştirmez. Windows CRLF/BOM
+ayar dosyaları korunur; Firebase için yalnız host-path ayarı değiştirilir.
 
 ## 2. Şimdi deneyebileceğiniz kontroller — PowerShell
 

@@ -59,6 +59,9 @@ def recovery_installation(backup_cli, tmp_path, monkeypatch, request):
         f"FCM_CREDENTIALS_FILE={credential}\nFCM_PROJECT_ID=fixture-not-a-project\n"
         "MONITORING_INTERVAL_SECONDS=3600\nMONITORING_DISK_LOW_PERCENT=0.1\n"
         "MONITORING_DISK_RECOVERY_PERCENT=1\n")
+    if monitoring:
+        environment = root / "config/production.env"
+        environment.write_bytes(environment.read_bytes().replace(b"\n", b"\r\n"))
     release = cli.deploy.build_bundle("1" * 40, images, tmp_path / "release")
 
     def mapped(args, **kwargs):
@@ -118,15 +121,15 @@ def recovery_installation(backup_cli, tmp_path, monkeypatch, request):
 def test_existing_installation_roundtrip(recovery_installation, tmp_path, age_keys):
     cli, root, _, _, credential, original = recovery_installation
     identity, recipient = age_keys
-    original_env = (root / "config/production.env").read_text()
+    original_env = (root / "config/production.env").read_bytes().decode("utf-8")
     original_secret = credential.read_bytes() if credential.exists() else None
     archive = tmp_path / "backup.age"
     cli.backup(root, recipient, archive)
     assert b"original-database" not in archive.read_bytes()
     info = cli.read_installation(root)
     cli.query(info, "UPDATE recovery_sentinel SET value='changed-database'")
-    (root / "config/production.env").write_text(original_env.replace(
-        "original-setting", "changed-setting"))
+    (root / "config/production.env").write_bytes(original_env.replace(
+        "original-setting", "changed-setting").encode("utf-8"))
     original(["docker", "exec", info["containers"]["backend"][0], ".venv/bin/python", "-c",
               "from pathlib import Path; p=Path('/media'); "
               "(p/'branding/nested/binary').write_bytes(b'changed'); "
@@ -141,7 +144,7 @@ def test_existing_installation_roundtrip(recovery_installation, tmp_path, age_ke
         expected_env = expected_env.replace(f"FCM_CREDENTIALS_FILE={credential}",
             "FCM_CREDENTIALS_FILE=" + json.dumps(str(root / "config/firebase.json")))
         assert (root / "config/firebase.json").read_bytes() == original_secret
-    assert (root / "config/production.env").read_text() == expected_env
+    assert (root / "config/production.env").read_bytes() == expected_env.encode("utf-8")
     assert restored["worker_count"] == 2
     inventory = json.loads(cli.volume_helper(restored, cli.MEDIA_INVENTORY))
     assert "media/extra" not in inventory

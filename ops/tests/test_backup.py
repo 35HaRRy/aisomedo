@@ -169,8 +169,13 @@ def installation(backup_cli, tmp_path, monkeypatch):
     root = tmp_path / "install"
     root.mkdir()
     _, archive, manifest = payload(tmp_path, backup_cli)
+    (root / "config").mkdir()
+    shutil.copyfile(tmp_path / "payload/config/production.env", root / "config/production.env")
+    (root / "current.json").write_text(json.dumps(manifest["state"]))
+    release = root / "releases" / manifest["state"]["sha"]
+    shutil.copytree(tmp_path / "payload/release", release)
     events = []
-    info = {"root": root, "state": manifest["state"], "release": tmp_path / "payload/release",
+    info = {"root": root, "state": manifest["state"], "release": release,
             "images": {}, "command": ["docker", "compose"], "config": {},
             "containers": {"backend": ["api"], "worker": ["w1", "w2"], "db": ["db"]},
             "media_volume": "fixture_media", "worker_count": 2}
@@ -294,8 +299,10 @@ def test_restart_failure_not_success(backup_cli, installation, tmp_path, age_key
         backup_cli.backup(root, age_keys[1], tmp_path / "backup.age")
 
 
+@pytest.mark.parametrize("oversized_manifest", [False, True])
 def test_backup_includes_database_config_credentials_and_all_media(backup_cli, tmp_path,
-                                                                  monkeypatch):
+                                                                  monkeypatch,
+                                                                  oversized_manifest):
     root, _, manifest = payload(tmp_path, backup_cli)
     manifest["state"]["monitoring"] = True
     (root / "current.json").write_text(json.dumps(manifest["state"]))
@@ -321,6 +328,12 @@ def test_backup_includes_database_config_credentials_and_all_media(backup_cli, t
     monkeypatch.setattr(backup_cli, "database_metadata", lambda _: manifest["database"])
     staging = tmp_path / "capture"
     staging.mkdir()
+    if oversized_manifest:
+        manifest["database"]["schema_version"] = ["v" * (8 * 1024**2)]
+        with pytest.raises(RuntimeError, match="manifest"):
+            backup_cli.capture_archive(info, staging)
+        assert not (staging / "recovery.tar").exists()
+        return
     archive = backup_cli.capture_archive(info, staging)
     decoded = tmp_path / "decoded"
     result = backup_cli.validate_archive(archive, decoded)
@@ -461,3 +474,136 @@ def test_cli_loads_all_helpers_before_execution(tmp_path):
     assert result.returncode == 1
     assert "NameError" not in result.stderr
     assert "ValueError" in result.stderr
+
+
+def test_fresh_target_rejects_resolved_custom_volume(backup_cli, tmp_path, monkeypatch):
+    root, _, manifest = payload(tmp_path, backup_cli)
+    config = storage_config()
+    config["volumes"]["media-data"]["name"] = "shared-media"
+    config["services"]["db"].update({"image": "postgres:18", "environment": {
+        "POSTGRES_DB": "dojo", "POSTGRES_USER": "dojo", "POSTGRES_PASSWORD": "fixture"}})
+
+    def external(args, **kwargs):
+        if "config" in args:
+            return json.dumps(config).encode()
+        if args[:3] == ["docker", "image", "inspect"]:
+            return json.dumps([{"Id": manifest["database"]["image"]}]).encode()
+        if args[:3] == ["docker", "volume", "ls"]:
+            return b"shared-media\n"
+        if args[:2] == ["docker", "ps"]:
+            return b""
+        pytest.fail("existing resolved volume must fail before dump preflight or mutation")
+
+    monkeypatch.setattr(backup_cli.deploy, "run", external)
+    with pytest.raises(ValueError, match="existing"):
+        backup_cli.prepare_restore(tmp_path / "fresh", root, manifest, None)
+    assert not (tmp_path / "fresh").exists()
+
+
+def storage_config():
+    names = ("db-data", "media-data", "worker-health", "caddy-data")
+    mounts = {
+        "db": [("db-data", "/var/lib/postgresql")],
+        "backend": [("media-data", "/media"), ("worker-health", "/run/dojo-worker")],
+        "worker": [("media-data", "/media"), ("worker-health", "/run/dojo-worker")],
+        "gateway": [("caddy-data", "/data")],
+    }
+    return {"volumes": {name: {"name": f"fixture_{name}"} for name in names},
+            "services": {service: {"volumes": [
+                {"type": "volume", "source": name, "target": target}
+                for name, target in volumes]} for service, volumes in mounts.items()}}
+
+
+@pytest.mark.parametrize("mutation", ["external", "bind-driver", "bind-mount", "alias"])
+def test_unsupported_storage_rejected_before_mutation(backup_cli, mutation):
+    config = storage_config()
+    media = config["volumes"]["media-data"]
+    if mutation == "external":
+        media["external"] = True
+    elif mutation == "bind-driver":
+        media["driver_opts"] = {"type": "none", "o": "bind", "device": "/unrelated"}
+    elif mutation == "bind-mount":
+        config["services"]["backend"]["volumes"][0]["type"] = "bind"
+    else:
+        media["name"] = config["volumes"]["db-data"]["name"]
+    with pytest.raises(ValueError):
+        backup_cli.validate_storage(config)
+
+
+def test_fresh_restore_refuses_shell_override(backup_cli, tmp_path, monkeypatch):
+    root, _, manifest = payload(tmp_path, backup_cli)
+    monkeypatch.setenv("SIGNED_URL_SECRET", "do-not-restore-this-shell-value")
+
+    def no_docker(*args, **kwargs):
+        pytest.fail("overridden archive settings must fail before prospective Docker rendering")
+
+    monkeypatch.setattr(backup_cli.deploy, "run", no_docker)
+    with pytest.raises(ValueError, match="interpolation"):
+        backup_cli.prepare_restore(tmp_path / "fresh-target", root, manifest, None)
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM,
+                                     getattr(signal, "SIGHUP", None)])
+def test_backup_restart_interrupt_recovers_all_replicas(backup_cli, installation,
+                                                        tmp_path, age_keys, monkeypatch, signum):
+    if signum is None:
+        pytest.skip("SIGHUP requires Linux")
+    root, _, _, stopped = installation
+    monkeypatch.setattr(backup_cli, "age_file", lambda source, output, args:
+                        _real_age_file(backup_cli, source, output, args))
+    external = backup_cli.deploy.run
+    attempts = []
+
+    def interrupted_start(args, **kwargs):
+        if "up" in args:
+            attempts.append(args)
+            if len(attempts) == 1:
+                stopped.discard("api")  # Compose already started one replica.
+                signal.raise_signal(signum)
+        return external(args, **kwargs)
+
+    monkeypatch.setattr(backup_cli.deploy, "run", interrupted_start)
+    with pytest.raises(RuntimeError):
+        backup_cli.backup(root, age_keys[1], tmp_path / "backup.age")
+    assert len(attempts) == 2, "restart interruption must retry original application recovery"
+    assert not stopped
+    assert (tmp_path / "backup.age").is_file()
+
+
+@pytest.mark.parametrize("operation", ["backup", "restore", "shared-empty-restore"])
+def test_invalid_root_does_not_change_unrelated_directory(backup_cli, tmp_path, operation):
+    import sys
+
+    if sys.platform != "linux":
+        pytest.skip("production root permissions require Linux")
+    root = tmp_path / "unrelated"
+    root.mkdir()
+    root.chmod(0o1777 if operation == "shared-empty-restore" else 0o755)
+    if operation != "shared-empty-restore":
+        (root / "keep.txt").write_bytes(b"unrelated data")
+    mode = root.stat().st_mode
+    with pytest.raises(ValueError):
+        if operation == "backup":
+            backup_cli.backup(root, "bad", tmp_path / "output.age")
+        else:
+            backup_cli.restore(root, tmp_path / "archive.age", tmp_path / "key.txt",
+                               confirm_replace=True)
+    assert root.stat().st_mode == mode
+    expected = [] if operation == "shared-empty-restore" else ["keep.txt"]
+    assert sorted(p.name for p in root.iterdir()) == expected
+
+
+@pytest.mark.parametrize("monitoring", [False, True])
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+@pytest.mark.parametrize("bom", ["", "\ufeff"])
+def test_restore_preserves_environment_bytes(backup_cli, tmp_path, monitoring, line_ending, bom):
+    root, _, _ = payload(tmp_path, backup_cli)
+    target = PurePosixPath("/srv/new-root")
+    prefix = bom + "export FCM_CREDENTIALS_FILE = "
+    suffix = line_ending + "SIGNED_URL_SECRET=keep-exact" + line_ending
+    original = prefix + "'/old/external.json'" + suffix
+    (root / "config/production.env").write_bytes(original.encode("utf-8"))
+    expected = (prefix + '"/srv/new-root/config/firebase.json"' + suffix
+                if monitoring else original)
+    result = backup_cli.relocated_environment(root, target, monitoring)
+    assert result.encode("utf-8") == expected.encode("utf-8")

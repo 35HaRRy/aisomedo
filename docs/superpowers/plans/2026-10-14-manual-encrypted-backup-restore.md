@@ -115,6 +115,8 @@
 
 ## Handoff
 
-Written spec approved; this plan awaits operator review and execution-method choice.
-Recommend native execution: tasks share one CLI and tightly coupled recovery state;
-one implementer avoids interface drift while final independent review checks safety.
+Spec and plan approved; native execution selected. Tasks 1–4 implemented on current
+`development` branch, followed by independent standards/spec review and tested fixes.
+Execution evidence and remaining regression limits:
+`docs/verification/issue-23-backup-restore.md`. No merge, push or production restore
+was authorized or performed; the unrelated worker timing-test failure remains reported.
