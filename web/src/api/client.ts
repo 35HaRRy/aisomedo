@@ -72,6 +72,7 @@ export const api = {
   branding: (signal?: AbortSignal) => request<BrandingDefaultsOut>("/api/settings/branding", { signal }),
   patchBranding: (body: BrandingPatchIn, signal?: AbortSignal) => request<BrandingDefaultsOut>("/api/settings/branding", { method: "PATCH", body: JSON.stringify(body), signal }),
   plan: (signal?: AbortSignal) => request<PlanOut>("/api/settings/plan", { signal }),
+  manualPublish: () => request<{ id: number }>("/api/settings/manual-publish", { method: "POST" }),
   savePlan: (body: PlanIn, signal?: AbortSignal) => request<PlanOut>("/api/settings/plan", { method: "PUT", body: JSON.stringify(body), signal }),
   reminders: (signal?: AbortSignal) => request<ReminderPolicyOut>("/api/settings/reminders", { signal }),
   saveReminders: (body: ReminderPolicyIn, signal?: AbortSignal) => request<ReminderPolicyOut>("/api/settings/reminders", { method: "PUT", body: JSON.stringify(body), signal }),

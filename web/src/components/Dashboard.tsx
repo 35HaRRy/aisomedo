@@ -1,4 +1,6 @@
 import type { DashboardOut } from "../api/openapi";
+import { useRef, useState } from "react";
+import { api } from "../api/client";
 import { formatDate, statusLabel, tr } from "../i18n";
 
 export function PendingActions({ data }: { data: DashboardOut }) {
@@ -25,6 +27,15 @@ export function ConnectionSummary({ data }: { data: DashboardOut }) {
 }
 
 export function Dashboard({ data }: { data: DashboardOut }) {
+  const [requested, setRequested] = useState(false), [occurrence, setOccurrence] = useState<number | null>(null);
+  const [failed, setFailed] = useState(false);
+  const flight = useRef(false);
+  async function requestReview() {
+    if (flight.current) return;
+    flight.current = true; setRequested(true);
+    try { setOccurrence((await api.manualPublish()).id); }
+    catch { setFailed(true); }
+  }
   return <><header className="page-heading"><h1>{tr.dashboard}</h1><p>{tr.dashboardIntro}</p></header>
     <PendingActions data={data} />
     <div className="dashboard-columns">
@@ -33,6 +44,10 @@ export function Dashboard({ data }: { data: DashboardOut }) {
           <h3>{data.package?.folder_name ?? tr.noPackage}</h3>
           <p>{data.package ? statusLabel(data.package.status) : tr.noPackageHelp}</p>
           <a href="#/package">{tr.openPackage}</a>
+          <p>{tr.manualHelp}</p>
+          <button disabled={requested || data.pending_actions.length > 0 || !navigator.onLine} onClick={() => void requestReview()}>{tr.manualReview}</button>
+          {occurrence !== null && <p><a href={`#/package?occurrence=${occurrence}${data.package ? `&folder=${encodeURIComponent(data.package.folder_name)}` : ""}`}>{tr.manualContinue}</a></p>}
+          {failed && <p role="alert">{tr.manualUncertain}</p>}
         </section>
         <section><h2>{tr.nextSlot}</h2>
           <h3 className="slot-date">{data.next_slot ? formatDate(data.next_slot.due_at) : tr.noSlot}</h3>
