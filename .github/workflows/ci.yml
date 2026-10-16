@@ -133,7 +133,7 @@ jobs:
           name: deployed-acceptance
           path: |
             artifacts/acceptance/
-            !artifacts/acceptance/seed.json
+            !artifacts/acceptance/**/seed.json
           if-no-files-found: warn
       - name: Verify real deployment rollback
         env:

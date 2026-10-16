@@ -26,13 +26,13 @@ async function evidence(): Promise<Evidence> {
   expect(response.ok()).toBe(true);
   return response.json() as Promise<Evidence>;
 }
-async function upload(name: string) {
+async function upload(name: string, mimeType: string, buffer: Buffer) {
   await page.goto("/#/package");
   // Each case starts a fresh page while retaining its real paired-session cookie.
   // Hash-only navigation otherwise retains the previous case's upload limits.
   await page.reload();
   await page.getByLabel("Fotoğraf ve video seç", { exact: true }).setInputFiles({
-    name, mimeType: "video/mp4", buffer: videoBytes,
+    name, mimeType, buffer,
   });
   await expect(page.getByRole("region", { name: "Aktif paket medyası", exact: true })
     .getByRole("heading", { name, exact: true })).toBeVisible();
@@ -72,6 +72,7 @@ async function approveAndVerify(folder: string, index: number) {
     p => p.folder_name === `${folder}-completed` && p.status === "completed",
   )).toBe(true);
   const external = await evidence();
+  if (index > 0) expect(digest).not.toBe(external.containers[index - 1].sha256);
   expect(external.containers).toHaveLength(index + 1);
   expect(external.publications).toHaveLength(index + 1);
   expect(external.containers[index]).toMatchObject({ caption, sha256: digest, bytes: bytes.length });
@@ -136,14 +137,14 @@ test.beforeAll(async ({ browser, playwright }) => {
 test.afterAll(async () => { await context?.close(); await fixtures?.dispose(); });
 
 test("scheduled publication preserves reviewed artifact", async () => {
-  const folder = await upload("scheduled.mp4");
+  const folder = await upload("scheduled.mp4", "video/mp4", videoBytes);
   const advance = await fixtures.post("/clock", { data: { now: "2026-10-19T07:00:01+03:00" } });
   expect(advance.ok()).toBe(true);
   await approveAndVerify(folder, 0);
 });
 
 test("manual publication preserves cadence", async () => {
-  const folder = await upload("manual.mp4");
+  const folder = await upload("manual.png", "image/png", logo);
   const before = (await json<DashboardOut>("/api/dashboard")).next_slot;
   expect(before?.kind).toBe("regular");
   await page.goto("/#/dashboard");

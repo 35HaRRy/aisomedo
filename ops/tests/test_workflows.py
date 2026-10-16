@@ -105,7 +105,7 @@ def test_deployed_acceptance_is_required_after_verification_builds():
                   if step.get("uses", "").startswith("actions/upload-artifact")
                   and step.get("with", {}).get("name") == "deployed-acceptance")
     assert upload["if"] == "always()"
-    assert "!artifacts/acceptance/seed.json" in upload["with"]["path"]
+    assert "!artifacts/acceptance/**/seed.json" in upload["with"]["path"]
 
 
 def test_backup_integration_step_is_required(tmp_path):
