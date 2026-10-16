@@ -25,6 +25,7 @@ coverage/
 dist/
 playwright-report/
 test-results/
+/artifacts/acceptance/
 build/
 
 .agents/

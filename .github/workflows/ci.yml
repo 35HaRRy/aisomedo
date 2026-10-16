@@ -124,6 +124,17 @@ jobs:
       - run: docker build -t dojo-backend-verify:${{ github.sha }} -f backend/Dockerfile .
       - run: docker build -t dojo-worker-verify:${{ github.sha }} -f worker/Dockerfile .
       - run: docker build -t dojo-gateway-verify:${{ github.sha }} -f ops/gateway/Dockerfile .
+      - name: Verify deployed scheduled and manual publication
+        run: uv run --project backend python ops/acceptance/run.py --image-tag "$GITHUB_SHA" --output artifacts/acceptance
+      - name: Retain deployed acceptance diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployed-acceptance
+          path: |
+            artifacts/acceptance/
+            !artifacts/acceptance/seed.json
+          if-no-files-found: warn
       - name: Verify real deployment rollback
         env:
           REQUIRE_DEPLOY_INTEGRATION: "1"
