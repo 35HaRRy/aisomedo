@@ -90,3 +90,61 @@ def test_collector_preserves_recipients_and_review_data(fixture_client):
     assert fixture_client.get("/evidence").json()["notifications"] == [
         {"notification": notification, "tokens": ["fixture-device"]},
     ]
+
+
+def test_remote_clock_is_shared_and_fails_closed(fixture_client):
+    from acceptance.bootstrap import RemoteClock
+    first, second = RemoteClock(fixture_client), RemoteClock(fixture_client)
+    assert first.now() == second.now() == START
+    fixture_client.post("/clock", json={"now": "2026-10-19T07:00:01+03:00"})
+    assert first.now() == second.now() == datetime.fromisoformat("2026-10-19T07:00:01+03:00")
+    bad = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(
+        200, json={"now": "2026-10-19T07:00:00"},
+    )), base_url="http://fixture")
+    with pytest.raises(ValueError):
+        RemoteClock(bad).now()
+
+
+def test_collector_failure_is_not_delivery(fixture_client):
+    from acceptance.bootstrap import CollectorNotifier
+    from dojo.model import Notification
+    notification = Notification("Review", "Ready", {"review_id": "4"})
+    assert CollectorNotifier(fixture_client).send(notification, ["recipient"]).delivered == [
+        "recipient",
+    ]
+    bad = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(503)),
+                      base_url="http://fixture")
+    result = CollectorNotifier(bad).send(notification, ["recipient"])
+    assert result.delivered == []
+    assert result.transient_failures == ["recipient"]
+
+
+def test_bootstrap_uses_real_http_publisher_and_signed_urls(monkeypatch, tmp_path):
+    from acceptance import bootstrap
+    from cryptography.fernet import Fernet
+    from dojo.adapters.memory import InMemoryStore
+    from dojo.adapters.meta import HttpMetaPublisher
+    from dojo.adapters.signed_urls import HmacSignedUrlStore
+    monkeypatch.setenv("META_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("MEDIA_ROOT", str(tmp_path))
+    monkeypatch.setenv("SIGNED_URL_SECRET", "acceptance-only")
+    monkeypatch.setattr(bootstrap, "PostgresStore", lambda _: InMemoryStore())
+    publishing = bootstrap.build_publishing()
+    assert isinstance(publishing._meta, HttpMetaPublisher)
+    assert isinstance(publishing._signed_urls, HmacSignedUrlStore)
+    assert isinstance(publishing._clock, bootstrap.RemoteClock)
+    assert isinstance(publishing._notifier, bootstrap.CollectorNotifier)
+
+
+def test_worker_bootstrap_preserves_normal_main_loop(monkeypatch):
+    import worker.main as worker
+    monkeypatch.setattr(worker, "build_publishing", worker.build_publishing)
+    monkeypatch.setattr(worker, "build_meta", worker.build_meta)
+    from acceptance import bootstrap
+    sentinel = object()
+    monkeypatch.setattr(bootstrap, "build_publishing", lambda: sentinel)
+    monkeypatch.setattr(bootstrap, "build_meta", lambda: sentinel)
+    visited = []
+    monkeypatch.setattr(worker, "main", lambda: visited.append(worker.build_publishing()))
+    assert bootstrap.main(["worker"]) == 0
+    assert visited == [sentinel]
