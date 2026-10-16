@@ -8,6 +8,7 @@ import os
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 from dojo import DojoActivity, DojoMetaConnection, DojoPairing, DojoPublishing, DojoSetup
@@ -15,7 +16,9 @@ from dojo.adapters.db import PostgresStore
 from dojo.adapters.meta import FernetCipher, HttpMetaPublisher, StubMetaOAuthProvider
 from dojo.adapters.signed_urls import HmacSignedUrlStore
 from dojo.model import MetaCandidate, Notification, NotificationResult
-from fastapi import FastAPI
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 ORIGIN = "https://dojo.acceptance.test"
 
@@ -54,9 +57,7 @@ class CollectorNotifier:
         return NotificationResult(tokens, [], [])
 
     def notify(self, title: str, body: str) -> None:
-        result = self.send(Notification(title, body, {}), [])
-        if result.transient_failures:
-            raise RuntimeError("collector unavailable")
+        raise RuntimeError("acceptance requires recipient-aware send(), not legacy notify()")
 
 
 class AccountProvider:

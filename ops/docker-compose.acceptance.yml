@@ -1,0 +1,77 @@
+# Test-only override of production services. No installation env, published ports or binds to data.
+services:
+  init:
+    image: ${BACKEND_IMAGE:?verification image required}
+  backend:
+    image: ${BACKEND_IMAGE:?verification image required}
+    command: [".venv/bin/python", "-m", "acceptance.bootstrap", "backend"]
+    environment:
+      PYTHONPATH: /test-support
+    volumes:
+      - ./acceptance:/test-support/acceptance:ro
+    depends_on:
+      fixtures:
+        condition: service_healthy
+  worker:
+    image: ${WORKER_IMAGE:?verification image required}
+    command: [".venv/bin/python", "-m", "acceptance.bootstrap", "worker"]
+    environment:
+      PYTHONPATH: /test-support
+      WORKER_INTERVAL_SECONDS: "1"
+    volumes:
+      - ./acceptance:/test-support/acceptance:ro
+    depends_on:
+      fixtures:
+        condition: service_healthy
+  gateway:
+    image: ${GATEWAY_IMAGE:?verification image required}
+  fixtures:
+    image: ${BACKEND_IMAGE:?verification image required}
+    command: [".venv/bin/python", "-m", "acceptance.fixtures"]
+    environment:
+      PYTHONPATH: /test-support
+      ACCEPTANCE_CA_FILE: /certs/ca.crt
+      WORKER_HEALTH_PATH: /run/dojo-worker/health.json
+    volumes:
+      - ./acceptance:/test-support/acceptance:ro
+      - ${ACCEPTANCE_CERTS:?throwaway certificate directory required}:/certs:ro
+      - worker-health:/run/dojo-worker:ro
+    healthcheck:
+      test: ["CMD", ".venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/clock', timeout=3)"]
+      interval: 2s
+      timeout: 4s
+      retries: 20
+  tls:
+    image: ${GATEWAY_IMAGE:?verification image required}
+    entrypoint: ["caddy", "run", "--config", "/test-gateway.caddy", "--adapter", "caddyfile"]
+    volumes:
+      - ./acceptance/gateway-tls.caddy:/test-gateway.caddy:ro
+      - ${ACCEPTANCE_CERTS}:/certs:ro
+    networks:
+      default:
+        aliases: [dojo.acceptance.test]
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --cacert /certs/ca.crt --resolve dojo.acceptance.test:443:127.0.0.1 -fsS https://dojo.acceptance.test/ready && curl --cacert /certs/ca.crt --resolve dojo.acceptance.test:443:127.0.0.1 -fsS https://dojo.acceptance.test/web-health.txt"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+  browser:
+    profiles: [test]
+    build:
+      context: ..
+      dockerfile: ops/acceptance/Dockerfile.browser
+    environment:
+      ACCEPTANCE_BASE_URL: https://dojo.acceptance.test
+      ACCEPTANCE_FIXTURES_URL: http://fixtures:8000
+      ACCEPTANCE_SEED_FILE: /evidence/seed.json
+      NODE_EXTRA_CA_CERTS: /certs/ca.crt
+    volumes:
+      - ${ACCEPTANCE_CERTS}:/certs:ro
+      - ${ACCEPTANCE_OUTPUT:?evidence directory required}:/evidence
+    shm_size: 1gb
+networks:
+  default:
+    internal: true

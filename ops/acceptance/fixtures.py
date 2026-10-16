@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import os
 import threading
 from datetime import datetime
@@ -62,6 +64,10 @@ def create_app(*, initial_time: datetime, ca_file: Path) -> FastAPI:
             return {"now": now.isoformat(), "containers": list(containers),
                     "publications": list(publications), "notifications": list(notifications)}
 
+    @app.get("/worker-health")
+    def worker_health() -> dict[str, Any]:
+        return dict(json.loads(Path(os.environ["WORKER_HEALTH_PATH"]).read_text()))
+
     async def form(request: Request, fields: set[str]) -> dict[str, str]:
         raw = parse_qs((await request.body()).decode(), keep_blank_values=True)
         if set(raw) != fields or any(len(v) != 1 for v in raw.values()):
@@ -79,8 +85,9 @@ def create_app(*, initial_time: datetime, ca_file: Path) -> FastAPI:
                 or url.netloc != "dojo.acceptance.test" or not url.path.startswith("/pub/")):
             raise HTTPException(422, "unexpected video target")
         try:
-            response = httpx.get(values["video_url"], verify=str(ca_file), timeout=30,
-                                 trust_env=False)
+            response = await asyncio.to_thread(
+                httpx.get, values["video_url"], verify=str(ca_file), timeout=30, trust_env=False,
+            )
             response.raise_for_status()
             if not response.content:
                 raise ValueError("empty video")

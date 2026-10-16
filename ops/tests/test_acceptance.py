@@ -63,6 +63,17 @@ def test_graph_rejects_unfetchable_video(fixture_client, monkeypatch):
     assert fixture_client.get("/evidence").json()["containers"] == []
 
 
+def test_ingestion_allows_clock_reads_during_video_fetch(fixture_client, monkeypatch):
+    # Backend serving the signed video also reads RemoteClock. Blocking fixture's
+    # event loop here would deadlock the fetch against its own /clock request.
+    def download(url, **kwargs):
+        assert fixture_client.get("/clock").status_code == 200
+        return httpx.Response(200, content=b"video", request=httpx.Request("GET", url))
+    monkeypatch.setattr(httpx, "get", download)
+    with fixture_client:
+        assert container(fixture_client).status_code == 200
+
+
 def test_publish_requires_ingested_container(fixture_client):
     assert fixture_client.post("/v26.0/ig_123/media_publish", data={
         "creation_id": "missing", "access_token": "acceptance-token",
@@ -117,6 +128,8 @@ def test_collector_failure_is_not_delivery(fixture_client):
     result = CollectorNotifier(bad).send(notification, ["recipient"])
     assert result.delivered == []
     assert result.transient_failures == ["recipient"]
+    with pytest.raises(RuntimeError):
+        CollectorNotifier(bad).notify("Legacy", "Ready")
 
 
 def test_bootstrap_uses_real_http_publisher_and_signed_urls(monkeypatch, tmp_path):
@@ -148,3 +161,128 @@ def test_worker_bootstrap_preserves_normal_main_loop(monkeypatch):
     monkeypatch.setattr(worker, "main", lambda: visited.append(worker.build_publishing()))
     assert bootstrap.main(["worker"]) == 0
     assert visited == [sentinel]
+
+
+@pytest.mark.parametrize("failure", ["startup", "browser", "cleanup", "image", None])
+def test_runner_isolation_and_cleanup(tmp_path, monkeypatch, failure):
+    import subprocess
+
+    from acceptance import run
+
+    calls = []
+    def command(args, **kwargs):
+        calls.append(args)
+        assert kwargs["env"].get("POSTGRES_PASSWORD") is None
+        assert kwargs["env"].get("COMPOSE_PROJECT_NAME") is None
+        assert {k.upper(): v for k, v in kwargs["env"].items()}["PROGRAMFILES"] == (
+            "Docker plugin lookup"
+        )
+        if ((failure == "startup" and "up" in args)
+                or (failure == "browser" and "browser" in args)
+                or (failure == "cleanup" and "down" in args)
+                or (failure == "image" and "inspect" in args)):
+            raise subprocess.CalledProcessError(1, args)
+        output = "sha256:" + "a" * 64
+        if "seed" in args:
+            output = '{"browser_code":"synthetic", "device_code":"synthetic"}'
+        elif "inspect" in args and "exec" in args:
+            output = '{"completed":["one-completed","two-completed"]}'
+        elif "config" in args:
+            import json
+            project = args[args.index("-p") + 1]
+            output = json.dumps({"name": project,
+                                 "services": {s: {} for s in ("db", "init", "backend", "worker",
+                                                             "gateway", "fixtures", "tls")},
+                                 "volumes": {"db-data": {"name": project + "_db-data"}},
+                                 "networks": {"default": {"internal": True}}})
+        return subprocess.CompletedProcess(args, 0, stdout=output)
+
+    monkeypatch.setattr(run.subprocess, "run", command)
+    reports = []
+    monkeypatch.setattr(run, "validate_report", reports.append)
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "dojo-prod")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "never-read-this")
+    monkeypatch.setenv("ProgramFiles", "Docker plugin lookup")
+    output = tmp_path / "artifacts"
+    result = run.main(["--image-tag", "fixture", "--output", str(output)])
+    assert result == (0 if failure is None else 1)
+    compose_calls = [c for c in calls if c[:2] == ["docker", "compose"]]
+    if failure == "image":
+        assert not compose_calls
+        return
+    assert compose_calls
+    assert all("--env-file" in c and "-p" in c for c in compose_calls)
+    projects = {c[c.index("-p") + 1] for c in compose_calls}
+    assert len(projects) == 1
+    assert next(iter(projects)).startswith("dojo-acceptance-")
+    assert "dojo-prod" not in projects
+    assert any("down" in c and "--volumes" in c for c in compose_calls)
+    assert next(i for i, c in enumerate(calls) if "logs" in c) < next(
+        i for i, c in enumerate(calls) if "down" in c)
+    assert list(output.rglob("compose.log"))
+    if failure is None:
+        assert reports[0].parent != output  # Reused output roots cannot reuse stale reports.
+
+
+@pytest.mark.parametrize("report", [None, {}, {"suites": [], "stats": {"expected": 0}}])
+def test_acceptance_requires_two_passed_cases(tmp_path, report):
+    import json
+
+    from acceptance.run import validate_report
+    path = tmp_path / "report.json"
+    if report is not None:
+        path.write_text(json.dumps(report))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        validate_report(path)
+
+
+def test_fixture_exposes_read_only_worker_progress(tmp_path, monkeypatch):
+    path = tmp_path / "health.json"
+    monkeypatch.setenv("WORKER_HEALTH_PATH", str(path))
+    path.write_text('{"phase":"idle","monotonic":12.5}')
+    client = TestClient(create_app(initial_time=START, ca_file=tmp_path / "ca.crt"))
+    assert client.get("/worker-health").json() == {"phase": "idle", "monotonic": 12.5}
+
+
+@pytest.mark.parametrize("change", ["skipped", "retry", "one", "error", None])
+def test_acceptance_report_rejects_partial_or_flaky_success(tmp_path, change):
+    import json
+
+    from acceptance.run import CASES, validate_report
+    specs = [{"title": name, "tests": [{"expectedStatus": "passed", "results": [
+        {"status": "passed", "retry": 0},
+    ]}]} for name in sorted(CASES)]
+    report = {"suites": [{"suites": [{"specs": specs}]}], "errors": []}
+    if change == "skipped":
+        specs[0]["tests"][0]["results"][0]["status"] = "skipped"
+    elif change == "retry":
+        specs[0]["tests"][0]["results"].append({"status": "passed", "retry": 1})
+    elif change == "one":
+        specs.pop()
+    elif change == "error":
+        report["errors"] = ["worker failed"]
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report))
+    if change is None:
+        validate_report(path)
+    else:
+        with pytest.raises(ValueError):
+            validate_report(path)
+
+
+@pytest.mark.parametrize("unsafe", ["volume", "port", "network"])
+def test_runner_rejects_nonisolated_compose(unsafe):
+    from acceptance.run import validate_config
+    config = {"name": "dojo-acceptance-test",
+              "services": {s: {} for s in ("db", "init", "backend", "worker",
+                                          "gateway", "fixtures", "tls")},
+              "volumes": {"db-data": {"name": "dojo-acceptance-test_db-data"}},
+              "networks": {"default": {"internal": True}}}
+    if unsafe == "volume":
+        config["volumes"]["db-data"]["name"] = "dojo-prod_db-data"
+    elif unsafe == "port":
+        config["services"]["gateway"]["ports"] = [{"published": "443"}]
+    else:
+        config["networks"]["default"]["internal"] = False
+    with pytest.raises(ValueError):
+        validate_config(config, "dojo-acceptance-test")
