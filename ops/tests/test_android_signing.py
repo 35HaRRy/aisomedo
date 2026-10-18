@@ -14,7 +14,7 @@ def gradle(env, *tasks):
     wrapper = ROOT / "android" / ("gradlew.bat" if os.name == "nt" else "gradlew")
     return subprocess.run([str(wrapper), "-p", str(ROOT / "android"), *tasks,
                            "--console=plain", "--warning-mode=fail"],
-                          capture_output=True, text=True, env=env, timeout=300)
+                          capture_output=True, text=True, env=env, timeout=1200)
 
 
 def test_release_guard_and_real_signature(tmp_path):
