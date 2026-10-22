@@ -5,9 +5,9 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
 
-fun editorJson(folder: String = "active", order: String = "\"a\",\"b\",\"c\"", selections: String = "\"c\":[{\"start\":1,\"end\":3},{\"start\":7,\"end\":9}]", aStatus: String = "finalized"): String = """{
-    "package":{"id":1,"folder_name":"$folder","created_at":"2026-10-10T12:00:00Z","status":"active"},
-    "render_stale":true,"media":[
+fun editorJson(folder: String = "active", order: String = "\"a\",\"b\",\"c\"", selections: String = "\"c\":[{\"start\":1,\"end\":3},{\"start\":7,\"end\":9}]", aStatus: String = "finalized", id: Int = 1): String = """{
+    "package":{"id":$id,"folder_name":"$folder","created_at":"2026-10-10T12:00:00Z","status":"active"},
+    "content_revision":1,"view_revision":1,"render_stale":true,"media":[
       {"media_id":"a","filename":"first.mp4","content_type":"video/mp4","size_bytes":2147483648,"uploaded_at":"now","status":"$aStatus","processed":{},"preview_url":null,"artifacts":[],"is_video":true,"source_duration":20,"effective_duration":20},
       {"media_id":"b","filename":"photo.jpg","content_type":"image/jpeg","size_bytes":3,"uploaded_at":"now","status":"finalized","processed":{},"preview_url":null,"artifacts":[],"is_video":false,"source_duration":null,"effective_duration":3},
       {"media_id":"c","filename":"last.mp4","content_type":"video/mp4","size_bytes":3,"uploaded_at":"now","status":"finalized","processed":{},"preview_url":null,"artifacts":[],"is_video":true,"source_duration":10,"effective_duration":4}
@@ -16,6 +16,45 @@ fun editorJson(folder: String = "active", order: String = "\"a\",\"b\",\"c\"", s
 
 class MediaEditorTest {
     private val snapshot = Json.decodeFromString<ActiveEditorOut>(editorJson())
+    @Test fun reopenRestoresReadOnlyAndIndependentChangesKeepOriginalBaseline() {
+        val edited = MediaEditorState().accept(snapshot).edit("a", listOf(RangeInput("0", "")))
+        val restored = MediaEditorState().restore(1, edited.storedDraft!!)
+        assertTrue(restored.readRequired); assertFalse(restored.canSave)
+        val fresh = snapshot.copy(montage = snapshot.montage.copy(selections = mapOf("c" to listOf(VideoRangeOut(start = 0.0, end = 2.0)))))
+        val reconciled = restored.accept(fresh, explicit = true)
+        assertEquals("", reconciled.inputs.getValue("a")[0].end)
+        assertTrue(reconciled.conflicts.isEmpty())
+        assertFalse(reconciled.readRequired)
+    }
+
+    @Test fun sameGroupNeedsExplicitChoiceAndLaterEditsCanConflictAgain() {
+        val edited = MediaEditorState().accept(snapshot).edit("a", listOf(RangeInput("0", "5")))
+        val fresh = snapshot.copy(contentRevision = 2, montage = snapshot.montage.copy(selections = snapshot.montage.selections + ("a" to listOf(VideoRangeOut(start = 2.0, end = 6.0)))))
+        val conflict = edited.accept(fresh, explicit = true)
+        assertFalse(conflict.canSave); assertTrue("video:a" in conflict.conflicts)
+        val local = conflict.resolveConflict("video:a", local = true)
+        assertTrue(local.canSave)
+        assertEquals("5", local.inputs.getValue("a")[0].end)
+        assertFalse(conflict.resolveConflict("video:a", local = false).dirty)
+        assertTrue("video:a" in local.accept(snapshot).conflicts)
+    }
+
+    @Test fun uncertainWriteDoesNotReplay() {
+        val edited = MediaEditorState().accept(snapshot).edit("a", listOf(RangeInput("0", "5")))
+        val restored = MediaEditorState().restore(1, edited.storedDraft!!.copy(uncertain = true))
+        assertFalse(restored.canSave)
+        val committed = snapshot.copy(montage = snapshot.montage.copy(selections = snapshot.montage.selections + ("a" to listOf(VideoRangeOut(start = 0.0, end = 5.0)))))
+        val recovered = restored.accept(committed, explicit = true)
+        assertFalse(recovered.dirty); assertNull(recovered.storedDraft)
+    }
+
+    @Test fun completionKeepsDraftReadOnly() {
+        val edited = MediaEditorState().accept(snapshot).edit("a", listOf(RangeInput("0", "5")))
+        val completed = snapshot.copy(`package` = snapshot.`package`.copy(status = "completed"))
+        val restored = MediaEditorState().restore(1, edited.storedDraft!!).accept(completed, explicit = true)
+        assertFalse(restored.canSave); assertNotNull(restored.storedDraft)
+        assertEquals("5", restored.inputs.getValue("a")[0].end)
+    }
     @Test fun proposedDurationIncludesCardsPhotosAndAllSelectedSections() {
         val editor = MediaEditorState().accept(snapshot)
         assertEquals(32.0, editor.proposedTotal!!, 0.001)
@@ -57,7 +96,7 @@ class MediaEditorTest {
         assertEquals("new", refreshed.discard().baseFolder)
         assertFalse(refreshed.discard().dirty)
         val concurrent = draft.accept(snapshot.copy(montage = snapshot.montage.copy(order = listOf("b", "a", "c"))))
-        assertTrue(concurrent.readRequired)
+        assertFalse(concurrent.readRequired)
         assertTrue(concurrent.accept(concurrent.snapshot!!, explicit = true).canSave)
     }
     @Test fun limitAndUnknownSourceBlockSavingWithoutInventingDuration() {

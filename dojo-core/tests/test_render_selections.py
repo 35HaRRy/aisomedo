@@ -83,7 +83,7 @@ def test_legacy_digest_and_manifest_survive_reads_until_explicit_edit(tmp_path):
     old_digest = hashlib.sha256(json.dumps(old_inputs, sort_keys=True,
                                           ensure_ascii=False).encode()).hexdigest()
     manifest["render_revision"] = old_digest
-    path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
     before = path.read_bytes()
     assert seam.get_montage_status().combined_duration == 10.0
     assert seam.render_preview() == {"stale": False, "render_revision": old_digest}

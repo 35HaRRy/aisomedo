@@ -26,6 +26,7 @@ class MediaEditorPanelTest {
     private var canMutate by mutableStateOf(true)
     private fun snapshot() = ActiveEditorOut(
         `package` = PackageOut("now", "active", 1, "active"), renderStale = true,
+        contentRevision = 1, viewRevision = 1,
         media = listOf("a", "b", "c").map { id -> EditorMediaOut(
             artifacts = emptyList(), contentType = "video/mp4", effectiveDuration = 10.0,
             filename = "$id.mp4", isVideo = true, mediaId = id, previewUrl = null,
@@ -97,6 +98,23 @@ class MediaEditorPanelTest {
         compose.onNodeWithTag("range-end-a-0").assertIsNotEnabled()
         compose.onNodeWithTag("media-drag-a").performScrollTo().performTouchInput { swipeDown() }
         compose.runOnIdle { assertTrue(writes.isEmpty()); assertTrue(editor.dirty) }
+    }
+    @Test fun recoveredDraftNeverEnablesFieldsBeforeSynchronization() {
+        val draft = editor.edit("a", listOf(RangeInput("0", ""))).storedDraft!!
+        editor = editor.restore(1, draft)
+        canMutate = false
+        show()
+        compose.onNodeWithTag("media-save").assertIsNotEnabled()
+        compose.onNodeWithTag("media-drag-a").assertIsNotEnabled()
+        compose.onNodeWithTag("media-edit-a").performScrollTo().performClick()
+        compose.onNodeWithTag("range-end-a-0").assertIsNotEnabled()
+    }
+    @Test fun storageFailureWarnsAndKeepsSaveDisabled() {
+        editor = editor.edit("a", listOf(RangeInput("0", "5"))).copy(persistenceIssue = DraftIssue.STORAGE)
+        show()
+        compose.onNodeWithTag("draft-storage-warning").assertExists()
+        compose.onNodeWithTag("media-save").assertIsNotEnabled()
+        compose.onNodeWithTag("draft-storage-retry").assertIsEnabled()
     }
     @Test fun stationaryEdgeDragScrollsAndCancellationLeavesOrderUntouched() {
         val current = snapshot()

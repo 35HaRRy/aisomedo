@@ -12,6 +12,7 @@ from sqlalchemy.engine.reflection import Inspector
 
 EMISSION_INDEXES = {"uq_jobs_active_render", "uq_yayin_zamani_regular_due"}
 MONITORING_TABLES = {"monitoring_incidents", "operational_alerts", "operational_deliveries"}
+LIVE_TABLES = {"package_states", "live_resource_versions", "live_change_events"}
 MONITORING_INDEXES = {"ix_operational_deliveries_due"}
 MONITORING_CHECKS = {
     "ck_operational_alerts_kind",
@@ -73,6 +74,7 @@ OLDEST_BASELINE = "0013_instagram_login"
 EMISSION_REVISION = "0014_emission_idempotency"
 MONITORING_REVISION = "0015_operational_monitoring"
 MONITORING_CHECKS_REVISION = "0016_monitoring_checks"
+LIVE_REVISION = "0017_live_state"
 
 
 def _is_pending_monitoring(difference: tuple) -> bool:
@@ -106,7 +108,9 @@ def validate_legacy_schema(connection: Connection) -> str:
 
     inspector = inspect(connection)
     tables = set(inspector.get_table_names()) - {"alembic_version"}
-    if tables not in (set(Base.metadata.tables), set(Base.metadata.tables) - MONITORING_TABLES):
+    current = set(Base.metadata.tables)
+    previous = current - LIVE_TABLES
+    if tables not in (current, previous, previous - MONITORING_TABLES):
         raise RuntimeError("Unsupported unversioned schema: table set differs from baseline")
     indexes = {
         table: {index["name"]: index for index in inspector.get_indexes(table)}
@@ -117,6 +121,7 @@ def validate_legacy_schema(connection: Connection) -> str:
         for table in tables
     }
     pending_monitoring = not MONITORING_TABLES <= tables
+    pending_live = not LIVE_TABLES <= tables
     # 0016 only adds constraints, so a 0015 shape is recognized by their absence
     # and stamped accordingly: create_all already has them, a 0015 database
     # must still run 0016 rather than collide with it.
@@ -168,10 +173,15 @@ def validate_legacy_schema(connection: Connection) -> str:
         differences = [d for d in differences if not _is_pending_monitoring(d)]
     if pending_checks:
         differences = [d for d in differences if not _is_pending_check(d)]
+    if pending_live:
+        differences = [d for d in differences
+                       if not (d[0] == "add_table" and d[1].name in LIVE_TABLES)]
     if differences:
         raise RuntimeError(f"Unsupported unversioned schema: {differences!r}")
     if pending_monitoring:
         return EMISSION_REVISION if present else OLDEST_BASELINE
     if pending_checks:
         return MONITORING_REVISION if present else EMISSION_REVISION
+    if not pending_live:
+        return LIVE_REVISION
     return MONITORING_CHECKS_REVISION if present else MONITORING_REVISION

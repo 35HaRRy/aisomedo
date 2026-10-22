@@ -12,6 +12,7 @@ import com.dojo.aisomedo.editor.*
 import com.dojo.aisomedo.reviews.*
 import com.dojo.aisomedo.notifications.*
 import com.dojo.aisomedo.offline.*
+import com.dojo.aisomedo.live.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
@@ -62,8 +63,11 @@ data class AppUiState(
     val dashboardFetchedAt: Long? = null,
     val editorFetchedAt: Long? = null,
     val activityFetchedAt: Long? = null,
+    val livePhase: LivePhase = LivePhase.CONNECTING,
 ) {
-    val canMutate get() = phase == Phase.READY && networkConnected && authoritative && !busy
+    val showConnectionNotice get() = phase == Phase.READY &&
+        (!networkConnected || livePhase == LivePhase.DISCONNECTED || !authoritative && issue != null)
+    val canMutate get() = phase == Phase.READY && livePhase == LivePhase.LIVE && networkConnected && authoritative && !busy
     val canEditMedia get() = canMutate && !editor.readRequired && editor.snapshot != null &&
         editor.snapshot.`package` == dashboard?.`package` && editor.snapshot.`package`.status != "completed"
     fun canConfigure(step: String) = canMutate && step in configurationFresh
@@ -78,6 +82,7 @@ class AppViewModel(
     private val snapshots: SnapshotStore? = null,
     private val network: StateFlow<NetworkStatus> = MutableStateFlow(NetworkStatus(true)),
     private val now: () -> Long = System::currentTimeMillis,
+    private val draftStore: DraftStore? = null,
     private val onSessionStopped: () -> Unit = {},
 ) : ViewModel() {
     private val initialNetwork = network.value
@@ -97,6 +102,144 @@ class AppViewModel(
     private var boundRevision = store.revision.value
     private var authoritativeEpoch: Long? = null
     private var writingSession = false
+    private var foreground = false
+    private var live: LiveCoordinator? = null
+    private var liveBinding: String? = null
+    private var liveObservation: Job? = null
+    private var liveReading = false
+    private val snapshotVersions = SnapshotVersions()
+    private var draftOwner: Pair<String, String>? = null
+    private var draftSequence = 0L
+    private var draftWrite: Deferred<Boolean>? = null
+    private var cleared = false
+
+    private fun persistEditor(editor: MediaEditorState, packageId: Int? = editor.draftPackageId ?: editor.snapshot?.`package`?.id): Deferred<Boolean> {
+        val origin = state.value.origin; val binding = bindingId; val current = generation
+        val sequence = ++draftSequence; val previous = draftWrite
+        val draft = editor.storedDraft?.copy(localRevision = sequence)
+        mutable.update { it.copy(editor = editor.copy(storedDraft = draft, persisting = true)) }
+        // Finish already accepted writes even when the screen closes. Never update a replacement session.
+        val work = viewModelScope.async(NonCancellable) {
+            previous?.await()
+            var issue: DraftIssue? = null
+            val success = try {
+                check(binding != null && packageId != null && draftStore != null)
+                withContext(Dispatchers.IO) { synchronized(store) {
+                    if (store.readSession(origin)?.bindingId != binding) return@synchronized false
+                    if (draft == null) draftStore.clear(origin, binding, packageId)
+                    else draftStore.write(origin, binding, packageId, draft)
+                    true
+                } }
+            } catch (error: Exception) { issue = (error as? DraftFailure)?.issue ?: DraftIssue.STORAGE; false }
+            if (!cleared && generation == current && sequence == draftSequence) mutable.update {
+                it.copy(editor = it.editor.copy(persisting = false, persistenceIssue = issue))
+            }
+            success
+        }
+        draftWrite = work
+        return work
+    }
+
+    private suspend fun restoreEditorDraft(current: Int, packageId: Int?) {
+        val binding = bindingId ?: return
+        val identity = state.value.origin to binding
+        if (draftOwner == identity || draftStore == null) return
+        draftOwner = identity
+        draftWrite?.await()
+        try {
+            val rows = withContext(Dispatchers.IO) { draftStore.list(identity.first, binding) }
+            checkSession(current)
+            val selected = rows[packageId]?.let { packageId!! to it } ?: rows.maxByOrNull { it.key }?.toPair() ?: return
+            draftSequence = maxOf(draftSequence, selected.second.localRevision)
+            mutable.update { it.copy(editor = it.editor.restore(selected.first, selected.second)) }
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            if (generation == current) mutable.update { it.copy(editor = it.editor.copy(
+                persistenceIssue = (error as? DraftFailure)?.issue ?: DraftIssue.STORAGE, readRequired = true)) }
+        }
+    }
+
+    fun retryEditorPersistence() {
+        if (!admit() || state.value.editor.persistenceIssue != DraftIssue.STORAGE) return
+        persistEditor(state.value.editor.copy(persistenceIssue = null))
+    }
+
+    fun resolveMediaConflict(key: String, local: Boolean) {
+        if (!admit() || state.value.editor.persistenceIssue != null) return
+        persistEditor(state.value.editor.resolveConflict(key, local))
+    }
+
+    fun setForeground(active: Boolean) {
+        foreground = active
+        live?.setForeground(active && network.value.connected)
+        mutable.update { it.copy(livePhase = live?.phase?.value ?: LivePhase.CONNECTING) }
+    }
+
+    private fun startLive() {
+        if (live != null && liveBinding == bindingId) return
+        stopLive()
+        liveBinding = bindingId
+        val coordinator = LiveCoordinator(viewModelScope, { api().liveEvents() }, ::refreshLive,
+            { failure(it) }, snapshotVersions::observe)
+        live = coordinator
+        liveObservation = viewModelScope.launch {
+            coordinator.phase.collect { phase -> mutable.update { it.copy(livePhase = phase) } }
+        }
+        coordinator.setForeground(foreground && network.value.connected)
+    }
+
+    private fun stopLive() {
+        liveObservation?.cancel(); liveObservation = null
+        live?.stop(); live = null; liveBinding = null
+        snapshotVersions.reset()
+        liveReading = false
+        mutable.update { it.copy(livePhase = LivePhase.DISCONNECTED) }
+    }
+
+    private suspend fun refreshLive(resources: Set<String>) {
+        state.first { !it.busy && !it.review.busy }
+        val current = generation; val epoch = network.value.epoch
+        checkRead(current, epoch)
+        val all = "*" in resources
+        val content = all || resources.any { it.startsWith("package:") } || "publication" in resources
+        // ponytail: serialize live snapshot batches; split by resource only if foreground reads become slow.
+        liveReading = true
+        mutable.update { it.copy(busy = true) }
+        try {
+            if (all || "setup" in resources || "settings" in resources) {
+                val setup = api().setup(); checkRead(current, epoch)
+                mutable.update { it.copy(setup = setup) }
+                if (state.value.step != null || state.value.destination == Destination.SETTINGS) {
+                    loadConfiguration(current)
+                    val required = setOf("schedule", "logo", "cards", "caption_template", "instagram") +
+                        if (state.value.destination == Destination.SETTINGS) setOf("reminders") else emptySet()
+                    check(state.value.configurationFresh.containsAll(required))
+                }
+            }
+            if (content || "dashboard" in resources) {
+                val dashboard = api().dashboard(); checkRead(current, epoch)
+                mutable.update { it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1,
+                    dashboardFetchedAt = now(), stale = false) }
+            }
+            if (content && (state.value.dashboard?.`package` != null || state.value.editor.snapshot != null || state.value.destination == Destination.PACKAGE)) loadEditor(current, explicit = !state.value.editor.dirty)
+            if ((all || "activity" in resources) && state.value.destination == Destination.ACTIVITY) {
+                val activity = api().activity(); checkRead(current, epoch)
+                require(activity.events.size <= 50)
+                mutable.update { it.copy(activity = activity, activityFetchedAt = now()) }
+            }
+            if (state.value.review.target != null && state.value.review.issue != ReviewIssue.UNCERTAIN && (content || "dashboard" in resources)) loadReview(current, reviewEpoch)
+            checkRead(current, epoch)
+            authoritativeEpoch = epoch
+            mutable.update { it.copy(authoritative = true) }
+            persistState(current)
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            if (generation == current) { mutable.update { it.copy(authoritative = false) }; failure(error) }
+            throw error
+        } finally { if (generation == current) { liveReading = false; mutable.update { it.copy(busy = false) } } }
+    }
+
+    override fun onCleared() { cleared = true; stopLive(); super.onCleared() }
 
     init {
         mutable.update { it.copy(
@@ -118,6 +261,7 @@ class AppViewModel(
             network.collect { status ->
                 if (status == observed) return@collect
                 observed = status
+                live?.setForeground(foreground && status.connected)
                 authoritativeEpoch = null
                 mutable.update { it.copy(networkConnected = status.connected, authoritative = false, configurationFresh = emptySet(),
                     stale = it.client != null, editor = it.editor.copy(readRequired = true),
@@ -129,7 +273,7 @@ class AppViewModel(
         refresh()
     }
 
-    private fun api() = DojoApi(state.value.origin, token, versionCode, http)
+    private fun api() = DojoApi(state.value.origin, token, versionCode, http, versions = snapshotVersions)
     private fun launch(pairing: Boolean = false, action: suspend (Int) -> Unit) {
         if (state.value.busy) return
         val current = generation
@@ -165,6 +309,7 @@ class AppViewModel(
     fun refresh() {
         if (state.value.origin.isBlank()) return
         launch { current -> boot(current) }
+        if (live?.phase?.value == LivePhase.SYNCING) live?.invalidate(setOf("*"))
     }
 
     private suspend fun boot(current: Int) {
@@ -212,6 +357,7 @@ class AppViewModel(
                 if (!network.value.connected) prompted = true
             }
         }
+        restoreEditorDraft(current, cached?.data?.editor?.`package`?.id)
         if (cached?.rejectedVersionCode == versionCode || cached?.compat?.let { UpdatePolicy.isOutdated(versionCode, it.androidMinVersionCode) } == true) {
             onSessionStopped(); mutable.update { it.copy(phase = Phase.UPDATE_REQUIRED, authoritative = false) }
         }
@@ -267,6 +413,8 @@ class AppViewModel(
         if (client.kind != "device" || client.revokedAt != null) throw ApiFailure(401)
         checkRead(current, epoch)
         mutable.update { it.copy(client = client) }
+        restoreEditorDraft(current, state.value.editor.snapshot?.`package`?.id)
+        startLive()
         val setup = api().setup()
         checkRead(current, epoch)
         var step = state.value.step
@@ -283,7 +431,7 @@ class AppViewModel(
             mutable.update {
                 val changedPackage = it.editor.snapshot?.`package` != dashboard.`package`
                 it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, dashboardFetchedAt = now(), authoritative = true, stale = false,
-                    editor = if (changedPackage) MediaEditorState() else it.editor,
+                    editor = if (changedPackage && it.editor.storedDraft == null) MediaEditorState() else it.editor,
                     editorFetchedAt = if (changedPackage) null else it.editorFetchedAt)
             }
             persistState(current)
@@ -377,11 +525,16 @@ class AppViewModel(
     }
 
     fun changeServer() {
+        val origin = state.value.origin; val binding = bindingId
         onSessionStopped()
         cancelWork(); token = null; prompted = false; clearSaved()
         bindingId = null
         val issue = try { store.setOrigin(""); null } catch (_: Exception) { UiIssue.STORAGE }
-        viewModelScope.launch(Dispatchers.IO) { runCatching { synchronized(store) { if (store.origin == null) snapshots?.clear() } } }
+        val current = generation
+        viewModelScope.launch(NonCancellable + Dispatchers.IO) { runCatching { synchronized(store) {
+            if (store.origin == null) snapshots?.clear()
+            if (binding != null) draftStore?.clearIdentity(origin, binding)
+        } }.onFailure { if (!cleared && current == generation) mutable.update { it.copy(issue = UiIssue.STORAGE) } } }
         mutable.value = AppUiState(issue = issue, networkConnected = network.value.connected)
     }
     fun observeSessionFailure(issue: UploadIssue, expectedBinding: String? = null) {
@@ -393,7 +546,7 @@ class AppViewModel(
             if (generation == current && bindingId == binding && store.revision.value == revision) failure(ApiFailure(status))
         }
     }
-    private fun cancelWork() { generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null; pendingPushRefresh = false; clearNotificationSaved() }
+    private fun cancelWork() { stopLive(); generation++; job?.cancel(); job = null; reviewEpoch++; reviewJob?.cancel(); reviewJob = null; pendingPushRefresh = false; clearNotificationSaved() }
     private fun invalidateSession() {
         if (bindingId != null || state.value.client != null) onSessionStopped()
         cancelWork(); token = null; bindingId = null; authoritativeEpoch = null; prompted = false; clearSaved()
@@ -420,7 +573,7 @@ class AppViewModel(
     private fun admit(step: String? = null, media: Boolean = false, busy: Boolean = true): Boolean {
         val value = state.value
         val status = network.value
-        return value.phase == Phase.READY && status.connected && authoritativeEpoch == status.epoch &&
+        return value.phase == Phase.READY && live?.phase?.value == LivePhase.LIVE && status.connected && authoritativeEpoch == status.epoch &&
             boundRevision == store.revision.value && bindingId != null && value.authoritative && (!busy || !value.busy) &&
             (step == null || step in value.configurationFresh) && (!media || (!value.editor.readRequired &&
                 value.editor.snapshot != null && value.editor.snapshot.`package` == value.dashboard?.`package` && value.editor.snapshot.`package`.status != "completed"))
@@ -434,6 +587,8 @@ class AppViewModel(
         if (state.value.phase != Phase.READY) return
         saved["destination"] = destination.name
         closeSetup(); mutable.update { it.copy(destination = destination) }
+        if (destination == Destination.ACTIVITY) live?.invalidate(setOf("activity"))
+        if (liveReading) { live?.invalidate(setOf("*")); return }
         if (destination == Destination.PACKAGE && network.value.connected) refreshEditor()
         if (destination == Destination.SETTINGS && network.value.connected) {
             if (state.value.busy) refreshRequested = true else launch { loadConfiguration(it) }
@@ -447,6 +602,7 @@ class AppViewModel(
     fun selectStep(key: String) {
         if (state.value.phase != Phase.READY) return
         saved["step"] = key; mutable.update { it.copy(step = key) }
+        if (liveReading) { live?.invalidate(setOf("settings")); return }
         if (network.value.connected) launch { loadConfiguration(it) }
     }
 
@@ -751,11 +907,16 @@ class AppViewModel(
             val snapshot = api().mediaEditor()
             checkRead(current, epoch)
             if (snapshot.`package` != state.value.dashboard?.`package`) {
-                mutable.update { it.copy(editor = MediaEditorState().copy(readRequired = true, issue = EditorIssue.CONFLICT), editorFetchedAt = null) }
+                mutable.update { it.copy(editor = it.editor.copy(readRequired = true, issue = EditorIssue.CONFLICT), editorFetchedAt = null) }
                 persistState(current)
                 return
             }
-            mutable.update { it.copy(editor = it.editor.accept(snapshot, explicit, expected, savedTrims), editorFetchedAt = now()) }
+            val old = state.value.editor
+            val accepted = old.accept(snapshot, explicit, expected, savedTrims)
+            mutable.update { it.copy(editor = accepted, editorFetchedAt = now()) }
+            if (old.storedDraft != accepted.storedDraft && draftStore != null) {
+                persistEditor(accepted, old.draftPackageId ?: old.snapshot?.`package`?.id ?: snapshot.`package`.id).await()
+            }
             persistState(current)
         } catch (e: ApiFailure) {
             checkSession(current)
@@ -773,18 +934,40 @@ class AppViewModel(
         }
     }
     fun editRanges(id: String, ranges: List<RangeInput>) {
-        if (!admit(media = true)) return
+        if (!admit(media = true) || state.value.editor.persistenceIssue != null) return
         if (state.value.editor.snapshot?.media?.none { it.mediaId == id && it.isVideo && it.status == "finalized" } != false) return
-        mutable.update { it.copy(editor = it.editor.edit(id, ranges)) }
+        persistEditor(state.value.editor.edit(id, ranges))
     }
-    fun discardMediaTrims() { if (admit(media = true)) mutable.update { it.copy(editor = it.editor.discard()) } }
+    fun discardMediaTrims() {
+        val editor = state.value.editor
+        if (!admit() || editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)) return
+        val clean = editor.discard()
+        val oldPackage = editor.draftPackageId
+        val packageId = editor.snapshot?.`package`?.id
+        if (oldPackage == null || packageId == null || oldPackage == packageId) {
+            persistEditor(clean)
+            return
+        }
+        val current = generation
+        viewModelScope.launch {
+            // Remove the replaced package's draft before binding this editor to the new package.
+            if (persistEditor(editor.copy(storedDraft = null, draftPackageId = oldPackage)).await()) {
+                if (generation == current) persistEditor(clean.copy(draftPackageId = packageId))
+            } else if (generation == current) {
+                mutable.update { it.copy(editor = editor.copy(persistenceIssue = it.editor.persistenceIssue)) }
+            }
+        }
+    }
     private fun mediaMutation(expected: ActiveEditorOut, savedTrims: Boolean = false, action: suspend (DojoApi, String) -> Unit) {
         val editor = state.value.editor
-        if (!admit(media = true) || editor.snapshot == null) return
+        if (!admit(media = true) || editor.snapshot == null || editor.persistenceIssue != null) return
         val epoch = network.value.epoch
         val folder = editor.snapshot.`package`.folderName
         launch { current ->
             try {
+                checkWrite(current, epoch, media = true)
+                val draft = editor.storedDraft ?: StoredDraft(folderName = folder, baseContentRevision = editor.snapshot.contentRevision)
+                if (!persistEditor(state.value.editor.copy(storedDraft = draft.copy(uncertain = true), draftPackageId = editor.draftPackageId ?: editor.snapshot.`package`.id)).await()) return@launch
                 checkWrite(current, epoch, media = true)
                 action(api(), folder)
                 checkSession(current)
@@ -802,27 +985,31 @@ class AppViewModel(
                     else -> EditorIssue.UNCERTAIN
                 }
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = issue != EditorIssue.INVALID, issue = issue)) }
+                if (e is ApiFailure && e.status in setOf(404, 409, 422)) {
+                    val retained = state.value.editor.storedDraft
+                    if (retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false))).await()
+                }
             }
         }
     }
     fun reorderMedia(order: List<String>) {
         val snapshot = state.value.editor.snapshot ?: return
         if (order == snapshot.montage.order || order.size != order.toSet().size || order.toSet() != snapshot.montage.order.toSet()) return
-        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(order = order))) { api, folder -> api.orderMedia(folder, order) }
+        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(order = order))) { api, folder -> api.orderMedia(folder, order, snapshot.packageRevision()) }
     }
     fun removeMedia(id: String) {
         val snapshot = state.value.editor.snapshot ?: return
         if (snapshot.media.none { it.mediaId == id && it.status == "finalized" }) return
         val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "removed") else it },
             montage = snapshot.montage.copy(order = snapshot.montage.order.filter { it != id }))
-        mediaMutation(expected) { api, folder -> api.removeMedia(folder, id) }
+        mediaMutation(expected) { api, folder -> api.removeMedia(folder, id, snapshot.packageRevision()) }
     }
     fun restoreMedia(id: String) {
         val snapshot = state.value.editor.snapshot ?: return
         val media = snapshot.media.find { it.mediaId == id && it.status == "removed" } ?: return
         val order = snapshot.montage.order.toMutableList().apply { add((media.removedPosition ?: size).coerceIn(0, size), id) }
         val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "finalized") else it }, montage = snapshot.montage.copy(order = order))
-        mediaMutation(expected) { api, folder -> api.restoreMedia(folder, id) }
+        mediaMutation(expected) { api, folder -> api.restoreMedia(folder, id, snapshot.packageRevision()) }
     }
     fun saveMediaTrims() {
         val editor = state.value.editor
@@ -830,7 +1017,12 @@ class AppViewModel(
         val snapshot = editor.snapshot ?: return
         val selections = editor.selections ?: return
         val removedSelections = snapshot.montage.selections.filterKeys { id -> snapshot.media.any { it.mediaId == id && it.status == "removed" } }
-        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(selections = removedSelections + selections)), savedTrims = true) { api, folder -> api.selectVideoRanges(folder, selections) }
+        val draft = editor.storedDraft ?: return
+        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(selections = removedSelections + selections)), savedTrims = true) { api, folder ->
+            api.savePackageEdits(PackageEditIn(baseContentRevision = draft.baseContentRevision,
+                changes = draft.groups.map { (key, group) -> GroupEditIn(base = group.base, key = key, proposed = group.proposed) },
+                expectedFolderName = folder, expectedPackageId = snapshot.`package`.id))
+        }
     }
     fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
     private fun clearNotificationSaved() { saved.keys().filter { it.startsWith("notification_") }.forEach { saved.remove<Any>(it) } }
@@ -920,6 +1112,7 @@ class AppViewModel(
         if (epoch != reviewEpoch || state.value.phase != Phase.READY) throw CancellationException("Review changed")
     }
     private fun reviewWork(mutation: Boolean = false, action: suspend (Int, Int) -> Unit) {
+        if (liveReading) { if (!mutation) live?.invalidate(setOf("publication")); return }
         if (state.value.phase != Phase.READY || !network.value.connected || state.value.review.busy || state.value.review.target == null ||
             mutation && (!admit() || state.value.stale)) return
         val current = generation
@@ -947,8 +1140,11 @@ class AppViewModel(
             }
         }
     }
-    fun refreshReview() { reviewWork { current, epoch -> loadReview(current, epoch) } }
-    fun pollReview() {
+    fun refreshReview() {
+        if (live?.phase?.value == LivePhase.SYNCING) { live?.invalidate(setOf("*")); return }
+        reviewWork { current, epoch -> loadReview(current, epoch) }
+    }
+    fun refreshReviewOnInvalidation() {
         val review = state.value.review
         if (review.target != null && !review.busy && review.issue == null &&
             (review.detail?.review?.status == "pending" || review.target.occurrenceId != null)) refreshReview()
@@ -1027,7 +1223,7 @@ class AppViewModel(
             mutable.update {
                 val changedPackage = it.editor.snapshot?.`package` != dashboard.`package`
                 it.copy(dashboard = dashboard, dashboardRevision = it.dashboardRevision + 1, dashboardFetchedAt = now(),
-                    editor = if (changedPackage) MediaEditorState() else it.editor,
+                    editor = if (changedPackage && it.editor.storedDraft == null) MediaEditorState() else it.editor,
                     editorFetchedAt = if (changedPackage) null else it.editorFetchedAt,
                     review = it.review.copy(readRequired = issue != null || pending?.state != "empty_package",
                 issue = issue, continuing = it.review.continuing && issue == null,
@@ -1114,7 +1310,7 @@ class AppViewModel(
                 mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.MEDIA_REQUIRED)) }; return@reviewWork
             }
             if (snapshot.renderStatus !in setOf("ready", "queued", "processing") || retry) {
-                try { api().renderPackage(requireNotNull(fresh.target?.packageFolder), retry) }
+                try { api().renderPackage(requireNotNull(fresh.target?.packageFolder), snapshot.packageRevision(), retry) }
                 catch (e: ApiFailure) {
                     if (e.status == 409) {
                         checkReview(current, epoch)

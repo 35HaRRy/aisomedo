@@ -26,10 +26,6 @@ import com.dojo.aisomedo.onboarding.OnboardingScreen
 import com.dojo.aisomedo.uploads.UploadRuntime
 import com.dojo.aisomedo.reviews.*
 import com.dojo.aisomedo.notifications.*
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
-import kotlinx.coroutines.delay
 
 @Composable fun DojoTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(), content = content)
@@ -39,12 +35,6 @@ import kotlinx.coroutines.delay
 @Composable fun DojoApp(model: AppViewModel, uploads: UploadRuntime? = null, push: PushRuntime? = null,
     onNotificationPermission: () -> Unit = {}, onNotificationSettings: () -> Unit = {}, openUrl: (String) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(lifecycle, state.phase, state.networkConnected, state.authoritative, state.review.target?.reviewId, state.review.target?.occurrenceId) {
-        if (state.phase == Phase.READY && state.networkConnected && state.authoritative && state.review.target != null) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) { delay(5000); model.pollReview() }
-        }
-    }
     val onPending: (com.dojo.aisomedo.api.DashboardActionOut, ReviewAction) -> Unit = { pending, action ->
         if (pending.reviewId != null) model.openReview(ReviewTarget(reviewId = pending.reviewId, packageFolder = pending.packageFolder, expectedVersion = pending.version, action = action))
         else if (pending.packageFolder != null) model.openReview(ReviewTarget(occurrenceId = pending.occurrenceId, packageFolder = pending.packageFolder, action = action))
@@ -79,11 +69,14 @@ import kotlinx.coroutines.delay
                         if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite })
                         state.issue?.let { Text(stringResource(issueLabel(it)), color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive }) }
-                        if (ready && (!state.networkConnected || !state.authoritative)) Surface(
+                        if (state.showConnectionNotice) Surface(
                             color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium,
                             modifier = Modifier.fillMaxWidth().testTag("offline-notice")) {
-                            Text(stringResource(if (state.networkConnected) R.string.backend_unavailable_notice else R.string.offline_notice),
-                                modifier = Modifier.padding(16.dp).semantics { liveRegion = LiveRegionMode.Polite })
+                            Column(Modifier.padding(16.dp)) {
+                                Text(stringResource(if (state.networkConnected) R.string.backend_unavailable_notice else R.string.offline_notice),
+                                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                                OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
+                            }
                         }
                         if (!ready) StartupScreen(state, model, openUrl)
                         else if (state.review.target != null && state.review.target?.action != ReviewAction.UPLOAD) ReviewScreen(state.review, state.canMutate && !state.stale,
@@ -105,13 +98,15 @@ import kotlinx.coroutines.delay
                                 Heading(R.string.active_package); PackageSummary(state.dashboard)
                                 LastFetchedAt(state.dashboardFetchedAt, "package-fetched-at")
                                 LastFetchedAt(state.editorFetchedAt, "editor-fetched-at")
-                                if (state.editor.snapshot == null && state.editorFetchedAt == null && (state.dashboardFetchedAt == null || state.dashboard?.`package` != null)) {
+                                if (state.editor.snapshot == null && state.editor.storedDraft == null && state.editor.persistenceIssue == null && state.editorFetchedAt == null && (state.dashboardFetchedAt == null || state.dashboard?.`package` != null)) {
                                     Text(stringResource(R.string.cache_unavailable))
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
                                 } else MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
                                     model::removeMedia, model::restoreMedia, model::editRanges, model::saveMediaTrims, model::discardMediaTrims,
                                     canMutate = state.canEditMedia, onPreview = model::downloadMediaPreview,
-                                    previewEnabled = state.networkConnected && state.authoritative)
+                                    previewEnabled = state.networkConnected && state.authoritative,
+                                    canResolve = state.canMutate, onResolveConflict = model::resolveMediaConflict,
+                                    onRetryPersistence = model::retryEditorPersistence)
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val runningSinceMillis by uploads.runningSinceMillis.collectAsStateWithLifecycle()

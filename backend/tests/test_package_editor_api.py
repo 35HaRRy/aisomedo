@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from threading import Event
 from urllib.parse import quote
 
@@ -13,11 +15,12 @@ from dojo.adapters.stubs import StubMediaProcessor, StubReelRenderer
 from dojo.model import BrandingConfig
 from dojo.testing import FIXED_AT, FakeClock, complete_confirmed_package
 from fastapi.testclient import TestClient
+from live_helpers import include_displayed_revision
 
 from backend.main import create_app
 
 
-def app(tmp_path, *, kind="browser", finalize=True):
+def app(tmp_path, *, kind="browser", finalize=True, include_revision=True):
     store = InMemoryStore()
     publishing = DojoPublishing(
         packages=store, audit=store, settings=store, media_root=tmp_path, clock=FakeClock(),
@@ -30,6 +33,8 @@ def app(tmp_path, *, kind="browser", finalize=True):
     setup = DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock())
     client = TestClient(create_app(publishing, pairing, DojoActivity(audit=store, pairing=store),
                                    setup, cookie_secure=False))
+    if include_revision:
+        include_displayed_revision(client, publishing)
     code = pairing.create_pairing_code(requester="cli").raw_code
     paired = client.post("/api/pairing/validate", json={
         "code": code, "name": "Editor", "kind": kind,
@@ -53,6 +58,72 @@ def app(tmp_path, *, kind="browser", finalize=True):
 def body(publishing, mid):
     return {"expected_folder_name": publishing.get_active_package().folder_name,
             "selections": {mid: [{"start": 0.0, "end": 5.0}, {"start": 10.0, "end": 15.0}]}}
+
+
+def test_grouped_edit_returns_revision_and_structured_conflict(tmp_path):
+    client, publishing, _, _, mid = app(tmp_path)
+    snapshot = client.get("/api/packages/active/editor").json()
+    package = snapshot["package"]
+    command = {
+        "expected_package_id": package["id"], "expected_folder_name": package["folder_name"],
+        "base_content_revision": snapshot.get("content_revision", 1),
+        "changes": [{"key": f"video:{mid}", "base": {"ranges": []},
+                     "proposed": {"ranges": [{"start": 0, "end": 5}]}}],
+    }
+    saved = client.put("/api/packages/active/edits", json=command)
+    assert saved.status_code == 200
+    assert saved.json()["content_revision"] > command["base_content_revision"]
+    command["changes"][0]["proposed"]["ranges"][0]["end"] = 6
+    rejected = client.put("/api/packages/active/edits", json=command)
+    assert rejected.status_code == 409
+    detail = rejected.json()["detail"]
+    assert detail["code"] == "edit_conflict"
+    assert detail["content_revision"] == saved.json()["content_revision"]
+    assert detail["conflicts"] == [{"key": f"video:{mid}", "current": {
+        "ranges": [{"start": 0, "end": 5}],
+    }}]
+
+
+def test_existing_selection_route_requires_displayed_revision(tmp_path):
+    client, publishing, _, _, mid = app(tmp_path, include_revision=False)
+    response = client.put("/api/packages/active/selections", json=body(publishing, mid))
+    assert response.status_code == 428
+
+
+def test_existing_selection_route_rejects_stale_revision(tmp_path):
+    client, publishing, _, _, mid = app(tmp_path, include_revision=False)
+    snapshot = client.get("/api/packages/active/editor").json()
+    publishing.set_caption("changed externally")
+    response = client.put("/api/packages/active/selections", json=body(publishing, mid),
+                          headers={"If-Match": f'"{snapshot["package"]["id"]}:'
+                                               f'{snapshot["content_revision"]}"'})
+    assert response.status_code == 409
+    assert publishing.get_montage_status().selections == {}
+
+
+def test_conditional_guard_and_command_share_worker_context(tmp_path, monkeypatch):
+    client, publishing, _, _, _ = app(tmp_path)
+    held = ContextVar("guard_held", default=False)
+    original_guard = publishing.conditional_package_operation
+    original_caption = publishing.set_caption
+
+    @contextmanager
+    def guarded(*args, **kwargs):
+        with original_guard(*args, **kwargs):
+            token = held.set(True)
+            try:
+                yield
+            finally:
+                held.reset(token)
+
+    def caption(*args, **kwargs):
+        assert held.get(), "guard context must reach the command on the same worker"
+        return original_caption(*args, **kwargs)
+
+    monkeypatch.setattr(publishing, "conditional_package_operation", guarded)
+    monkeypatch.setattr(publishing, "set_caption", caption)
+    response = client.put("/api/packages/active/caption", json={"caption": "guarded"})
+    assert response.status_code == 200
 
 
 @pytest.mark.parametrize("kind", ["browser", "device"])
@@ -205,7 +276,7 @@ def test_unknown_nonfinite_duration_is_readable_without_json_failure(tmp_path):
     path = tmp_path / publishing.get_active_package().folder_name / "manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["media"][0]["processed"]["duration"] = float("nan")
-    path.write_text(json.dumps(manifest), encoding="utf-8")
+    publishing._write_manifest(publishing.get_active_package(), manifest)
     response = client.get("/api/packages/active/editor")
     assert response.status_code == 200
     assert response.json()["montage"]["duration_complete"] is False

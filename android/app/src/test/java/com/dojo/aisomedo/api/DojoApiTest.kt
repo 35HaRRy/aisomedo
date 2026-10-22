@@ -16,6 +16,40 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 class DojoApiTest {
+    @Test fun lateSnapshotCannotReplaceNewerAcceptedOrObservedResourceVersion() = runBlocking {
+        MockWebServer().use { server ->
+            val versions = SnapshotVersions()
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, OkHttpClient(), versions = versions)
+            server.enqueue(MockResponse().setHeader("X-Resource-Key", "dashboard").setHeader("X-Resource-Version", "1")
+                .setBody("{\"value\":\"old\"}").setBodyDelay(300, TimeUnit.MILLISECONDS))
+            server.enqueue(MockResponse().setHeader("X-Resource-Key", "dashboard").setHeader("X-Resource-Version", "2")
+                .setBody("{\"value\":\"new\"}"))
+            val old = async { runCatching { api.request("GET", "/api/dashboard") } }
+            withContext(Dispatchers.IO) { assertNotNull(server.takeRequest(2, TimeUnit.SECONDS)) }
+            assertEquals("new", api.request("GET", "/api/dashboard").jsonObject.getValue("value").jsonPrimitive.content)
+            assertTrue(old.await().exceptionOrNull() is SnapshotSuperseded)
+            versions.observe(mapOf("dashboard" to 3L))
+            server.enqueue(MockResponse().setHeader("X-Resource-Key", "dashboard").setHeader("X-Resource-Version", "2").setBody("{}"))
+            assertTrue(runCatching { api.request("GET", "/api/dashboard") }.exceptionOrNull() is SnapshotSuperseded)
+            assertEquals(3, server.requestCount)
+        }
+    }
+    @Test fun editConflictRemainsStructuredWithoutReplayingMutation() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(409).setBody("""{"detail":{
+                "code":"edit_conflict","content_revision":7,"conflicts":[
+                {"key":"video:a","current":{"ranges":[{"start":0,"end":5}]}}]}}"""))
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE", 5, OkHttpClient())
+            val failure = runCatching {
+                api.request("PUT", "/api/packages/active/edits", buildJsonObject {})
+            }.exceptionOrNull() as ApiFailure
+            assertEquals(409, failure.status)
+            assertEquals(7L, failure.editConflict?.contentRevision)
+            assertEquals("video:a", failure.editConflict?.conflicts?.single()?.key)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
     @Test fun uploadRequestsWaitWithoutTransferDeadlinesButKeepConnectionDeadline() = runBlocking {
         MockWebServer().use { server ->
             val deadlines = CopyOnWriteArrayList<List<Long>>()
@@ -185,7 +219,7 @@ class DojoApiTest {
     @Test fun diagnosticsRedactCredentialsQueriesAndDynamicPaths() = runBlocking {
         MockWebServer().use { server ->
             val logs = CopyOnWriteArrayList<String>()
-            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE-SECRET", 5, OkHttpClient(), logs::add)
+            val api = DojoApi(server.url("/").toString().trimEnd('/'), "DEVICE-SECRET", 5, OkHttpClient(), diagnostic = logs::add)
             server.enqueue(MockResponse().setResponseCode(503).setBody("""{"detail":"RESPONSE-SECRET"}"""))
             val failure = runCatching {
                 api.request("POST", "/api/media/uploads/UPLOAD-SECRET/resolve?token=QUERY-SECRET",
@@ -210,7 +244,7 @@ class DojoApiTest {
             attempts.incrementAndGet()
             throw java.net.SocketTimeoutException("TRANSPORT-SECRET")
         }.build()
-        val api = DojoApi("https://example.test", "DEVICE-SECRET", 5, http, logs::add)
+        val api = DojoApi("https://example.test", "DEVICE-SECRET", 5, http, diagnostic = logs::add)
         assertEquals(0, (runCatching { api.request("POST", "/api/test") }.exceptionOrNull() as ApiFailure).status)
         assertTrue(logs.any { it.contains("stage=failed") && it.contains("error=SocketTimeoutException") })
         assertFalse(logs.any { it.contains("TRANSPORT-SECRET") || it.contains("DEVICE-SECRET") })
@@ -333,7 +367,7 @@ class DojoApiTest {
             assertEquals("/api/reviews/occurrences/2/reschedule", reschedule.path)
             assertEquals("active", Json.parseToJsonElement(reschedule.body.readUtf8()).jsonObject["expected_folder_name"]!!.jsonPrimitive.content)
             server.enqueue(MockResponse().setBody("""{"render_revision":"exact","stale":true}"""))
-            assertEquals("exact", api.renderPackage("active").renderRevision)
+            assertEquals("exact", api.renderPackage("active", PackageRevision(1, 1)).renderRevision)
             val render = server.takeRequest()
             assertEquals("/api/packages/active/render", render.path)
             assertEquals("active", Json.parseToJsonElement(render.body.readUtf8()).jsonObject["expected_folder_name"]!!.jsonPrimitive.content)
@@ -364,9 +398,9 @@ class DojoApiTest {
         MockWebServer().use { server ->
             val api = DojoApi(server.url("/").toString().trimEnd('/'), "SYNTHETIC", 5, OkHttpClient())
             repeat(3) { server.enqueue(MockResponse().setBody("{}")) }
-            api.removeMedia("folder +/", "id/+?")
-            api.restoreMedia("folder +/", "id/+?")
-            api.selectVideoRanges("folder +/", mapOf("id/+?" to listOf(VideoRangeOut(start = 1.0, end = 2.0))))
+            api.removeMedia("folder +/", "id/+?", PackageRevision(1, 1))
+            api.restoreMedia("folder +/", "id/+?", PackageRevision(1, 1))
+            api.selectVideoRanges("folder +/", mapOf("id/+?" to listOf(VideoRangeOut(start = 1.0, end = 2.0))), PackageRevision(1, 1))
             val remove = server.takeRequest()
             assertEquals("/api/packages/active/media/id%2F%2B%3F/remove", remove.requestUrl!!.encodedPath)
             assertEquals("folder +/", remove.requestUrl!!.queryParameter("expected_folder_name"))

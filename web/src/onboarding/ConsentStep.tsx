@@ -10,7 +10,7 @@ export function ConsentStep({ onSaved, readOnly = false }: { onSaved: () => void
     try { return { policy: await api.consent(signal) }; }
     catch (failure) { if (failure instanceof ApiError && failure.status === 404) return { policy: null }; throw failure; }
   }, []);
-  const snapshot = useLiveData(load);
+  const snapshot = useLiveData(load, true, ["setup"]);
   const [acknowledgedVersion, setAcknowledgedVersion] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

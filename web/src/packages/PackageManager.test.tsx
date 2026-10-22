@@ -7,6 +7,7 @@ import { PackageManager } from "./PackageManager";
 import { editorServer } from "./testFixtures";
 
 it("completed view uses draft decision and cancel keeps editor mounted", async () => {
+  window.location.hash = "#/package";
   localStorage.clear(); const server = editorServer();
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => url === "/api/packages" ? server.json([]) : server.fetcher(url, init));
   render(<SessionProvider><PackageEditorProvider><UploadProvider onPackageChanged={() => {}}><PackageManager /></UploadProvider></PackageEditorProvider></SessionProvider>);

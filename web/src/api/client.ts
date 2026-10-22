@@ -1,14 +1,39 @@
 import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn, ActiveEditorOut, CompletedPackageOut, SelectionIn, MontageOut, PackageOut, ClearPackageIn, ClearPackageOut, RenderOut } from "./openapi";
 import type { ApproveIn, SkipIn, RescheduleIn, ReviewDetailOut } from "./openapi";
 import type { ReminderPolicyIn, ReminderPolicyOut } from "./openapi";
+import type { PackageEditIn, EditConflictOut } from "./openapi";
+
+export type PackagePrecondition = { package: { id: number }; content_revision: number };
+const packageHeaders = (expected: PackagePrecondition) => ({ "If-Match": `"${expected.package.id}:${expected.content_revision}"` });
+
+function editConflict(value: unknown): EditConflictOut | undefined {
+  if (!value || typeof value !== "object") return;
+  const body = value as Partial<EditConflictOut>;
+  if (body.code !== "edit_conflict" || !Number.isSafeInteger(body.content_revision) || Number(body.content_revision) < 1 || !Array.isArray(body.conflicts)) return;
+  if (body.conflicts.some(group => !group || typeof group.key !== "string" || !group.current || typeof group.current !== "object" || Array.isArray(group.current))) return;
+  return body as EditConflictOut;
+}
 
 export type PublicationOutcome = { status: string; error: string | null };
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, public readonly detail?: string) { super(`api:${status}`); }
+  constructor(public readonly status: number, public readonly detail?: string, public readonly conflict?: EditConflictOut) { super(`api:${status}`); }
+}
+
+export class SupersededRead extends ApiError {
+  readonly superseded = true;
+  constructor() { super(0); }
+}
+const resourceVersions = new Map<string, number>();
+const versionsByRead = new WeakMap<AbortSignal, Map<string, number>>();
+let readEpoch = 0;
+export function resetResourceVersions() { readEpoch++; resourceVersions.clear(); }
+export function responseVersions(signal: AbortSignal): ReadonlyMap<string, number> {
+  return versionsByRead.get(signal) ?? new Map();
 }
 
 export async function request<T>(path: string, init: RequestInit = {}, timeoutMs = 10000): Promise<T> {
+  const epoch = readEpoch;
   const controller = new AbortController();
   const cancel = () => controller.abort();
   if (init.signal?.aborted) throw new DOMException("", "AbortError");
@@ -22,14 +47,32 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
     if (controller.signal.aborted) throw new DOMException("", "AbortError");
     if (!response.ok) {
       let detail: string | undefined;
+      let conflict: EditConflictOut | undefined;
       try {
         const body: unknown = await response.json();
-        if (body && typeof body === "object" && "detail" in body && typeof body.detail === "string") detail = body.detail;
+        if (body && typeof body === "object" && "detail" in body) {
+          if (typeof body.detail === "string") detail = body.detail;
+          else if (response.status === 409) conflict = editConflict(body.detail);
+        }
       } catch { /* Status survives malformed/non-JSON responses. */ }
       if (controller.signal.aborted) throw new DOMException("", "AbortError");
-      throw new ApiError(response.status, detail);
+      throw new ApiError(response.status, detail, conflict);
     }
-    return response.status === 204 ? undefined as T : await response.json() as T;
+    const value = response.status === 204 ? undefined as T : await response.json() as T;
+    if (controller.signal.aborted) throw new DOMException("", "AbortError");
+    if (epoch !== readEpoch) throw new SupersededRead();
+    const key = response.headers.get("X-Resource-Key"), rawVersion = response.headers.get("X-Resource-Version");
+    if (key !== null || rawVersion !== null) {
+      const version = Number(rawVersion);
+      if (!key || rawVersion === null || !Number.isSafeInteger(version) || version < 0) throw new ApiError(0);
+      if (version < (resourceVersions.get(key) ?? 0)) throw new SupersededRead();
+      resourceVersions.set(key, version);
+      if (init.signal) {
+        const versions = versionsByRead.get(init.signal) ?? new Map<string, number>();
+        versions.set(key, Math.max(versions.get(key) ?? 0, version)); versionsByRead.set(init.signal, versions);
+      }
+    }
+    return value;
   } catch (error) {
     if (init.signal?.aborted) throw new DOMException("", "AbortError");
     throw error instanceof ApiError ? error : new ApiError(0);
@@ -45,12 +88,13 @@ export const api = {
   skipReview: (id: number, body: SkipIn, signal?: AbortSignal) => request<{ next_regular_at: string | null }>(`/api/reviews/${id}/skip`, { method: "POST", body: JSON.stringify(body), signal }),
   rescheduleReview: (id: number, body: RescheduleIn, signal?: AbortSignal) => request(`/api/reviews/${id}/reschedule`, { method: "POST", body: JSON.stringify(body), signal }),
   packageEditor: (signal?: AbortSignal) => request<ActiveEditorOut>("/api/packages/active/editor", { signal }),
-  clearPackage: (body: ClearPackageIn, signal?: AbortSignal) => request<ClearPackageOut>("/api/packages/active/clear", { method: "POST", body: JSON.stringify(body), signal }, 120000),
-  renderPackage: (folder: string, retry: boolean, signal?: AbortSignal) => request<RenderOut>("/api/packages/active/render", { method: "POST", body: JSON.stringify({ expected_folder_name: folder, retry }), signal }),
-  saveSelections: (body: SelectionIn, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/selections", { method: "PUT", body: JSON.stringify(body), signal }),
-  saveOrder: (order: string[], expectedFolder: string, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/order", { method: "PUT", body: JSON.stringify({ order, expected_folder_name: expectedFolder }), signal }),
-  removeMedia: async (id: string, expectedFolder: string, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/remove?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", signal }); },
-  restoreMedia: async (id: string, expectedFolder: string, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/restore?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", signal }); },
+  savePackageEdits: (body: PackageEditIn, signal?: AbortSignal) => request<ActiveEditorOut>("/api/packages/active/edits", { method: "PUT", body: JSON.stringify(body), signal }),
+  clearPackage: (body: ClearPackageIn, expected: PackagePrecondition, signal?: AbortSignal) => request<ClearPackageOut>("/api/packages/active/clear", { method: "POST", body: JSON.stringify(body), headers: packageHeaders(expected), signal }, 120000),
+  renderPackage: (folder: string, retry: boolean, expected: PackagePrecondition, signal?: AbortSignal) => request<RenderOut>("/api/packages/active/render", { method: "POST", body: JSON.stringify({ expected_folder_name: folder, retry }), headers: packageHeaders(expected), signal }),
+  saveSelections: (body: SelectionIn, expected: PackagePrecondition, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/selections", { method: "PUT", body: JSON.stringify(body), headers: packageHeaders(expected), signal }),
+  saveOrder: (order: string[], expectedFolder: string, expected: PackagePrecondition, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/order", { method: "PUT", body: JSON.stringify({ order, expected_folder_name: expectedFolder }), headers: packageHeaders(expected), signal }),
+  removeMedia: async (id: string, expectedFolder: string, expected: PackagePrecondition, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/remove?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", headers: packageHeaders(expected), signal }); },
+  restoreMedia: async (id: string, expectedFolder: string, expected: PackagePrecondition, signal?: AbortSignal): Promise<void> => { await request(`/api/packages/active/media/${encodeURIComponent(id)}/restore?expected_folder_name=${encodeURIComponent(expectedFolder)}`, { method: "POST", headers: packageHeaders(expected), signal }); },
   completedPackages: (signal?: AbortSignal) => request<PackageOut[]>("/api/packages", { signal }),
   completedPackage: (folder: string, signal?: AbortSignal) => request<CompletedPackageOut>(`/api/packages/${encodeURIComponent(folder)}`, { signal }),
   uploadLimits: (signal?: AbortSignal) => request<UploadLimitsOut>("/api/media/upload-limits", { signal }),

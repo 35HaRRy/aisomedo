@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
                 AppViewModel(uploads.sessionStore,
                     OkHttpClient(), packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt(),
                     BuildConfig.DEBUG, createSavedStateHandle(), uploads.snapshots, uploads.network.state,
+                    draftStore = com.dojo.aisomedo.editor.DraftStore(noBackupFilesDir.resolve("editor-drafts")),
                     onSessionStopped = { uploads.stopSession(); push.stopSession() })
             }
         })[AppViewModel::class.java]
@@ -91,10 +92,15 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         if (::model.isInitialized) {
+            model.setForeground(true)
             model.refresh()
             lifecycleScope.launch { uploads.refresh() }
             push.refresh()
         }
+    }
+    override fun onStop() {
+        if (::model.isInitialized) model.setForeground(false)
+        super.onStop()
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

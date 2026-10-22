@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { packageSnapshot } from "../src/packages/testFixtures";
 import { client, dashboard, setupState } from "../src/test/fixtures";
+import { installLiveStream } from "./live-fixture";
 
 const bytes = readFileSync(fileURLToPath(new URL("./fixtures/timeline.mp4", import.meta.url)));
 async function fixture(page: Page, photo = false) {
+  await installLiveStream(page);
   const snapshot = packageSnapshot(); const writes: unknown[] = [], errors: string[] = [];
   let cleared = false;
   if (photo) {
@@ -42,7 +44,20 @@ async function fixture(page: Page, photo = false) {
         snapshot.render_preview_url = "/api/packages/active/render/preview?revision=saved";
         return json({ stale: true, render_revision: "saved" });
       }
-      if (path.endsWith("/selections")) snapshot.montage.selections = body.selections;
+      if (path.endsWith("/edits")) {
+        if (body.base_content_revision !== snapshot.content_revision) return json({}, 409);
+        // Grouped edits return the authoritative editor snapshot.
+        for (const change of body.changes) {
+          const id = change.key.slice(change.key.indexOf(":") + 1);
+          if (change.key.startsWith("video:")) snapshot.montage.selections[id] = change.proposed.ranges;
+          else if (change.key.startsWith("photo:")) {
+            const media = snapshot.media.find(m => m.media_id === id);
+            if (media) media.effective_duration = change.proposed.seconds;
+          }
+        }
+        snapshot.content_revision += 1;
+      }
+      else if (path.endsWith("/selections")) snapshot.montage.selections = body.selections;
       else if (path.endsWith("/order")) snapshot.montage.order = body.order;
       else {
         const media = snapshot.media.find(m => path.includes(`/media/${m.media_id}/`));
@@ -55,7 +70,8 @@ async function fixture(page: Page, photo = false) {
         ? snapshot.montage.selections[media.media_id]?.reduce((sum, r) => sum + r.end - r.start, 0) ?? 30
         : body.photo_durations?.[media.media_id] ?? media.effective_duration;
       snapshot.montage.combined_duration = snapshot.media.filter(m => m.status === "finalized").reduce((sum, m) => sum + (m.effective_duration ?? 0), 0);
-      snapshot.render_stale = true; snapshot.render_status = "stale"; snapshot.render_preview_url = null; return json(snapshot.montage);
+      snapshot.render_stale = true; snapshot.render_status = "stale"; snapshot.render_preview_url = null;
+      return json(path.endsWith("/edits") ? snapshot : snapshot.montage);
     }
     errors.push(`unexpected API call ${method} ${path}`); return json({}, 404);
   });

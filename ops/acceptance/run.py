@@ -21,6 +21,7 @@ from cryptography.x509.oid import NameOID
 ROOT = Path(__file__).resolve().parents[2]
 CASES = {
     "scheduled publication preserves reviewed artifact", "manual publication preserves cadence",
+    "live profiles merge drafts and recover without polling through the gateway",
 }
 
 
@@ -48,8 +49,8 @@ def validate_report(path: Path) -> None:
 
     for suite in report.get("suites", []):
         walk(suite)
-    if len(specs) != 2 or {s.get("title") for s in specs} != CASES or report.get("errors"):
-        raise ValueError("acceptance must execute both named cases without errors")
+    if len(specs) != len(CASES) or {s.get("title") for s in specs} != CASES or report.get("errors"):
+        raise ValueError("acceptance must execute every named case without errors")
     for spec in specs:
         tests = spec.get("tests", [])
         if len(tests) != 1 or tests[0].get("expectedStatus") != "passed":

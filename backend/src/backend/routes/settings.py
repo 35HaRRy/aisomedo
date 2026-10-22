@@ -15,10 +15,11 @@ from dojo import (
     ReminderPolicyInvalid,
     SchedulePlan,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -85,7 +86,9 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("/branding", response_model=BrandingDefaultsOut)
+@versioned_snapshot("settings")
 def get_branding_defaults(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> BrandingDefaultsOut:
@@ -129,7 +132,9 @@ def patch_branding_defaults(
 
 
 @router.get("/plan", response_model=PlanOut)
+@versioned_snapshot("settings")
 def get_plan(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> PlanOut:
@@ -172,7 +177,9 @@ def manual_publish(
 
 
 @router.get("/reminders", response_model=ReminderPolicyOut)
+@versioned_snapshot("settings")
 def get_reminders(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> ReminderPolicyOut:

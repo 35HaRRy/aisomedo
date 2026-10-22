@@ -56,9 +56,12 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     canMutate: Boolean = true,
     onPreview: suspend (String, File) -> Unit = { _, _ -> },
     previewEnabled: Boolean = true,
+    canResolve: Boolean = canMutate,
+    onResolveConflict: (String, Boolean) -> Unit = { _, _ -> },
+    onRetryPersistence: () -> Unit = {},
 ) {
     val snapshot = editor.snapshot
-    val blocked = !canMutate || busy || editor.readRequired || snapshot?.`package`?.status == "completed"
+    val blocked = !canMutate || busy || editor.readRequired || editor.persistenceIssue != null || snapshot?.`package`?.status == "completed"
     val order = snapshot?.montage?.order.orEmpty()
     val byId = snapshot?.media.orEmpty().associateBy { it.mediaId }
     val ordered = order.mapNotNull(byId::get).filter { it.status == "finalized" }
@@ -102,6 +105,31 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     Column(Modifier.widthIn(max = 640.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SectionHeading(R.string.media_management)
         OutlinedButton(onClick = onRefresh, enabled = !busy) { Text(stringResource(R.string.refresh)) }
+        editor.persistenceIssue?.let { issue ->
+            Text(stringResource(if (issue == DraftIssue.STORAGE) R.string.draft_storage_failed else R.string.draft_corrupt),
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag("draft-storage-warning").semantics { liveRegion = LiveRegionMode.Assertive })
+            if (issue == DraftIssue.STORAGE) OutlinedButton(onClick = onRetryPersistence, enabled = !busy && canResolve,
+                modifier = Modifier.testTag("draft-storage-retry")) { Text(stringResource(R.string.draft_storage_retry)) }
+        }
+        if (editor.storedDraft != null && (snapshot == null || editor.storedDraft.folderName != snapshot.`package`.folderName || snapshot.`package`.status != "active")) {
+            Text(stringResource(R.string.draft_inapplicable, editor.storedDraft.folderName), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        }
+        for ((key, server) in editor.conflicts) {
+            val id = key.substringAfter(':')
+            Text(stringResource(R.string.draft_conflict, byId[id]?.filename ?: id), style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.testTag("draft-conflict-$key").semantics { liveRegion = LiveRegionMode.Polite })
+            Text(stringResource(R.string.draft_local_values, editor.inputs[id].orEmpty().joinToString("; ") { "${it.start}–${it.end} s" }))
+            val ranges = (server["ranges"] as? kotlinx.serialization.json.JsonArray)?.joinToString("; ") { row ->
+                val range = row as? kotlinx.serialization.json.JsonObject
+                "${range?.get("start")}–${range?.get("end")} s"
+            }
+            Text(stringResource(R.string.draft_server_values, ranges?.ifEmpty { stringResource(R.string.range_whole) } ?: stringResource(R.string.media_no_active)))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onResolveConflict(key, true) }, enabled = canResolve && !busy && "status" !in server && editor.persistenceIssue == null) { Text(stringResource(R.string.draft_use_local)) }
+                OutlinedButton(onClick = { onResolveConflict(key, false) }, enabled = canResolve && !busy && editor.persistenceIssue == null) { Text(stringResource(R.string.draft_use_server)) }
+            }
+        }
         editor.issue?.let { issue -> Text(stringResource(when (issue) {
             EditorIssue.READ -> R.string.media_read_failed; EditorIssue.CONFLICT -> R.string.media_changed
             EditorIssue.INVALID -> R.string.media_invalid; EditorIssue.LIMIT -> R.string.media_limit_failed
@@ -119,7 +147,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
             Text(stringResource(if (editor.dirty) R.string.media_unsaved else R.string.media_saved), style = MaterialTheme.typography.bodySmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onSave, enabled = !blocked && editor.canSave, modifier = Modifier.testTag("media-save")) { Text(stringResource(R.string.media_save)) }
-                TextButton(onClick = onDiscard, enabled = !blocked && editor.dirty) { Text(stringResource(R.string.media_discard)) }
+                TextButton(onClick = onDiscard, enabled = canResolve && !busy && editor.dirty && !(editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN))) { Text(stringResource(R.string.media_discard)) }
             }
             Text(stringResource(R.string.media_drag_help), style = MaterialTheme.typography.bodySmall)
             ordered.forEachIndexed { index, media -> key(media.mediaId) {

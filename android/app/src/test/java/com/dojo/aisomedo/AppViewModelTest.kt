@@ -67,13 +67,16 @@ class AppViewModelTest {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     seen.add("${request.method} ${request.path}")
+                    if (request.path == "/api/events") return MockResponse().setHeader("Content-Type", "text/event-stream")
+                        .setBody("event: ready\ndata: {\"protocol\":1}\n\n" + "event: heartbeat\ndata: {}\n\n".repeat(20_000))
+                        .throttleBody(64, 100, TimeUnit.MILLISECONDS)
                     if (request.method == "PUT" && request.path == "/api/settings/reminders" && (codes[request.path] ?: 200) == 200) {
                         val input = kotlinx.serialization.json.Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject
                         bodies[request.path!!] = kotlinx.serialization.json.JsonObject(input +
                             ("timezone" to kotlinx.serialization.json.JsonPrimitive("Europe/Istanbul"))).toString()
                     }
                     return MockResponse().setResponseCode(codes[request.path] ?: 200)
-                        .setBody(bodies[request.path] ?: "{}")
+                        .setBody(if (request.path == "/api/packages/active/edits") bodies.getValue("/api/packages/active/editor") else bodies[request.path] ?: "{}")
                         .also { if (request.path == delayPath) it.setBodyDelay(1, TimeUnit.SECONDS) }
                 }
             }
@@ -81,22 +84,132 @@ class AppViewModelTest {
             origin = server.url("/").toString().trimEnd('/')
             if (configure) store.setOrigin(origin)
             if (paired) store.saveToken(origin, "DEVICE")
-            model = AppViewModel(store, OkHttpClient(), 1, true, saved, network = network) {
+            model = AppViewModel(store, OkHttpClient(), 1, true, saved, network = network, draftStore = DraftStore(dir.resolve("drafts"))) {
                 stopped++
                 tokenAtStop = store.readToken(origin)
             }
+            model.setForeground(true)
             owner.put("model", model)
         }
         fun await(predicate: (AppUiState) -> Boolean) {
-            repeat(500) { main.scheduler.runCurrent(); if (predicate(model.state.value)) return; Thread.sleep(10) }
+            repeat(500) {
+                main.scheduler.runCurrent()
+                val state = model.state.value
+                val synchronizing = state.phase == Phase.READY && state.networkConnected && state.issue == null &&
+                    state.livePhase in setOf(com.dojo.aisomedo.live.LivePhase.CONNECTING, com.dojo.aisomedo.live.LivePhase.SYNCING)
+                if (predicate(state) && !synchronizing) return
+                Thread.sleep(10)
+            }
             fail("State did not arrive: ${model.state.value}")
         }
         fun recreate() {
             owner.clear()
-            model = AppViewModel(store, OkHttpClient(), 1, true, saved, network = network)
+            model = AppViewModel(store, OkHttpClient(), 1, true, saved, network = network, draftStore = DraftStore(dir.resolve("drafts")))
+            model.setForeground(true)
             owner.put("model", model)
         }
         override fun close() { owner.clear(); server.shutdown(); dir.deleteRecursively() }
+    }
+
+    @Test fun cachedAuthorityCannotAdmitWithoutLiveSynchronization() {
+        assertFalse(AppUiState(phase = Phase.READY, networkConnected = true, authoritative = true).canMutate)
+    }
+
+    @Test fun editorReopenPreservesIncompleteDraftWithoutSubmitting() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "")))
+            f.await { !it.editor.persisting }
+            f.recreate()
+            f.await { it.canEditMedia }
+            assertEquals("", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            assertEquals(0, f.seen.count { it.startsWith("PUT /api/packages") })
+        }
+    }
+
+    @Test fun lostGroupedSaveReconcilesOnReopenWithoutReplaying() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.await { it.editor.canSave }
+            f.codes["/api/packages/active/edits"] = 502
+            f.model.saveMediaTrims()
+            f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
+            f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":0,\"end\":5}]")
+            f.recreate(); f.await { it.canEditMedia }
+            assertFalse(f.model.state.value.editor.dirty)
+            assertEquals(1, f.seen.count { it == "PUT /api/packages/active/edits" })
+        }
+    }
+
+    @Test fun failedDraftReplacementBlocksSaveAndKeepsPreviousDurableInput() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            val file = f.dir.resolve("drafts").walkTopDown().single { it.extension == "json" }
+            val temporary = file.resolveSibling(file.nameWithoutExtension + ".tmp")
+            temporary.mkdirs(); temporary.resolve("locked").writeText("fixture")
+            f.model.editRanges("a", listOf(RangeInput("0", "8")))
+            f.await { it.editor.persistenceIssue == DraftIssue.STORAGE }
+            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            assertEquals(0, f.seen.count { it.startsWith("PUT /api/packages") })
+            assertEquals("8", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            val binding = f.model.currentBinding!!
+            assertEquals("5", DraftStore(f.dir.resolve("drafts")).read(f.origin, binding, 1)!!.inputs.getValue("a")[0].end)
+            temporary.deleteRecursively()
+            f.model.retryEditorPersistence(); f.await { !it.editor.persisting }
+            assertNull(f.model.state.value.editor.persistenceIssue)
+        }
+    }
+
+    @Test fun rolloverDiscardClearsOriginalDraftBeforeBindingReplacement() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.await { !it.editor.persisting }
+            val binding = f.model.currentBinding!!
+            val drafts = DraftStore(f.dir.resolve("drafts"))
+            assertNotNull(drafts.read(f.origin, binding, 1))
+            f.bodies["/api/dashboard"] = f.bodies["/api/dashboard"]!!.replace(
+                "\"id\":1,\"folder_name\":\"active\"", "\"id\":2,\"folder_name\":\"replacement\"")
+            f.bodies["/api/packages/active/editor"] = editorJson(folder = "replacement", id = 2)
+            f.model.refresh()
+            f.await { it.editor.snapshot?.`package`?.id == 2 }
+            assertEquals(1, f.model.state.value.editor.draftPackageId)
+            f.model.discardMediaTrims()
+            f.await { it.canEditMedia && !it.editor.persisting }
+            assertNull(drafts.read(f.origin, binding, 1))
+            f.model.editRanges("a", listOf(RangeInput("1", "2")))
+            f.await { !it.editor.persisting }
+            assertEquals("2", drafts.read(f.origin, binding, 2)!!.inputs.getValue("a")[0].end)
+        }
+    }
+
+    @Test fun replacementReadCannotResetOldDraftWhenDashboardLags() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/editor"] = editorJson(folder = "replacement")
+            f.model.refreshEditor(); f.await { !it.busy }
+            assertEquals("5", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            assertNotNull(f.model.state.value.editor.storedDraft)
+            assertFalse(f.model.state.value.canEditMedia)
+        }
+    }
+
+    @Test fun foregroundStreamStopsAndDirectEditsStayLockedInBackground() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            val before = f.model.state.value.editor.inputs
+            f.model.setForeground(false)
+            f.await { !it.canMutate }
+            val writes = f.seen.count { it.startsWith("POST") || it.startsWith("PUT") }
+            f.model.editRanges("a", listOf(RangeInput("0", "8")))
+            f.model.saveMediaTrims()
+            assertEquals(before, f.model.state.value.editor.inputs)
+            assertEquals(writes, f.seen.count { it.startsWith("POST") || it.startsWith("PUT") })
+        }
     }
 
     private fun reviewJson(id: Int = 7, status: String = "pending", version: Int = 3, revision: String = "exact", ready: Boolean = true) =
@@ -417,12 +530,12 @@ class AppViewModelTest {
         Fixture(paired = true).use { f ->
             f.openPreparedReview()
             f.model.requestReviewAction(ReviewAction.RESCHEDULE)
-            f.model.pollReview(); f.await { !it.review.busy }
+            f.model.refreshReviewOnInvalidation(); f.await { !it.review.busy }
             assertEquals(ReviewAction.RESCHEDULE, f.model.state.value.review.target!!.action)
             f.bodies["/api/reviews/7/approve"] = "[]"
             f.model.approveReview(); f.await { !it.review.busy }
             val reads = f.seen.count { it == "GET /api/reviews/7" }
-            f.model.pollReview(); main.scheduler.runCurrent()
+            f.model.refreshReviewOnInvalidation(); main.scheduler.runCurrent()
             assertEquals(reads, f.seen.count { it == "GET /api/reviews/7" })
             assertTrue(f.model.state.value.review.readRequired)
         }
@@ -844,7 +957,10 @@ class AppViewModelTest {
             val put = requests.single { it.method == "PUT" }
             val payload = kotlinx.serialization.json.Json.parseToJsonElement(put.body.readUtf8()).toString()
             assertTrue(payload.contains("\"expected_folder_name\":\"active\""))
-            assertTrue(payload.contains("\"c\":[{\"end\":3.0,\"start\":1.0},{\"end\":9.0,\"start\":7.0}]"))
+            val changes = kotlinx.serialization.json.Json.parseToJsonElement(payload).jsonObject.getValue("changes").jsonArray
+            assertEquals(1, changes.size)
+            assertEquals("\"video:a\"", changes.single().jsonObject.getValue("key").toString())
+            assertEquals(listOf(com.dojo.aisomedo.api.VideoRangeOut(start = 1.0, end = 3.0), com.dojo.aisomedo.api.VideoRangeOut(start = 7.0, end = 9.0)), f.model.state.value.editor.snapshot!!.montage.selections["c"])
         }
     }
     @Test fun failedPackageWriteRetainsDraftAndRequiresExplicitReadBeforeRetry() = runTest(main.scheduler) {
@@ -852,7 +968,7 @@ class AppViewModelTest {
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
-            f.codes["/api/packages/active/selections"] = 500
+            f.codes["/api/packages/active/edits"] = 500
             f.model.saveMediaTrims(); f.await { !it.busy }
             assertTrue(f.model.state.value.editor.readRequired)
             assertEquals("1", f.model.state.value.editor.inputs["a"]!!.first().start)
@@ -864,15 +980,17 @@ class AppViewModelTest {
             assertTrue(f.model.state.value.editor.dirty)
         }
     }
-    @Test fun automaticRefreshDoesNotAuthorizeOverwritingConcurrentMontageChanges() = runTest(main.scheduler) {
+    @Test fun automaticRefreshPreservesConflictingBaselineUntilExplicitChoice() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
-            f.bodies["/api/packages/active/editor"] = editorJson(order = "\"b\",\"a\",\"c\"")
+            f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":2,\"end\":4}]")
             f.model.refresh(); f.await { !it.busy }
             assertTrue(f.model.state.value.editor.readRequired)
             f.model.refreshEditor(); f.await { !it.busy }
+            assertTrue(f.model.state.value.editor.readRequired)
+            f.model.resolveMediaConflict("video:a", local = true); f.await { !it.editor.persisting }
             assertFalse(f.model.state.value.editor.readRequired)
             assertEquals("1", f.model.state.value.editor.inputs["a"]!!.first().start)
         }

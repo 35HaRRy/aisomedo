@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 
 from dojo import DojoActivity
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel
+
+from backend.snapshots import versioned_snapshot
 
 
 def get_activity(request: Request) -> DojoActivity:
@@ -34,7 +36,9 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 
 
 @router.get("", response_model=ActivityPageOut)
+@versioned_snapshot("activity")
 def list_activity(
+    request: Request, response: Response,
     activity: DojoActivity = Depends(get_activity),
     limit: int = Query(50, ge=1, le=100),
     before_id: int | None = Query(None),

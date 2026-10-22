@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from dojo import Client, ConsentPolicyChanged, DojoSetup, NoConsentPolicy
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_setup(request: Request) -> DojoSetup:
@@ -48,10 +49,16 @@ router = APIRouter(prefix="/api/setup", tags=["setup"])
 
 
 @router.get("", response_model=SetupOut)
+@versioned_snapshot("setup")
 def setup_state(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     setup: DojoSetup = Depends(get_setup),
 ) -> SetupOut:
+    return _setup_out(setup)
+
+
+def _setup_out(setup: DojoSetup) -> SetupOut:
     return SetupOut(
         checklist=[SetupItemOut(**vars(item)) for item in setup.checklist()],
         ready=setup.is_ready(),
@@ -59,7 +66,9 @@ def setup_state(
 
 
 @router.get("/consent", response_model=ConsentOut)
+@versioned_snapshot("setup")
 def get_consent(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     setup: DojoSetup = Depends(get_setup),
 ) -> ConsentOut:
@@ -97,4 +106,4 @@ def skip_cards(
     setup: DojoSetup = Depends(get_setup),
 ) -> SetupOut:
     setup.skip_cards(requester=str(client.id))
-    return setup_state(client, setup)
+    return _setup_out(setup)

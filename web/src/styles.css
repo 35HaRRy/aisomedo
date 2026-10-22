@@ -1,3 +1,6 @@
+.live-content { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+.live-notice { margin: 1rem; }
+
 :root {
   font-family: "Segoe UI", system-ui, sans-serif;
   color: #202b30;
@@ -142,7 +145,6 @@ nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent
 .sidebar-foot { margin-top: auto; padding: 40px 12px 0; display: grid; font-size: .8125rem; color: var(--muted); overflow-wrap: anywhere; }
 .sidebar-foot strong { color: #202b30; font-size: .9375rem; }
 .main-content { width: 100%; max-width: 1300px; padding: 30px clamp(24px, 4vw, 64px) 60px; }
-.refresh-status { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: .75rem; margin-bottom: 36px; font-variant-numeric: tabular-nums; }
 .page-heading { margin-bottom: 32px; }
 .page-heading p { margin-top: 10px; color: var(--muted); }
 .pending-section { background: var(--accent-soft); padding: 28px 32px; border-radius: 12px; margin-bottom: 36px; }
@@ -241,7 +243,6 @@ form .notice { display: block; }
   nav a { padding: 10px; font-size: .875rem; }
   .sidebar-foot { display: none; }
   .main-content { padding: 24px 20px 40px; }
-  .refresh-status { margin-bottom: 24px; }
   .page-heading { margin-bottom: 24px; }
   .pending-section, .summary-sheet { padding: 22px; }
   .action-list li, .notice, .activity-list li { flex-direction: column; align-items: flex-start; gap: 12px; }

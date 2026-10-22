@@ -29,6 +29,7 @@ data class AcceptanceOut(
 
 @Serializable
 data class ActiveEditorOut(
+    @SerialName("content_revision") val contentRevision: Long,
     @SerialName("media") val media: List<EditorMediaOut>,
     @SerialName("montage") val montage: MontageOut,
     @SerialName("package") val `package`: PackageOut,
@@ -36,6 +37,7 @@ data class ActiveEditorOut(
     @SerialName("render_revision") val renderRevision: String? = null,
     @SerialName("render_stale") val renderStale: Boolean,
     @SerialName("render_status") val renderStatus: String = "missing",
+    @SerialName("view_revision") val viewRevision: Long,
 )
 
 @Serializable
@@ -154,6 +156,13 @@ data class DashboardWorkerOut(
 )
 
 @Serializable
+data class EditConflictOut(
+    @SerialName("code") val code: String,
+    @SerialName("conflicts") val conflicts: List<GroupConflictOut>,
+    @SerialName("content_revision") val contentRevision: Long,
+)
+
+@Serializable
 data class EditorMediaOut(
     @SerialName("artifacts") val artifacts: List<PackageArtifactOut>,
     @SerialName("content_type") val contentType: String,
@@ -180,6 +189,19 @@ data class EmptyRescheduleIn(
 data class EmptySkipIn(
     @SerialName("confirmed") val confirmed: Boolean = false,
     @SerialName("expected_folder_name") val expectedFolderName: String,
+)
+
+@Serializable
+data class GroupConflictOut(
+    @SerialName("current") val current: Map<String, JsonElement>,
+    @SerialName("key") val key: String,
+)
+
+@Serializable
+data class GroupEditIn(
+    @SerialName("base") val base: Map<String, JsonElement>,
+    @SerialName("key") val key: String,
+    @SerialName("proposed") val proposed: Map<String, JsonElement>,
 )
 
 @Serializable
@@ -239,6 +261,14 @@ data class PackageArtifactOut(
     @SerialName("kind") val kind: String,
     @SerialName("preview_url") val previewUrl: String?,
     @SerialName("url") val url: String?,
+)
+
+@Serializable
+data class PackageEditIn(
+    @SerialName("base_content_revision") val baseContentRevision: Long,
+    @SerialName("changes") val changes: List<GroupEditIn>,
+    @SerialName("expected_folder_name") val expectedFolderName: String,
+    @SerialName("expected_package_id") val expectedPackageId: Int,
 )
 
 @Serializable

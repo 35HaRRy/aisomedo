@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "../App";
 import type { StatusOut } from "../api/openapi";
 import { client, dashboard, emptyEditor, setupState } from "../test/fixtures";
+import { invalidateLive, liveResponse } from "../test/live";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 let plan = dashboard().plan;
@@ -26,11 +27,13 @@ beforeEach(() => {
   reminderStatus = 200; dashboardStatus = 200; consentStatus = 200; setupStatus = 200;
   acceptedAt = "2026-08-03T07:00:00Z"; cardSkips = 0; activityAction = "plan.updated";
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    if (url === "/api/events") return liveResponse();
     if (url === "/api/compat") return json({ api_version: "0.1.0" });
     if (url === "/api/pairing/me") return json(client);
     if (url === "/api/setup") return json(setupState(), setupStatus);
     if (url === "/api/dashboard") return json({ ...dashboard(), plan }, dashboardStatus);
     if (url === "/api/packages/active/editor") return json(emptyEditor());
+    if (url === "/api/media/upload-limits") return json({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 });
     if (url === "/api/settings/plan") {
       if (init.method === "PUT") plan = { ...plan, ...JSON.parse(String(init.body)) };
       return json(plan);
@@ -100,7 +103,7 @@ it("keeps reminder draft after rejection and refresh, then adopts server values 
   expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120);
   reminders = { ...reminders, interval_minutes: 60 };
   vi.useFakeTimers();
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120);
   fireEvent.click(within(region).getByRole("button", { name: "Sunucudaki değerleri yükle" }));
   expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(60);
@@ -203,6 +206,6 @@ it.each([
   expect(within(list).getByText(client.name)).toBeInTheDocument();
   expect(list.querySelector("time")).toHaveAttribute("datetime", "2026-08-03T07:00:00Z");
   activityAction = "review.approved"; vi.useFakeTimers();
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByRole("heading", { name: "Yayın onaylandı" })).toBeInTheDocument();
 });

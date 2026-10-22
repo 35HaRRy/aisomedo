@@ -20,10 +20,11 @@ from dojo import (
     SkipRequiresConfirmation,
 )
 from dojo.model import YayinIncelemesi
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -38,7 +39,9 @@ def _review_out(review: YayinIncelemesi) -> dict[str, object]:
 
 
 @router.get("/pending", response_model=dict[str, object])
+@versioned_snapshot("publication")
 def list_pending(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:
@@ -124,7 +127,9 @@ class ReviewDetailOut(BaseModel):
 
 
 @router.get("/{review_id}", response_model=ReviewDetailOut)
+@versioned_snapshot("publication")
 def review_detail(
+    request: Request, response: Response,
     review_id: int,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),

@@ -39,6 +39,10 @@
       },
       "ActiveEditorOut": {
         "properties": {
+          "content_revision": {
+            "title": "Content Revision",
+            "type": "integer"
+          },
           "media": {
             "items": {
               "$ref": "#/components/schemas/EditorMediaOut"
@@ -90,9 +94,15 @@
             ],
             "title": "Render Status",
             "type": "string"
+          },
+          "view_revision": {
+            "title": "View Revision",
+            "type": "integer"
           }
         },
         "required": [
+          "content_revision",
+          "view_revision",
           "package",
           "render_stale",
           "media",
@@ -1050,6 +1060,33 @@
         "title": "DownloadOut",
         "type": "object"
       },
+      "EditConflictOut": {
+        "properties": {
+          "code": {
+            "const": "edit_conflict",
+            "title": "Code",
+            "type": "string"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/GroupConflictOut"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "content_revision": {
+            "title": "Content Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "content_revision",
+          "conflicts"
+        ],
+        "title": "EditConflictOut",
+        "type": "object"
+      },
       "EditorMediaOut": {
         "properties": {
           "artifacts": {
@@ -1188,6 +1225,51 @@
           "expected_folder_name"
         ],
         "title": "EmptySkipIn",
+        "type": "object"
+      },
+      "GroupConflictOut": {
+        "properties": {
+          "current": {
+            "additionalProperties": true,
+            "title": "Current",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "current"
+        ],
+        "title": "GroupConflictOut",
+        "type": "object"
+      },
+      "GroupEditIn": {
+        "additionalProperties": false,
+        "properties": {
+          "base": {
+            "additionalProperties": true,
+            "title": "Base",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "proposed": {
+            "additionalProperties": true,
+            "title": "Proposed",
+            "type": "object"
+          }
+        },
+        "required": [
+          "key",
+          "base",
+          "proposed"
+        ],
+        "title": "GroupEditIn",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1544,6 +1626,52 @@
           "preview_url"
         ],
         "title": "PackageArtifactOut",
+        "type": "object"
+      },
+      "PackageEditConflictOut": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/EditConflictOut"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "PackageEditConflictOut",
+        "type": "object"
+      },
+      "PackageEditIn": {
+        "additionalProperties": false,
+        "properties": {
+          "base_content_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Content Revision",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/GroupEditIn"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "expected_package_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Expected Package Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_package_id",
+          "expected_folder_name",
+          "base_content_revision",
+          "changes"
+        ],
+        "title": "PackageEditIn",
         "type": "object"
       },
       "PackageOut": {
@@ -2651,6 +2779,20 @@
         ]
       }
     },
+    "/api/events": {
+      "get": {
+        "operationId": "events_api_events_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Events",
+        "tags": [
+          "events"
+        ]
+      }
+    },
     "/api/media/upload-limits": {
       "get": {
         "operationId": "upload_limits_api_media_upload_limits_get",
@@ -3370,6 +3512,24 @@
       },
       "put": {
         "operationId": "set_branding_api_packages_active_branding_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3434,6 +3594,24 @@
       },
       "put": {
         "operationId": "set_caption_api_packages_active_caption_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3477,6 +3655,24 @@
     "/api/packages/active/clear": {
       "post": {
         "operationId": "clear_package_api_packages_active_clear_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3518,6 +3714,24 @@
     "/api/packages/active/complete": {
       "post": {
         "operationId": "complete_active_api_packages_active_complete_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3528,6 +3742,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Complete Active",
@@ -3552,6 +3776,57 @@
           }
         },
         "summary": "Get Editor",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/edits": {
+      "put": {
+        "operationId": "apply_edits_api_packages_active_edits_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackageEditIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveEditorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageEditConflictOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Edits",
         "tags": [
           "packages"
         ]
@@ -3634,6 +3909,22 @@
               ],
               "title": "Expected Folder Name"
             }
+          },
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
           }
         ],
         "responses": {
@@ -3696,6 +3987,22 @@
               ],
               "title": "Expected Folder Name"
             }
+          },
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
           }
         ],
         "responses": {
@@ -3754,6 +4061,24 @@
     "/api/packages/active/order": {
       "put": {
         "operationId": "set_order_api_packages_active_order_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3930,6 +4255,24 @@
     "/api/packages/active/render": {
       "post": {
         "operationId": "render_active_api_packages_active_render_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4027,6 +4370,24 @@
     "/api/packages/active/selections": {
       "put": {
         "operationId": "set_selections_api_packages_active_selections_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4068,6 +4429,24 @@
     "/api/packages/active/trims": {
       "put": {
         "operationId": "set_trims_api_packages_active_trims_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {

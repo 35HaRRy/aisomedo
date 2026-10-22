@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { client, dashboard, emptyEditor, setupState } from "./test/fixtures";
+import { invalidateLive, liveResponse } from "./test/live";
+import { tr } from "./i18n";
 
 let paired = true;
 let snapshot = dashboard();
@@ -18,6 +20,7 @@ beforeEach(() => {
   setup = setupState(); setupStatus = 200;
   window.location.hash = "#/dashboard";
   vi.stubGlobal("fetch", async (url: string) => {
+    if (url === "/api/events") return liveResponse();
     if (url.endsWith("/compat")) return json({ api_version: "0.1.0" });
     if (url.endsWith("/me")) return paired ? json(client) : json({}, 401);
     if (url.endsWith("/validate")) { if (pairingStatus === 200) paired = true; return json({}, pairingStatus); }
@@ -75,6 +78,28 @@ it("reopens from Settings and resumes after reload", async () => {
 });
 afterEach(() => vi.useRealTimers());
 
+it("does not show routine sync notices in the shell when returning to the tab", async () => {
+  render(<App />);
+  await screen.findByText("03-08-2026 10-00");
+  await waitFor(() => expect(screen.getByRole("group", { name: tr.liveWorkspace })).not.toBeDisabled());
+  let hidden = false, release!: () => void;
+  vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+  const fetcher = globalThis.fetch;
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    if (url === "/api/dashboard") await new Promise<void>(resolve => { release = resolve; });
+    return fetcher(url, init);
+  });
+  await act(async () => { hidden = true; document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { hidden = false; document.dispatchEvent(new Event("visibilitychange")); });
+  await waitFor(() => expect(release).toBeTypeOf("function"));
+  expect(screen.getByRole("group", { name: tr.liveWorkspace })).toBeDisabled();
+  expect(screen.queryAllByText(tr.liveState.connecting)).toHaveLength(0);
+  expect(screen.queryAllByText(tr.liveState.syncing)).toHaveLength(0);
+  expect(screen.queryAllByText(tr.liveState.disconnected)).toHaveLength(0);
+  await act(async () => release());
+  await waitFor(() => expect(screen.getByRole("group", { name: tr.liveWorkspace })).not.toBeDisabled());
+});
+
 it("shows four areas and all five dashboard categories", async () => {
   render(<App />);
   await screen.findByText("03-08-2026 10-00");
@@ -84,6 +109,39 @@ it("shows four areas and all five dashboard categories", async () => {
   for (const name of ["Dojo Paylaşım Paketi", "Sonraki Yayın Zamanı", "Bekleyen işlem", "Instagram", "Worker"])
     expect(screen.getByText(name)).toBeInTheDocument();
   expect(screen.getByText(/17 Ağustos 2026.*10:00/)).toBeInTheDocument();
+  expect(screen.queryByText(tr.live)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Son güncelleme:/)).not.toBeInTheDocument();
+  expect(screen.getByRole("main").firstElementChild).toBe(screen.getByRole("heading", { name: tr.dashboard }).closest("header"));
+});
+
+it("reads dashboard and editor only on the pages that consume them", async () => {
+  window.location.hash = "#/activity";
+  const fetcher = vi.fn(globalThis.fetch); vi.stubGlobal("fetch", fetcher);
+  render(<App />);
+  await screen.findByText("Etkinlik kaydedildi");
+  await waitFor(() => expect(screen.getByRole("group", { name: tr.liveWorkspace })).not.toBeDisabled());
+  const reads = (url: string) => fetcher.mock.calls.filter(([path]) => path === url).length;
+  expect(reads("/api/dashboard")).toBe(0);
+  expect(reads("/api/packages/active/editor")).toBe(0);
+  expect(reads("/api/setup")).toBe(1); // Bootstrap still chooses the correct landing page.
+  await act(async () => invalidateLive());
+  expect(reads("/api/dashboard")).toBe(0);
+  expect(reads("/api/packages/active/editor")).toBe(0);
+  expect(reads("/api/setup")).toBe(1);
+  fireEvent.click(screen.getByRole("link", { name: "Kontrol Paneli" }));
+  await screen.findByText("03-08-2026 10-00");
+  expect(reads("/api/dashboard")).toBe(1);
+  expect(reads("/api/packages/active/editor")).toBe(0);
+  fireEvent.click(screen.getByRole("link", { name: "Güncel Paket" }));
+  await waitFor(() => expect(reads("/api/packages/active/editor")).toBe(1));
+  fireEvent.click(screen.getByRole("link", { name: "Etkinlik" }));
+  await screen.findByText("Etkinlik kaydedildi");
+  const dashboardReads = reads("/api/dashboard");
+  await act(async () => invalidateLive());
+  expect(reads("/api/dashboard")).toBe(dashboardReads);
+  expect(reads("/api/packages/active/editor")).toBe(1);
+  fireEvent.click(screen.getByRole("link", { name: "Güncel Paket" }));
+  await waitFor(() => expect(reads("/api/packages/active/editor")).toBe(2));
 });
 
 it("pairs a browser and explains invalid and throttled codes", async () => {
@@ -108,12 +166,12 @@ it("refreshes review arrivals and other-device resolution without reload", async
   await act(async () => { render(<App />); });
   expect(screen.getByText("Bekleyen işlem yok")).toBeInTheDocument();
   snapshot.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 1, due_at: snapshot.generated_at, package_folder: "03-08-2026 10-00", state: "review_ready" }];
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   const link = screen.getByRole("link", { name: "İnceleme özeti" });
   expect(link).toHaveAttribute("href", "#/package?review=2");
   await act(async () => { window.location.hash = "#/package?review=2"; window.dispatchEvent(new Event("hashchange")); });
   snapshot.pending_actions = [];
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("Bu inceleme başka bir cihazda tamamlanmış veya artık mevcut değil.")).toBeInTheDocument();
 });
 
@@ -122,11 +180,11 @@ it("keeps old data visibly stale on error and clears it on revoked session", asy
   await act(async () => { render(<App />); });
   expect(screen.getByText("03-08-2026 10-00")).toBeInTheDocument();
   dashboardStatus = 500;
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("03-08-2026 10-00")).toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("Son bilgiler gösteriliyor");
   dashboardStatus = 401;
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.queryByText("03-08-2026 10-00")).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Tarayıcıyı eşleştir" })).toBeInTheDocument();
 });
@@ -147,7 +205,7 @@ it("activity uses safe translated fallback and independent errors", async () => 
   await screen.findByText("Etkinlik kaydedildi");
   expect(screen.queryByText("future.event")).not.toBeInTheDocument();
   vi.useFakeTimers(); activityStatus = 500;
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("Etkinlik kaydedildi")).toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("Son bilgiler gösteriliyor");
 });
@@ -157,7 +215,7 @@ it("distinguishes empty package and publishing states", async () => {
   render(<App />);
   await screen.findByText("Henüz aktif paket yok");
   vi.useFakeTimers(); snapshot = dashboard(); snapshot.package!.status = "publishing";
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("Yayınlanıyor")).toBeInTheDocument();
 });
 

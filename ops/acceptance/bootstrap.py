@@ -143,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         set_consent_policy(build_setup(), version=1, text="Acceptance media consent policy")
         pairing = build_pairing()
         print(json.dumps({"browser_code": mint_code(pairing).raw_code,
-                          "device_code": mint_code(pairing).raw_code}))
+                          "device_code": mint_code(pairing).raw_code,
+                          "live_browser_a": mint_code(pairing).raw_code,
+                          "live_browser_b": mint_code(pairing).raw_code}))
     else:
         root = Path(os.environ["MEDIA_ROOT"])
         print(json.dumps({"completed": [p.name for p in root.glob("*-completed")

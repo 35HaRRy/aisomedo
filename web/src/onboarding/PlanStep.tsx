@@ -4,7 +4,7 @@ import { useLiveData } from "../useLiveData";
 import { ReloadDraft, useDraft, useFormSave } from "./forms";
 
 export function PlanStep({ onSaved }: { onSaved: () => void }) {
-  const snapshot = useLiveData(api.plan);
+  const snapshot = useLiveData(api.plan, true, ["settings"]);
   const form = useFormSave(onSaved);
   const state = useDraft(snapshot.data ? { anchor_date: snapshot.data.anchor_date ?? "", anchor_time: snapshot.data.anchor_time?.slice(0, 5) ?? "", enabled: snapshot.data.enabled } : null,
     { anchor_date: "", anchor_time: "", enabled: false });

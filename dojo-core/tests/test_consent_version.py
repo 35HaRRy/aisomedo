@@ -115,7 +115,8 @@ def test_memory_policy_update_serializes_waiting_acceptance() -> None:
         return setup.accept_current_policy(client=client, version=1)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
-        with store._consent_lock:
+        # Hold locks in production order: command serialization, then consent.
+        with store.command_transaction(), store._consent_lock:
             future = pool.submit(accept)
             assert started.wait(timeout=10)
             setup.set_policy(version=2, text="v2", requester="cli")

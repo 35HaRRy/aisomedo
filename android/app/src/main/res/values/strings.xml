@@ -291,4 +291,13 @@
     <string name="activity_actor_unknown">İşlemi yapan bilinmiyor</string>
     <string name="offline_media">Önizleme için bağlantı gerekir.</string>
     <string name="update_download_unavailable">Güvenli güncelleme adresi alınamadı. Yeniden deneyin veya sunucuyu değiştirin.</string>
+    <string name="draft_storage_failed">Taslak bu cihaza kaydedilemedi. Son değişiklikler uygulama kapatılırsa kaybolabilir. Depolamayı kontrol edip yeniden deneyin.</string>
+    <string name="draft_corrupt">Bu cihazdaki taslak okunamadı veya sürümü desteklenmiyor. Dosya korunuyor; taslak sunucuya gönderilmez.</string>
+    <string name="draft_storage_retry">Taslak kaydını yeniden dene</string>
+    <string name="draft_inapplicable">%1$s paketinin taslağı korundu. Paket artık düzenlenemiyor; bu taslak başka pakete uygulanmaz.</string>
+    <string name="draft_conflict">%1$s için çakışan değişiklikler</string>
+    <string name="draft_local_values">Sizin bölümleriniz: %1$s</string>
+    <string name="draft_server_values">Sunucudaki bölümler: %1$s</string>
+    <string name="draft_use_local">Benim değişikliğimi kullan</string>
+    <string name="draft_use_server">Sunucudaki değişikliği kullan</string>
 </resources>

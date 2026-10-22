@@ -43,6 +43,36 @@ class SelectionIn(BaseModel):
         return value
 
 
+class GroupEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str
+    base: dict[str, object]
+    proposed: dict[str, object]
+
+
+class PackageEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_package_id: Annotated[int, Field(strict=True, gt=0)]
+    expected_folder_name: str
+    base_content_revision: Annotated[int, Field(strict=True, gt=0)]
+    changes: list[GroupEditIn]
+
+
+class GroupConflictOut(BaseModel):
+    key: str
+    current: dict[str, object]
+
+
+class EditConflictOut(BaseModel):
+    code: Literal["edit_conflict"]
+    content_revision: int
+    conflicts: list[GroupConflictOut]
+
+
+class PackageEditConflictOut(BaseModel):
+    detail: EditConflictOut
+
+
 class RenderIn(BaseModel):
     expected_folder_name: str
     retry: bool = False
@@ -127,6 +157,8 @@ class EditorMediaOut(CompletedMediaOut):
 
 
 class ActiveEditorOut(BaseModel):
+    content_revision: int
+    view_revision: int
     package: PackageOut
     render_stale: bool
     media: list[EditorMediaOut]

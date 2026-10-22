@@ -232,10 +232,21 @@ code from an already paired client or the operator pairing CLI documented below,
 then enter the code and a recognizable browser name. No password or local-storage
 token is used.
 
-Dashboard data refreshes every five seconds while visible and online, and on
-focus/reconnect. Transient errors retain visibly stale data; revocation clears it.
-Current Package, Activity, and Settings are summary destinations in issue #25;
-editing, uploads, and approval workflows remain separate follow-up tickets.
+Web and Android foreground views subscribe to authenticated server-sent events.
+Committed changes invalidate affected snapshots; idle views do not poll or fall
+back to periodic refresh. Android closes its stream in the background. Transport
+loss disables editing and mutations until the stream and required snapshots have
+resynchronized. Existing background uploads and push registration are unchanged.
+
+Editor drafts, including incomplete range input and uncertain saves, persist on
+the same device/profile, scoped to the server, paired identity, and package.
+Independent edit groups merge; conflicting groups require an explicit choice and
+a new conditional save. Restored drafts never submit automatically. Storage
+failure is visible and blocks unprotected commands. Revocation removes access,
+not another identity's drafts; Android's explicit change-server action clears
+that pairing's local drafts.
+Browser/app data deletion is not a backup mechanism. Verification evidence and
+environment limitations are recorded in [live-state verification](docs/verification/live-state-sse.md).
 
 The worker writes progress to the `worker-health` runtime volume. The backend
 mounts it read-only; dashboard health never substitutes API readiness for worker

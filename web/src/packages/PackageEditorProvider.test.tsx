@@ -1,13 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { useNavigation } from "../navigation";
 import { SessionProvider } from "../session";
 import { PackageEditorProvider, usePackageEditorContext } from "./PackageEditorProvider";
 import { editorServer } from "./testFixtures";
+import { writeDraft } from "./drafts";
 
 beforeEach(() => { window.location.hash = "#/package"; Object.defineProperty(navigator, "onLine", { value: true, configurable: true }); });
 function Probe() {
-  const editor = usePackageEditorContext(); const nav = useNavigation(editor.requestLeave);
+  const editor = usePackageEditorContext(); const nav = editor.navigation;
   return <><output>{nav.area}</output>
     <button disabled={!editor.snapshot} onClick={() => editor.setRanges("a", [{ start: 0, end: 5 }])}>Edit</button>
     <button onClick={() => void nav.navigate("#/settings")}>Leave</button>
@@ -73,4 +73,21 @@ it("acknowledged save moves to requested route and closes the guard", async () =
   fireEvent.click(await screen.findByRole("button", { name: "Kaydet ve devam et" }));
   await waitFor(() => expect(screen.getByText("settings")).toBeInTheDocument());
   expect(server.writes).toHaveLength(1); expect(screen.getByText("clean")).toBeInTheDocument();
+});
+
+it("a recovered hidden draft does not block navigation back to its editor", async () => {
+  const server = editorServer(); vi.stubGlobal("fetch", server.fetcher);
+  await writeDraft({ origin: window.location.origin, clientId: 1, packageId: 1 }, 0, {
+    schemaVersion: 1, localRevision: 0, folderName: server.snapshot.package.folder_name,
+    baseContentRevision: 1, uncertain: false,
+    groups: { "video:a": { base: { ranges: [] }, proposed: { ranges: [{ start: 0, end: 5 }] } } },
+    inputs: { a: [{ start: "0", end: "5" }] },
+  });
+  window.location.hash = "#/dashboard";
+  render(<SessionProvider><PackageEditorProvider><Probe /></PackageEditorProvider></SessionProvider>);
+  await screen.findByText("dirty");
+  await act(async () => { window.location.hash = "#/package"; window.dispatchEvent(new HashChangeEvent("hashchange")); });
+  await waitFor(() => expect(screen.getByText("package")).toBeInTheDocument());
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("End")).toHaveValue("5");
 });

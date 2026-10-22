@@ -28,7 +28,7 @@ export function ActivePackagePanel() {
       window.dispatchEvent(new Event("focus"));
     }
   };
-  const blocked = editor.busy || editor.stale || editor.offline;
+  const blocked = !editor.canEdit;
   const clearDrag = useCallback(() => { dragging.current = null; setSelected(null); setDragged(null); setDropTarget(null); }, []);
   useEffect(() => {
     const release = () => { if (!dragging.current) setSelected(null); };
@@ -67,6 +67,14 @@ export function ActivePackagePanel() {
       {editor.error && <p role="alert" className="notice">{copy.errors[editor.error]}</p>}
       {editor.offline && <p role="status" className="notice">{copy.offline}</p>}
       {editor.stale && <p role="alert" className="notice">{copy.stale}</p>}
+      {editor.persistenceError && <div role="alert" className="notice"><p>{copy.persistenceErrors[editor.persistenceError]}</p>
+        {editor.persistenceError === "unavailable" && <button onClick={() => void editor.retryDraftPersistence()}>{copy.retryDraft}</button>}
+      </div>}
+      {Object.entries(editor.conflicts).map(([key]) => <section key={key} role="region" aria-label={`${key} ${copy.conflictSuffix}`} className="notice">
+        <h3>{copy.conflictTitle}</h3><p>{copy.conflictHelp}</p>
+        <div className="upload-actions"><button onClick={() => editor.resolveConflict(key, "local")}>{copy.useLocal}</button>
+          <button onClick={() => editor.resolveConflict(key, "server")}>{copy.useServer}</button></div>
+      </section>)}
       {!snapshot && !editor.loading && !editor.error && <p>{copy.noActive}</p>}
       {snapshot && <>
         <div className="montage-duration" aria-live="polite">
@@ -76,7 +84,7 @@ export function ActivePackagePanel() {
           {snapshot.render_stale && <p className="muted">{copy.renderStale}</p>}
         </div>
         <div className="upload-actions package-save-actions"><button className="primary" disabled={!editor.canSave} aria-describedby="package-save-reason" onClick={() => void editor.save()}>{editor.busy ? copy.saving : copy.save}</button>
-          <button title={copy.discardHelp} disabled={!editor.dirty || editor.busy} onClick={() => editor.discard()}>{copy.discard}</button></div>
+          <button title={copy.discardHelp} disabled={!editor.dirty || editor.busy || editor.offline} onClick={() => editor.discard()}>{copy.discard}</button></div>
         <p id="package-save-reason" className="muted" role="status">{editor.saveBlockedReason ? copy.saveReasons[editor.saveBlockedReason] : ""}</p>
         <section className="saved-reel-preview" aria-labelledby="saved-reel-title">
           <h3 id="saved-reel-title">{copy.savedPreview}</h3><p className="muted">{copy.renderHelp}</p>
@@ -124,6 +132,6 @@ export function ActivePackagePanel() {
         {!!removed.length && <section className="removed-media" aria-labelledby="removed-media-title"><h3 id="removed-media-title">{copy.removed}</h3><p className="muted">{copy.removedHelp}</p><ul className="package-media-list">{removed.map(media => <li key={media.media_id} className="package-media-heading"><h3>{media.filename}</h3>
           <button className="media-icon-button" disabled={blocked} aria-label={`${media.filename} ${copy.restoreLabel}`} title={`${media.filename} ${copy.restoreLabel}`} onClick={() => void editor.restore(media.media_id)}><MediaActionIcon action="restore" /></button></li>)}</ul></section>}
       </>}
-    </section><fieldset className="package-upload-controls" disabled={editor.busy || !!editor.pendingClear} aria-label={tr.upload.title}><UploadPanel /></fieldset>
+    </section><fieldset className="package-upload-controls" disabled={editor.busy || editor.offline || !!editor.pendingClear} aria-label={tr.upload.title}><UploadPanel /></fieldset>
   </>;
 }

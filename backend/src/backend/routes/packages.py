@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import NoReturn
+import re
+from collections.abc import Callable
+from functools import wraps
+from typing import Annotated, NoReturn, cast
 from urllib.parse import quote, urlencode
 
 from dojo import (
@@ -19,6 +22,7 @@ from dojo import (
     PackageArtifact,
     PackageChanged,
     PackageCompleted,
+    PackageEditConflict,
     PackageLimitExceeded,
     PublicationInProgress,
     PublicationNotReady,
@@ -26,7 +30,8 @@ from dojo import (
     UploadInvalidFilename,
     UploadTooLarge,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
+from dojo.package_state import GroupEdit
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -37,15 +42,46 @@ from backend.routes.package_models import (
     ClearPackageOut,
     CompletedPackageOut,
     MontageOut,
+    PackageEditConflictOut,
+    PackageEditIn,
     PackageOut,
     RenderIn,
     RenderOut,
     SelectionIn,
 )
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
     return request.app.state.publishing
+
+
+def require_package_revision(
+    if_match: Annotated[str | None, Header()] = None,
+) -> tuple[int, int]:
+    if if_match is None:
+        raise HTTPException(428, "displayed package revision required")
+    match = re.fullmatch(r'"([1-9][0-9]{0,18}):([1-9][0-9]{0,18})"', if_match)
+    if match is None:
+        raise HTTPException(422, "If-Match must contain the quoted package-id:revision")
+    return int(match[1]), int(match[2])
+
+
+def _conditional_package_endpoint[**P, T](method: Callable[P, T]) -> Callable[P, T]:
+    @wraps(method)
+    def guarded(*args: P.args, **kwargs: P.kwargs) -> T:
+        publishing = cast(DojoPublishing, kwargs["publishing"])
+        revision = cast(tuple[int, int], kwargs["revision"])
+        try:
+            # Acquire/use/release in one endpoint worker context, not across a
+            # yield dependency whose thread/context may change on teardown.
+            with publishing.conditional_package_operation(
+                *revision, allow_missing=method.__name__ == "clear_package",
+            ):
+                return method(*args, **kwargs)
+        except (NoActivePackage, PackageChanged) as exc:
+            _map_mutation_error(exc)
+    return guarded
 
 
 router = APIRouter(prefix="/api/packages", tags=["packages"])
@@ -77,7 +113,9 @@ class BrandingIn(BaseModel):
 
 
 @router.get("/active", response_model=PackageOut)
+@versioned_snapshot("package")
 def get_active(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> PackageOut:
@@ -101,9 +139,11 @@ def ensure_active(
 
 
 @router.post("/active/complete", response_model=PackageOut)
+@_conditional_package_endpoint
 def complete_active(
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> PackageOut:
     try:
         package = publishing.complete_active_package(requester=str(client.id))
@@ -130,6 +170,11 @@ _MUTATION_STATUS: dict[type[Exception], int] = {
 
 
 def _map_mutation_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, PackageEditConflict):
+        raise HTTPException(409, detail={
+            "code": "edit_conflict", "content_revision": exc.content_revision,
+            "conflicts": exc.conflicts,
+        }) from exc
     status = _MUTATION_STATUS.get(type(exc))
     if status is not None:
         raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -160,7 +205,9 @@ def _completed_artifacts(folder: str, artifacts: list[dict]) -> list[dict]:
 
 
 @router.get("/active/editor", response_model=ActiveEditorOut)
+@versioned_snapshot("package")
 def get_editor(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict:
@@ -168,6 +215,10 @@ def get_editor(
         snapshot = publishing.get_active_editor()
     except (NoActivePackage, MediaNotFound) as exc:
         _map_mutation_error(exc)
+    return _editor_out(snapshot)
+
+
+def _editor_out(snapshot: dict) -> dict:
     folder = snapshot["package"]["folder_name"]
     snapshot["render_preview_url"] = (
         "/api/packages/active/render/preview?" + urlencode({
@@ -185,11 +236,31 @@ def get_editor(
     return snapshot
 
 
+@router.put("/active/edits", response_model=ActiveEditorOut,
+            responses={409: {"model": PackageEditConflictOut}})
+def apply_edits(
+    body: PackageEditIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict:
+    try:
+        snapshot = publishing.apply_package_edits(
+            body.expected_package_id, body.expected_folder_name, body.base_content_revision,
+            [GroupEdit(e.key, e.base, e.proposed) for e in body.changes], requester=str(client.id),
+        )
+    except (NoActivePackage, MediaNotFound, PackageChanged,
+            MontageTrimInvalid, MontageDurationExceeded) as exc:
+        _map_mutation_error(exc)
+    return _editor_out(snapshot)
+
+
 @router.put("/active/selections", response_model=MontageOut)
+@_conditional_package_endpoint
 def set_selections(
     body: SelectionIn,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict:
     try:
         return publishing.set_selections(
@@ -203,10 +274,12 @@ def set_selections(
 
 
 @router.post("/active/render", response_model=RenderOut)
+@_conditional_package_endpoint
 def render_active(
     body: RenderIn,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict:
     try:
         return publishing.render_preview(
@@ -235,10 +308,12 @@ def render_file(
 
 
 @router.post("/active/clear", response_model=ClearPackageOut)
+@_conditional_package_endpoint
 def clear_package(
     body: ClearPackageIn,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict:
     if not body.confirmed:
         raise HTTPException(status_code=409, detail="explicit confirmation required")
@@ -268,11 +343,13 @@ def media_preview(
 
 
 @router.post("/active/media/{media_id}/remove", status_code=200)
+@_conditional_package_endpoint
 def remove_media(
     media_id: str,
     expected_folder_name: str | None = None,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict[str, str]:
     try:
         publishing.remove_media(media_id, requester=str(client.id),
@@ -284,11 +361,13 @@ def remove_media(
 
 
 @router.post("/active/media/{media_id}/restore", status_code=200)
+@_conditional_package_endpoint
 def restore_media(
     media_id: str,
     expected_folder_name: str | None = None,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict[str, str]:
     try:
         publishing.restore_media(media_id, requester=str(client.id),
@@ -300,7 +379,9 @@ def restore_media(
 
 
 @router.get("/active/montage", response_model=MontageOut)
+@versioned_snapshot("package")
 def get_montage(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:
@@ -311,10 +392,12 @@ def get_montage(
 
 
 @router.put("/active/order", response_model=MontageOut)
+@_conditional_package_endpoint
 def set_order(
     body: OrderIn,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict[str, object]:
     try:
         return publishing.set_order(body.order, requester=str(client.id),
@@ -331,10 +414,12 @@ def set_order(
 
 
 @router.put("/active/trims", response_model=MontageOut)
+@_conditional_package_endpoint
 def set_trims(
     body: TrimsIn,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict[str, object]:
     try:
         return publishing.set_trims(body.trims, requester=str(client.id)).to_dict()
@@ -348,7 +433,9 @@ def set_trims(
 
 
 @router.get("/active/caption", response_model=dict[str, object])
+@versioned_snapshot("package")
 def get_caption(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:
@@ -359,10 +446,12 @@ def get_caption(
 
 
 @router.put("/active/caption", response_model=dict[str, object])
+@_conditional_package_endpoint
 def set_caption(
     body: CaptionIn,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict[str, object]:
     try:
         caption = publishing.set_caption(body.caption, requester=str(client.id))
@@ -372,7 +461,9 @@ def set_caption(
 
 
 @router.get("/active/branding", response_model=dict[str, object])
+@versioned_snapshot("package")
 def get_branding(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:
@@ -383,10 +474,12 @@ def get_branding(
 
 
 @router.put("/active/branding", response_model=dict[str, object])
+@_conditional_package_endpoint
 def set_branding(
     body: BrandingIn,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
+    revision: tuple[int, int] = Depends(require_package_revision),
 ) -> dict[str, object]:
     try:
         return publishing.set_branding(body.branding, requester=str(client.id))
@@ -416,7 +509,9 @@ def publish_active(
 
 
 @router.get("/recovered", response_model=dict[str, object])
+@versioned_snapshot("dashboard")
 def list_recovered(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:
@@ -457,7 +552,9 @@ def resolve_recovered(
 
 
 @router.get("", response_model=list[PackageOut])
+@versioned_snapshot("completed")
 def list_completed(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> list[PackageOut]:
@@ -480,7 +577,9 @@ def completed_artifact(
 
 
 @router.get("/{folder_name}", response_model=CompletedPackageOut)
+@versioned_snapshot("completed")
 def browse_completed(
+    request: Request, response: Response,
     folder_name: str,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),

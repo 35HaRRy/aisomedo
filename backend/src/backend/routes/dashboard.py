@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from backend.routes.packages import PackageOut, get_publishing
 from backend.routes.settings import PlanOut
+from backend.snapshots import versioned_snapshot
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -52,6 +53,7 @@ class DashboardOut(BaseModel):
 
 
 @router.get("", response_model=DashboardOut)
+@versioned_snapshot("dashboard")
 def dashboard(
     request: Request, response: Response,
     publishing: DojoPublishing = Depends(get_publishing),

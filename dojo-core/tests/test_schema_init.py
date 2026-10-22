@@ -44,12 +44,15 @@ def legacy(engine):
         conn.execute(text("DROP TABLE operational_deliveries"))
         conn.execute(text("DROP TABLE operational_alerts"))
         conn.execute(text("DROP TABLE monitoring_incidents"))
+        conn.execute(text("DROP TABLE live_change_events"))
+        conn.execute(text("DROP TABLE live_resource_versions"))
+        conn.execute(text("DROP TABLE package_states"))
 
 
 def assert_head(engine):
     with engine.connect() as conn:
         version = conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0016_monitoring_checks"
+        assert version == "0017_live_state"
     for table, expected in [
         ("jobs", "uq_jobs_active_render"), ("yayin_zamani", "uq_yayin_zamani_regular_due"),
     ]:
@@ -147,7 +150,8 @@ def test_migration_and_create_all_agree_on_new_objects(database, _pg_session):
     fresh_engine = create_engine(fresh_url)
     try:
         Base.metadata.create_all(fresh_engine)
-        for table in ("monitoring_incidents", "operational_alerts", "operational_deliveries"):
+        for table in ("monitoring_incidents", "operational_alerts", "operational_deliveries",
+                      "package_states", "live_resource_versions", "live_change_events"):
             assert _shape(engine, table) == _shape(fresh_engine, table)
         # jobs: the new column only; 0001's own id/serial types differ by design.
         columns = {name: rest for name, *rest in _shape(engine, "jobs")["columns"]}

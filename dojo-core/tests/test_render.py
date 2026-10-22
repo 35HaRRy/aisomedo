@@ -249,7 +249,7 @@ def test_render_preview_rejects_over_limit(tmp_path):
         seam.render_preview()
 
 
-def test_render_job_stamps_digest_of_current_manifest(tmp_path):
+def test_queued_render_does_not_retarget_changed_inputs(tmp_path):
     store, seam, renderer = make_seam(tmp_path)
     set_logo(store, "logo.png")
     a = finalize_media(tmp_path, seam, filename="a.jpg")
@@ -262,8 +262,9 @@ def test_render_job_stamps_digest_of_current_manifest(tmp_path):
     seam.process_job(job.job_id)
 
     manifest = load_manifest(tmp_path, seam)
-    assert manifest["render_revision"] == seam.render_preview()["render_revision"]
-    assert manifest["render_revision"] != job.payload["digest"]
+    assert manifest["render_revision"] is None
+    assert store.get(job.job_id).status == "failed"
+    assert renderer.calls == []
 
 
 def test_build_reel_requires_watermark(tmp_path):

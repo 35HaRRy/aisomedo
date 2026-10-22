@@ -31,7 +31,8 @@ def pg_store(_pg_session: PostgresStore) -> Iterator[PostgresStore]:
     store = _pg_session
     with store._engine.begin() as conn:  # noqa: SLF001
         conn.execute(
-            text("TRUNCATE TABLE operational_deliveries, operational_alerts, monitoring_incidents, "
+            text("TRUNCATE TABLE live_change_events, live_resource_versions, package_states, "
+                 "operational_deliveries, operational_alerts, monitoring_incidents, "
                  "push_registrations, consent_acceptances, consent_policies, pairing_codes, "
                  "clients, audit_events, packages, uploads, jobs, settings, yayin_zamani, "
                  "yayin_incelemesi RESTART IDENTITY CASCADE")

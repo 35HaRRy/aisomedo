@@ -7,7 +7,7 @@ import { AssetPreview, imageError, ReloadDraft, useDraft, useFormSave } from "./
 
 type CardKind = "intro" | "outro";
 export function CardsStep({ onSaved, onboarding = true }: { onSaved: () => void; onboarding?: boolean }) {
-  const snapshot = useLiveData(api.branding);
+  const snapshot = useLiveData(api.branding, true, ["settings"]);
   const form = useFormSave(onSaved);
   const state = useDraft(snapshot.data ? { intro: snapshot.data.intro_duration?.toString() ?? "", outro: snapshot.data.outro_duration?.toString() ?? "", introAsset: snapshot.data.intro_asset ?? null, outroAsset: snapshot.data.outro_asset ?? null } : null, { intro: "", outro: "", introAsset: null as string | null, outroAsset: null as string | null });
   const [files, setFiles] = useState<Partial<Record<CardKind, File>>>({});

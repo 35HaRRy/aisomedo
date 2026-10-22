@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 
 from dojo import DojoPublishing, InMemoryStore, Job
 from dojo.adapters.stubs import StubMediaProcessor
+from dojo.testing import FakeClock
 from worker.main import run_tick
 
 
@@ -82,3 +84,20 @@ def test_run_tick_processes_render_job() -> None:
     spy = RenderSpyPublishing()
     run_tick(spy)
     assert spy.processed_jobs == ["r-1"]
+
+
+def test_worker_finalization_emits_package_and_upload_versions(tmp_path) -> None:
+    store = InMemoryStore()
+    publishing = DojoPublishing(packages=store, audit=store, uploads=store, jobs=store,
+                                settings=store, media_root=tmp_path, clock=FakeClock(),
+                                media=StubMediaProcessor())
+    upload = publishing.start_upload("photo.jpg", "image/jpeg", 4)
+    publishing.append_upload_range(upload.upload_id, 0, 4, hashlib.sha256(b"data").hexdigest(),
+                                   b"data")
+    publishing.complete_upload(upload.upload_id)
+    package = publishing.get_active_package()
+    before = store.get_resource_version(f"package:{package.id}")
+    run_tick(publishing)
+    assert publishing.get_upload_status(upload.upload_id).status == "finalized"
+    assert store.get_resource_version(f"package:{package.id}") > before
+    assert store.get_resource_version(f"upload:{upload.upload_id}") > 0

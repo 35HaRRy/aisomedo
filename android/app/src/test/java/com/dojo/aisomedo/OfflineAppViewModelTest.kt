@@ -46,12 +46,15 @@ class OfflineAppViewModelTest {
         var model: AppViewModel
         val client = ClientOut("now", "cli", 1, "device", null, "Telefon", null)
         fun dashboard() = """{"generated_at":"2026-10-12T12:00:00Z","package":{"id":1,"folder_name":"$folder","created_at":"now","status":"active"},"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
-        val editor = """{"package":{"id":1,"folder_name":"active","created_at":"now","status":"active"},"media":[],"montage":{"card_duration":0,"clips":[],"combined_duration":0,"duration_complete":true,"max_duration_seconds":90,"order":[],"over_limit":false,"required_action":null,"selections":{},"trims":{}},"render_stale":false,"render_preview_url":null,"render_revision":null}"""
+        val editor = """{"content_revision":1,"view_revision":1,"package":{"id":1,"folder_name":"active","created_at":"now","status":"active"},"media":[],"montage":{"card_duration":0,"clips":[],"combined_duration":0,"duration_complete":true,"max_duration_seconds":90,"order":[],"over_limit":false,"required_action":null,"selections":{},"trims":{}},"render_stale":false,"render_preview_url":null,"render_revision":null}"""
         init {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val path = request.requestUrl!!.encodedPath
                     seen.add("${request.method} $path")
+                    if (path == "/api/events") return MockResponse().setHeader("Content-Type", "text/event-stream")
+                        .setBody("event: ready\ndata: {\"protocol\":1}\n\n" + "event: heartbeat\ndata: {}\n\n".repeat(20_000))
+                        .throttleBody(64, 100, TimeUnit.MILLISECONDS)
                     val body = when (path) {
                         "/api/compat" -> """{"api_version":"0.1","android_min_version_code":1,"android_current_version_code":5,"update_url":"https://dojo.example/release"}"""
                         "/api/pairing/me" -> """{"id":1,"name":"${if (request.getHeader("Authorization")?.contains("NEW") == true) "New" else "Telefon"}","kind":"device","created_at":"now","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
@@ -83,7 +86,7 @@ class OfflineAppViewModelTest {
             model = create()
         }
         fun create(version: Int = 1): AppViewModel = AppViewModel(store, OkHttpClient(), version, true,
-            SavedStateHandle(mapOf("draft_caption" to "Draft")), snapshots, network, { 200 }).also { owner.put("model", it) }
+            SavedStateHandle(mapOf("draft_caption" to "Draft")), snapshots, network, { 200 }).also { it.setForeground(true); owner.put("model", it) }
         fun await(predicate: (AppUiState) -> Boolean) {
             repeat(700) { main.scheduler.runCurrent(); if (predicate(model.state.value)) return; Thread.sleep(10) }
             fail("State did not arrive: ${model.state.value}")
@@ -245,7 +248,7 @@ class OfflineAppViewModelTest {
             f.await { !it.busy && f.model.state.value.pendingAssets.isNotEmpty() }
             assertEquals(0, f.seen.count { it == "PATCH /api/settings/branding" })
             assertEquals("branding/assets/new.png", f.model.state.value.pendingAssets["logo_asset"]?.asset)
-            f.model.selectStep("logo"); f.await { !it.busy }
+            f.model.selectStep("logo"); f.await { it.canConfigure("logo") }
             f.model.retryAsset("logo_asset"); f.await { !it.busy }
             assertEquals(1, f.seen.count { it == "POST /api/settings/branding/assets" })
             assertEquals(1, f.seen.count { it == "PATCH /api/settings/branding" })
@@ -330,7 +333,8 @@ class OfflineAppViewModelTest {
             f.model.markReviewPreviewReady(7, "exact", true)
             f.disconnect()
             f.codes["/api/reviews/7"] = 500
-            f.connect(); f.await { it.canMutate && !it.review.busy }
+            f.connect(); f.await { !it.busy && !it.review.busy && it.issue != null }
+            assertFalse(f.model.state.value.canMutate)
             val before = f.seen.count { it.startsWith("POST") }
             f.model.markReviewPreviewReady(7, "exact", true)
             f.model.approveReview(); f.settle()

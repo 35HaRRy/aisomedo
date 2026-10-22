@@ -35,6 +35,10 @@ class DojoAppTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 paths.add(request.method + " " + request.path)
                 if (blocked) return MockResponse().setResponseCode(426).setBody("{}")
+                if (request.path == "/api/events") return MockResponse().setHeader("Content-Type", "text/event-stream")
+                    .setBody("event: ready\ndata: {\"protocol\":1}\n\n" + "event: heartbeat\ndata: {}\n\n".repeat(20_000))
+                    .throttleBody(64, 100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (request.path == "/api/packages/active/editor") return MockResponse().setResponseCode(404)
                 val body = when (request.path) {
                     "/api/compat" -> """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":1,"update_url":"https://example.com/update"}"""
                     "/api/pairing/me" -> """{"id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
@@ -61,6 +65,7 @@ class DojoAppTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             model = AppViewModel(store, OkHttpClient(), 1, true, SavedStateHandle(), network = network)
             owner.put("test", model)
+            model.setForeground(true)
         }
     }
     @After fun teardown() {

@@ -2,9 +2,11 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { client, dashboard, emptyEditor, setupState } from "../src/test/fixtures";
+import { installLiveStream } from "./live-fixture";
 
 const bytes = readFileSync(fileURLToPath(new URL("./fixtures/timeline.mp4", import.meta.url)));
 async function fixture(page: Page, continuation = false) {
+  await installLiveStream(page);
   const state = dashboard(), writes: { path: string; body: unknown }[] = [], errors: string[] = [];
   let status = 200;
   let publication: { status: string; error: string | null } | null = null;

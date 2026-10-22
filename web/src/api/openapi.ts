@@ -23,6 +23,7 @@ export const API_PATHS: readonly string[] = [
   "/api/activity",
   "/api/compat",
   "/api/dashboard",
+  "/api/events",
   "/api/media/upload-limits",
   "/api/media/uploads",
   "/api/media/uploads/{upload_id}",
@@ -44,6 +45,7 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/active/clear",
   "/api/packages/active/complete",
   "/api/packages/active/editor",
+  "/api/packages/active/edits",
   "/api/packages/active/media/{media_id}/preview",
   "/api/packages/active/media/{media_id}/remove",
   "/api/packages/active/media/{media_id}/restore",
@@ -102,6 +104,7 @@ export type AcceptanceOut = {
 };
 
 export type ActiveEditorOut = {
+  "content_revision": number;
   "media": Array<EditorMediaOut>;
   "montage": MontageOut;
   "package": PackageOut;
@@ -109,6 +112,7 @@ export type ActiveEditorOut = {
   "render_revision"?: string | null;
   "render_stale": boolean;
   "render_status"?: "missing" | "stale" | "queued" | "processing" | "ready" | "failed";
+  "view_revision": number;
 };
 
 export type ActivityEventOut = {
@@ -246,6 +250,12 @@ export type DashboardWorkerOut = {
   "status": "healthy" | "unhealthy" | "unknown";
 };
 
+export type EditConflictOut = {
+  "code": "edit_conflict";
+  "conflicts": Array<GroupConflictOut>;
+  "content_revision": number;
+};
+
 export type EditorMediaOut = {
   "artifacts": Array<PackageArtifactOut>;
   "content_type": string;
@@ -270,6 +280,17 @@ export type EmptyRescheduleIn = {
 export type EmptySkipIn = {
   "confirmed"?: boolean;
   "expected_folder_name": string;
+};
+
+export type GroupConflictOut = {
+  "current": Record<string, unknown>;
+  "key": string;
+};
+
+export type GroupEditIn = {
+  "base": Record<string, unknown>;
+  "key": string;
+  "proposed": Record<string, unknown>;
 };
 
 export type MetaCandidateOut = {
@@ -318,6 +339,13 @@ export type PackageArtifactOut = {
   "kind": "original" | "processed" | "render";
   "preview_url": string | null;
   "url": string | null;
+};
+
+export type PackageEditIn = {
+  "base_content_revision": number;
+  "changes": Array<GroupEditIn>;
+  "expected_folder_name": string;
+  "expected_package_id": number;
 };
 
 export type PackageOut = {

@@ -13,7 +13,7 @@ function ArtifactLinks({ artifacts }: { artifacts: PackageArtifactOut[] }) {
   </li>)}</ul>;
 }
 export function CompletedPackages({ onBack }: { onBack(): void }) {
-  const copy = tr.packageManagement, list = useLiveData(api.completedPackages);
+  const copy = tr.packageManagement, list = useLiveData(api.completedPackages, true, ["completed"]);
   const { invalidate } = useSession();
   const [folder, setFolder] = useState(""), [detail, setDetail] = useState<CompletedPackageOut | null>(null);
   const [error, setError] = useState(false), [retry, setRetry] = useState(0);

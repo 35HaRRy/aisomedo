@@ -151,16 +151,20 @@ def build_setup(meta: DojoMetaConnection | None = None) -> DojoSetup:
 
 
 def get_current_client(request: Request, response: Response) -> Client:
+    hub = getattr(request.app.state, "live_hub", None)
+    request.state.live_generation = hub.generation if hub is not None else None
     pairing: DojoPairing = request.app.state.pairing
     authorization = request.headers.get("authorization", "")
     if authorization.lower().startswith("bearer "):
         client = pairing.authenticate_bearer(authorization[7:].strip())
         if client is not None:
+            request.state.authorization_expires_at = pairing.authorization_deadline(client)
             return client
     session_id = request.cookies.get(COOKIE_NAME)
     if session_id:
         client = pairing.authenticate_session(session_id)
         if client is not None:
+            request.state.authorization_expires_at = pairing.authorization_deadline(client)
             response.set_cookie(
                 COOKIE_NAME,
                 session_id,

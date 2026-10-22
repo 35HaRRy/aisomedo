@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
+import { invalidateLive } from "../test/live";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { CardsStep } from "./CardsStep";
@@ -50,7 +51,7 @@ it("detects asset-only change while duration draft remains intact", async () => 
   await waitFor(() => expect(screen.getByLabelText("Giriş süresi (saniye)")).toHaveValue(2));
   fireEvent.change(screen.getByLabelText("Giriş süresi (saniye)"), { target: { value: "1.5" } });
   sent.updateImage();
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByLabelText("Giriş süresi (saniye)")).toHaveValue(1.5);
   expect(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" })).toBeInTheDocument();
 });

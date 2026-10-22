@@ -2,8 +2,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "../api/client";
+import { live } from "../live";
 import { SessionProvider, useSession } from "../session";
 import { client } from "../test/fixtures";
+import { invalidateLive } from "../test/live";
 import { UploadProvider, useUploads } from "./UploadProvider";
 import { deferred, installCrypto, uploadServer } from "./testFixtures";
 
@@ -11,6 +13,7 @@ function Probe() {
   const { snapshot, controller } = useUploads();
   const session = useSession();
   return <><span>{snapshot.rows.map(row => row.phase).join(",") || "empty"}</span>
+    {snapshot.limitsError && <span>limits-error</span>}
     <button onClick={() => void controller.add([new File(["abc"], "dojo.jpg")])}>select</button>
     <button onClick={session.invalidate}>revoke</button></>;
 }
@@ -41,7 +44,16 @@ it("StrictMode effect replay leaves one usable controller", async () => {
   expect(server.transport.start).toHaveBeenCalledTimes(1);
 });
 
-it("foreground polling stops hidden, coalesces wake, and never overlaps", async () => {
+it("failed required upload limits keep editing unsynchronized", async () => {
+  const server = setup();
+  server.transport.limits.mockRejectedValueOnce(new Error("limits unavailable"));
+  render(<SessionProvider><Gate /></SessionProvider>);
+  await screen.findByText("limits-error");
+  await act(async () => {});
+  expect(live.getSnapshot()).toBe("sync-failed");
+});
+
+it("event-driven upload refresh never overlaps or repeats on idle", async () => {
   const server = setup();
   render(<SessionProvider><Gate /></SessionProvider>);
   await screen.findByRole("button", { name: "select" });
@@ -56,7 +68,7 @@ it("foreground polling stops hidden, coalesces wake, and never overlaps", async 
   hidden = false;
   const pending = deferred<Awaited<ReturnType<typeof server.transport.status>>>();
   server.transport.status.mockImplementationOnce(() => pending.promise);
-  await act(async () => { window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("online")); await vi.advanceTimersByTimeAsync(0); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(0); });
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   expect(server.transport.status).toHaveBeenCalledTimes(2);
   await act(async () => pending.resolve({ ...server.records.get("upload-1")!, status: "finalized" }));

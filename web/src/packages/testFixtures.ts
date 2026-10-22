@@ -10,6 +10,7 @@ export function packageSnapshot(): ActiveEditorOut {
     artifacts: [],
   }));
   return {
+    content_revision: 1, view_revision: 1,
     package: { id: 1, folder_name: "02-10-2026 13-00", created_at: "2026-10-02T10:00:00Z", status: "active" },
     render_stale: false, media,
     montage: {
@@ -50,6 +51,18 @@ export function editorServer() {
       if (writeStatus !== 200) return json({ detail: "fixture failure" }, writeStatus);
       if (url.endsWith("/clear")) { cleared = true; return json({ folder_name: snapshot.package.folder_name, upload_ids: ["upload-a"] }); }
       if (url.endsWith("/render")) { snapshot.render_status = "queued"; return json({ stale: true, render_revision: "new" }); }
+      if (url.endsWith("/edits")) {
+        for (const change of body.changes) {
+          const id = change.key.slice(change.key.indexOf(":") + 1);
+          if (change.key.startsWith("video:")) {
+            if (change.proposed.ranges.length) snapshot.montage.selections[id] = change.proposed.ranges;
+            else delete snapshot.montage.selections[id];
+          }
+          if (change.key.startsWith("photo:")) snapshot.media.find(m => m.media_id === id)!.effective_duration = change.proposed.seconds;
+        }
+        snapshot.content_revision++; snapshot.render_stale = true;
+        return json(snapshot);
+      }
       if (url.endsWith("/selections")) snapshot.montage.selections = body.selections;
       if (body?.photo_durations) for (const media of snapshot.media) {
         if (media.media_id in body.photo_durations) media.effective_duration = body.photo_durations[media.media_id];

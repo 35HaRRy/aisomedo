@@ -12,11 +12,12 @@ from dojo import (
     RescheduleTimeInvalid,
     SkipRequiresConfirmation,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -64,7 +65,9 @@ def recover_publication(
 
 
 @router.get("", response_model=dict[str, object])
+@versioned_snapshot("publication")
 def publication_status(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:

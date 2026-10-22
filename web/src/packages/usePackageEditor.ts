@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { ActiveEditorOut, ClearPackageOut } from "../api/openapi";
-import { startLiveRefresh } from "../live";
+import { live, startLiveRefresh } from "../live";
+import { useLivePhase } from "../liveProvider";
 import { useSession } from "../session";
+import { deleteDraft, listDrafts, reconcileDraft, resolveDraftConflict, sameGroup, serverGroup, writeDraft,
+  type DraftKey, type StoredDraft } from "./drafts";
 import { proposedDuration, validateRanges, type RangeInput, type SelectionMap, type VideoRange } from "./ranges";
 
 type EditorError = "read" | "uncertain" | "conflict" | "invalid" | "limit" | "render" | "cleanup" | null;
-type ClearTarget = { id: number; folder_name: string };
-type SaveBlockedReason = "unchanged" | "busy" | "offline" | "refresh" | "invalid" | "duration" | "limit" | null;
+type ClearTarget = { id: number; folder_name: string; content_revision: number };
+type PersistenceError = "unavailable" | "conflict" | "corrupt" | null;
+type SaveBlockedReason = "unchanged" | "busy" | "offline" | "refresh" | "invalid" | "duration" | "limit" | "storage" | null;
 interface Data {
+  draftKey: DraftKey | null;
+  storedDraft: StoredDraft | null;
+  restoring: boolean;
+  persisting: boolean;
+  persistenceError: PersistenceError;
+  conflicts: Record<string, Record<string, unknown>>;
   pendingClear: ClearTarget | null;
   snapshot: ActiveEditorOut | null;
   draftInputs: Record<string, RangeInput[]>;
@@ -21,6 +31,15 @@ interface Data {
   error: EditorError;
 }
 export interface PackageEditorState {
+  canEdit: boolean;
+  persistenceError: PersistenceError;
+  persisting: boolean;
+  restoring: boolean;
+  draftFolder: string | null;
+  conflicts: Record<string, Record<string, unknown>>;
+  resolveConflict(key: string, choice: "server" | "local"): void;
+  retryDraftPersistence(): Promise<void>;
+  loadStoredDraft(): Promise<void>;
   pendingClear: ClearTarget | null;
   snapshot: ActiveEditorOut | null;
   draft: SelectionMap;
@@ -49,12 +68,12 @@ export interface PackageEditorState {
   remove(id: string): Promise<boolean>;
   restore(id: string): Promise<boolean>;
 }
-const empty = (): Data => ({ pendingClear: null, snapshot: null, draftInputs: {}, base: {}, baseFolder: null, stale: false, readRequired: false, loading: false, busy: false, error: null });
+const empty = (): Data => ({ draftKey: null, storedDraft: null, restoring: false, persisting: false, persistenceError: null, conflicts: {}, pendingClear: null, snapshot: null, draftInputs: {}, base: {}, baseFolder: null, stale: false, readRequired: false, loading: false, busy: false, error: null });
 const clearKey = (clientId: number) => `aisomedo.package-clear.v1:${clientId}`;
 function rememberedClear(clientId: number): ClearTarget | null {
   try {
     const value = JSON.parse(localStorage.getItem(clearKey(clientId)) ?? "null");
-    return value && Number.isSafeInteger(value.id) && value.id > 0 && typeof value.folder_name === "string" ? value : null;
+    return value && Number.isSafeInteger(value.id) && value.id > 0 && typeof value.folder_name === "string" && Number.isSafeInteger(value.content_revision) && value.content_revision > 0 ? value : null;
   } catch { return null; }
 }
 function rememberClear(clientId: number | undefined, target: ClearTarget | null) {
@@ -70,13 +89,40 @@ function inputs(snapshot: ActiveEditorOut): Record<string, RangeInput[]> {
   ]));
 }
 const changed = (data: Data, id: string) => !equal(data.draftInputs[id] ?? [], data.base[id] ?? []);
-const dirty = (data: Data) => Object.keys(data.draftInputs).some(id => changed(data, id));
-function fingerprint(snapshot: ActiveEditorOut | null): string {
-  return JSON.stringify(snapshot && { package: snapshot.package.id, folder: snapshot.package.folder_name,
-    order: snapshot.montage.order, selections: snapshot.montage.selections,
-    cards: snapshot.montage.card_duration, limit: snapshot.montage.max_duration_seconds,
-    media: snapshot.media.map(m => [m.media_id, m.status, m.processed, m.effective_duration]),
-  });
+const dirty = (data: Data) => Object.keys(data.draftInputs).some(id => changed(data, id))
+  || Object.keys(data.storedDraft?.groups ?? {}).some(key => !key.startsWith("video:") && !key.startsWith("photo:"));
+
+function baselineInputs(draft: StoredDraft): Record<string, RangeInput[]> {
+  const base: Record<string, RangeInput[]> = {};
+  for (const [key, group] of Object.entries(draft.groups)) {
+    const id = key.slice(key.indexOf(":") + 1);
+    if (key.startsWith("video:") && Array.isArray(group.base.ranges)) base[id] = group.base.ranges.map(value => ({ start: String(value.start), end: String(value.end) }));
+    if (key.startsWith("photo:")) base[id] = [{ start: "0", end: String(group.base.seconds) }];
+  }
+  return base;
+}
+
+function editedDraft(data: Data): StoredDraft | null {
+  const snapshot = data.snapshot;
+  if (!snapshot && !data.storedDraft) return null;
+  const groups = { ...data.storedDraft?.groups }, edited: Record<string, RangeInput[]> = {};
+  for (const [id, rows] of Object.entries(data.draftInputs)) {
+    const media = snapshot?.media.find(value => value.media_id === id);
+    if (!media) { if (data.storedDraft?.inputs[id]) edited[id] = rows; continue; }
+    const key = `${media.is_video ? "video" : "photo"}:${id}`;
+    if (!changed(data, id)) { delete groups[key]; continue; }
+    const number = (value: string) => value.trim() && Number.isFinite(Number(value)) ? Number(value) : value;
+    const proposed = media.is_video ? { ranges: rows.map(row => ({ start: number(row.start), end: number(row.end) })) }
+      : { seconds: number(rows[0]?.end ?? "") };
+    groups[key] = { base: groups[key]?.base ?? serverGroup(snapshot!, key), proposed };
+    edited[id] = structuredClone(rows);
+  }
+  const uncertain = data.storedDraft?.uncertain ?? false;
+  if (!Object.keys(groups).length && !uncertain) return null;
+  return { schemaVersion: 1, localRevision: data.storedDraft?.localRevision ?? 0,
+    folderName: data.storedDraft?.folderName ?? snapshot!.package.folder_name,
+    baseContentRevision: data.storedDraft?.baseContentRevision ?? snapshot!.content_revision,
+    groups, inputs: edited, uncertain };
 }
 type WriteChange = { kind: "selections"; selections: SelectionMap; photos: Record<string, number> } | { kind: "order"; order: string[] } | { kind: "remove" | "restore"; id: string } | { kind: "render" | "clear" };
 function expectedWrite(snapshot: ActiveEditorOut, change: WriteChange): ActiveEditorOut {
@@ -93,11 +139,6 @@ function expectedWrite(snapshot: ActiveEditorOut, change: WriteChange): ActiveEd
     if (change.kind === "restore") next.montage.order.splice(media?.removed_position ?? next.montage.order.length, 0, change.id);
   }
   return next;
-}
-function writeFingerprint(snapshot: ActiveEditorOut): string {
-  // Duration is derived from selections/source metadata, not an independent
-  // change. Compare the inputs, allowing only this acknowledged operation.
-  return fingerprint({ ...snapshot, media: snapshot.media.map(m => ({ ...m, effective_duration: m.is_video ? null : m.effective_duration })) });
 }
 function numeric(data: Data): { draft: SelectionMap; photoDurations: Record<string, number>; validationErrors: Record<string, string> } {
   const draft: SelectionMap = {}, photoDurations: Record<string, number> = {}, validationErrors: Record<string, string> = {};
@@ -119,39 +160,74 @@ function numeric(data: Data): { draft: SelectionMap; photoDurations: Record<stri
   return { draft, photoDurations, validationErrors };
 }
 
-export function usePackageEditor(): PackageEditorState {
+export function usePackageEditor(enabled = true): PackageEditorState {
+  const phase = useLivePhase();
   const { status, generation, invalidate, client } = useSession();
   const [data, setData] = useState<Data>(empty);
   const [offline, setOffline] = useState(!navigator.onLine);
   const current = useRef(data);
   const alive = useRef(false);
+  const lifetime = useRef(0);
+  const revision = useRef(0);
+  const persistence = useRef<Promise<void>>(Promise.resolve());
+  const restoring = useRef<Promise<void>>(Promise.resolve());
   const read = useRef<AbortController | null>(null), write = useRef<AbortController | null>(null);
   const update = useCallback((next: Data) => { current.current = next; setData(next); }, []);
-  const accept = useCallback((snapshot: ActiveEditorOut, explicit: boolean, ownWrite?: ActiveEditorOut) => {
-    const old = current.current, fresh = inputs(snapshot), hadDraft = dirty(old);
-    const otherPackage = old.baseFolder !== null && (old.baseFolder !== snapshot.package.folder_name || old.snapshot?.package.id !== snapshot.package.id);
-    const nextInputs = { ...fresh };
-    if (hadDraft) for (const id of Object.keys(old.draftInputs)) {
-      if (changed(old, id)) nextInputs[id] = old.draftInputs[id];
-    }
-    const conflict = hadDraft && (ownWrite ? writeFingerprint(ownWrite) !== writeFingerprint(snapshot) : fingerprint(old.snapshot) !== fingerprint(snapshot));
-    const readRequired = explicit ? false : old.readRequired;
-    update({ ...old, snapshot, draftInputs: nextInputs,
-      base: hadDraft && !explicit && (!ownWrite || conflict) ? old.base : fresh,
-      baseFolder: hadDraft && otherPackage ? old.baseFolder : snapshot.package.folder_name,
-      stale: readRequired || otherPackage && hadDraft || !explicit && (conflict || old.stale),
-      readRequired, loading: false, error: readRequired ? old.error : explicit || ownWrite ? null : old.error,
+  const persist = useCallback((next: Data): Promise<boolean> => {
+    const key = next.draftKey, draft = next.storedDraft, epoch = lifetime.current;
+    if (!key) return Promise.resolve(false);
+    update({ ...next, persisting: true });
+    let succeeded = false;
+    const work = persistence.current.then(async () => {
+      if (epoch !== lifetime.current || current.current.persistenceError) return;
+      try {
+        if (draft) revision.current = await writeDraft(key, revision.current, draft);
+        else { await deleteDraft(key, revision.current); revision.current = 0; }
+        succeeded = true;
+      } catch (error) {
+        if (alive.current && epoch === lifetime.current) update({ ...current.current,
+          persistenceError: error instanceof Error && error.message === "draft_conflict" ? "conflict"
+            : error instanceof Error && error.message === "draft_corrupt" ? "corrupt" : "unavailable" });
+      }
+    });
+    persistence.current = work;
+    return work.then(() => {
+      if (alive.current && epoch === lifetime.current && persistence.current === work) update({ ...current.current,
+        persisting: false, storedDraft: current.current.storedDraft && { ...current.current.storedDraft, localRevision: revision.current } });
+      return succeeded;
     });
   }, [update]);
+  const accept = useCallback(async (snapshot: ActiveEditorOut, explicit: boolean, ownWrite?: ActiveEditorOut) => {
+    const old = current.current, fresh = inputs(snapshot);
+    const key = old.draftKey ?? (client ? { origin: window.location.origin, clientId: client.id, packageId: snapshot.package.id } : null);
+    let draft = editedDraft(old);
+    if (draft?.uncertain && (explicit || ownWrite)) draft = { ...draft, uncertain: false };
+    const result = key && draft ? reconcileDraft(key, draft, snapshot) : { draft: null, conflicts: {}, applicable: true };
+    const retained = result.draft;
+    const readRequired = old.readRequired && !explicit && !ownWrite;
+    const next: Data = { ...old, snapshot, draftKey: result.applicable && !retained && client
+      ? { origin: window.location.origin, clientId: client.id, packageId: snapshot.package.id } : key,
+      storedDraft: retained, conflicts: result.conflicts,
+      draftInputs: { ...fresh, ...retained?.inputs }, base: { ...fresh, ...(retained ? baselineInputs(retained) : {}) },
+      baseFolder: retained?.folderName ?? snapshot.package.folder_name,
+      stale: readRequired || !result.applicable || Object.keys(result.conflicts).length > 0,
+      readRequired, loading: false, error: readRequired ? old.error : null };
+    // Delete only the acknowledged/reconciled local revision, never another tab's.
+    if (!sameGroup(old.storedDraft, retained) && old.draftKey) {
+      await persist({ ...next, draftKey: old.draftKey });
+      if (alive.current && !current.current.persistenceError) update({ ...current.current, draftKey: next.draftKey });
+    } else update(next);
+  }, [client?.id, persist, update]);
   const load = useCallback(async (explicit = false, signal?: AbortSignal, ownWrite?: ActiveEditorOut) => {
-    if (!alive.current || !navigator.onLine || current.current.pendingClear || current.current.busy && !ownWrite) return;
+    await restoring.current;
+    if (signal?.aborted || !alive.current || !navigator.onLine || current.current.pendingClear || current.current.busy && !ownWrite) return;
     read.current?.abort();
     const controller = new AbortController(); read.current = controller;
     const cancel = () => controller.abort(); signal?.addEventListener("abort", cancel, { once: true });
     update({ ...current.current, loading: true });
     try {
       const snapshot = await api.packageEditor(controller.signal);
-      if (alive.current && !controller.signal.aborted) accept(snapshot, explicit, ownWrite);
+      if (alive.current && !controller.signal.aborted) await accept(snapshot, explicit, ownWrite);
     } catch (error) {
       if (!alive.current || controller.signal.aborted) return;
       if (error instanceof ApiError && error.status === 401) { update(empty()); invalidate(); }
@@ -163,33 +239,75 @@ export function usePackageEditor(): PackageEditorState {
       if (read.current === controller && alive.current && current.current.loading) update({ ...current.current, loading: false });
     }
   }, [accept, invalidate, update]);
+  const loadStoredDraft = useCallback(async () => {
+    if (!client) return;
+    const epoch = lifetime.current;
+    update({ ...current.current, restoring: true });
+    await persistence.current;
+    try {
+      const rows = await listDrafts({ origin: window.location.origin, clientId: client.id });
+      if (!alive.current || epoch !== lifetime.current) return;
+      const selected = current.current.draftKey ? rows.find(row => row.packageId === current.current.draftKey!.packageId) : rows[0];
+      revision.current = selected?.draft.localRevision ?? 0;
+      const draft = selected?.draft ?? null;
+      update({ ...current.current, restoring: false, persistenceError: null, storedDraft: draft,
+        draftKey: selected ? { origin: window.location.origin, clientId: client.id, packageId: selected.packageId } : current.current.draftKey,
+        draftInputs: { ...(current.current.snapshot ? inputs(current.current.snapshot) : {}), ...draft?.inputs },
+        base: { ...(current.current.snapshot ? inputs(current.current.snapshot) : {}), ...(draft ? baselineInputs(draft) : {}) },
+        baseFolder: draft?.folderName ?? current.current.snapshot?.package.folder_name ?? null,
+        readRequired: false, stale: !!draft });
+    } catch (error) {
+      if (alive.current && epoch === lifetime.current) update({ ...current.current, restoring: false,
+        persistenceError: error instanceof Error && error.message === "draft_corrupt" ? "corrupt" : "unavailable" });
+    }
+  }, [client?.id, update]);
   useEffect(() => {
     alive.current = true;
+    lifetime.current++; revision.current = 0;
     const pendingClear = client ? rememberedClear(client.id) : null;
     update({ ...empty(), pendingClear, error: pendingClear ? "cleanup" : null });
-    const stop = status === "paired" ? startLiveRefresh(signal => load(false, signal)) : () => {};
+    restoring.current = loadStoredDraft();
     const connectivity = () => setOffline(!navigator.onLine);
     window.addEventListener("online", connectivity); window.addEventListener("offline", connectivity);
-    return () => { alive.current = false; stop(); read.current?.abort(); write.current?.abort();
+    return () => { alive.current = false; read.current?.abort(); write.current?.abort();
       window.removeEventListener("online", connectivity); window.removeEventListener("offline", connectivity); };
-  }, [status, generation, client?.id, load, update]);
+  }, [status, generation, client?.id, loadStoredDraft, update]);
+  useEffect(() => {
+    if (!enabled || status !== "paired") return;
+    const stop = startLiveRefresh(async signal => {
+      await load(false, signal);
+      if (current.current.error === "read") throw new Error("editor snapshot unavailable");
+    }, ["package:*", "settings", "publication"]);
+    return () => {
+      stop(); read.current?.abort();
+      if (alive.current) update({ ...current.current, stale: true });
+    };
+  }, [enabled, status, generation, load, update]);
   const mutate = useCallback(async (operation: (folder: string, signal: AbortSignal) => Promise<unknown>, change: WriteChange): Promise<boolean> => {
     const old = current.current;
     const clearing = change.kind === "clear";
     const target = old.pendingClear ?? old.snapshot?.package;
-    if (!alive.current || !navigator.onLine || old.busy || !target
-      || !clearing && (old.stale || old.readRequired || !old.snapshot)) return false;
+    if (!enabled || !alive.current || !navigator.onLine || live.getSnapshot() !== "live" || old.busy || !target
+      || old.restoring || old.persistenceError || !clearing && (old.stale || old.readRequired || !old.snapshot)) return false;
     const expected = old.snapshot ? expectedWrite(old.snapshot, change) : undefined;
     read.current?.abort();
     const controller = new AbortController(); write.current = controller;
-    const pendingClear = clearing ? { id: target.id, folder_name: target.folder_name } : old.pendingClear;
+    const pendingClear = clearing ? { id: target.id, folder_name: target.folder_name, content_revision: old.pendingClear?.content_revision ?? old.snapshot!.content_revision } : old.pendingClear;
     if (clearing) rememberClear(client?.id, pendingClear);
     update({ ...old, pendingClear, busy: true, loading: false, error: null });
     try {
-      await operation(target.folder_name, controller.signal);
+      const draft = editedDraft(old) ?? { schemaVersion: 1 as const, localRevision: revision.current,
+        folderName: target.folder_name, baseContentRevision: old.snapshot?.content_revision ?? old.pendingClear!.content_revision,
+        groups: {}, inputs: {}, uncertain: false };
+      if (!await persist({ ...current.current, storedDraft: { ...draft, uncertain: true } })) return false;
+      if (!alive.current || controller.signal.aborted || live.getSnapshot() !== "live") return false;
+      const response = await operation(target.folder_name, controller.signal);
       if (!alive.current || controller.signal.aborted) return false;
-      if (clearing) { rememberClear(client?.id, null); update(empty()); return true; }
-      if (change.kind === "selections") update({ ...current.current, base: current.current.draftInputs });
+      if (clearing) {
+        await persist({ ...current.current, storedDraft: null });
+        rememberClear(client?.id, null); update({ ...empty(), persistenceError: current.current.persistenceError }); return true;
+      }
+      if (change.kind === "selections" && response && typeof response === "object" && "package" in response) await accept(response as ActiveEditorOut, false, expected);
       await load(false, undefined, expected);
       // Acknowledged writes may succeed even if the follow-up read fails, but
       // further mutations wait for an explicit successful read in that case.
@@ -209,59 +327,93 @@ export function usePackageEditor(): PackageEditorState {
           pendingClear: clearing ? null : current.current.pendingClear,
           readRequired: !definite,
           error: definite ? error.status === 422 ? "invalid" : change.kind === "render" ? "render" : "conflict" : "uncertain" });
+        if (definite && current.current.storedDraft) await persist({ ...current.current,
+          storedDraft: { ...current.current.storedDraft, uncertain: false } });
       }
       return false;
     } finally { if (write.current === controller && alive.current) { write.current = null; update({ ...current.current, busy: false }); } }
-  }, [client?.id, invalidate, load, update]);
+  }, [enabled, accept, client?.id, invalidate, load, persist, update]);
+  const edit = useCallback((next: Data) => {
+    void persist({ ...next, storedDraft: editedDraft(next) });
+  }, [persist]);
   const setRanges = useCallback((id: string, ranges: VideoRange[]) => {
-    if (current.current.busy || current.current.stale) return;
-    update({ ...current.current, draftInputs: { ...current.current.draftInputs,
+    if (!navigator.onLine || live.getSnapshot() !== "live" || current.current.busy || current.current.restoring || current.current.stale || !current.current.snapshot) return;
+    edit({ ...current.current, draftInputs: { ...current.current.draftInputs,
       [id]: [...ranges].sort((a, b) => a.start - b.start).map(r => ({ start: String(r.start), end: String(r.end) })) } });
-  }, [update]);
+  }, [edit]);
   const setInput = useCallback((id: string, index: number, bound: "start" | "end", value: string) => {
     const old = current.current;
-    if (old.busy || old.stale || !old.draftInputs[id]?.[index]) return;
-    update({ ...old, draftInputs: { ...old.draftInputs,
+    if (!navigator.onLine || live.getSnapshot() !== "live" || old.busy || old.restoring || old.stale || !old.snapshot || !old.draftInputs[id]?.[index]) return;
+    edit({ ...old, draftInputs: { ...old.draftInputs,
       [id]: old.draftInputs[id].map((r, i) => i === index ? { ...r, [bound]: value } : r) } });
-  }, [update]);
+  }, [edit]);
   const discard = useCallback((id?: string) => {
     const old = current.current;
-    if (old.busy) return;
+    if (live.getSnapshot() !== "live" || old.busy) return;
+    // A draft retained from a replaced package is deleted before the editor is
+    // rebound, so later edits cannot be written under the old package key.
+    const rollover = !!old.draftKey && !!old.snapshot && old.draftKey.packageId !== old.snapshot.package.id;
     const fresh = old.snapshot ? inputs(old.snapshot) : {};
-    update({ ...old, draftInputs: id ? { ...old.draftInputs, [id]: fresh[id] ?? [] } : fresh,
-      base: id ? { ...old.base, [id]: fresh[id] ?? [] } : fresh,
-      baseFolder: id ? old.baseFolder : old.snapshot?.package.folder_name ?? null,
-      stale: old.readRequired || (id ? old.stale : false), error: old.readRequired ? old.error : null });
-  }, [update]);
+    const groups = { ...old.storedDraft?.groups }, conflicts = rollover ? {} : { ...old.conflicts };
+    for (const key of Object.keys(groups)) if (rollover || !id || key === `video:${id}` || key === `photo:${id}`) { delete groups[key]; delete conflicts[key]; }
+    const next = { ...old, storedDraft: rollover ? null : old.storedDraft && { ...old.storedDraft, groups }, conflicts,
+      draftInputs: id && !rollover ? { ...old.draftInputs, [id]: fresh[id] ?? [] } : fresh,
+      base: id && !rollover ? { ...old.base, [id]: fresh[id] ?? [] } : fresh,
+      baseFolder: id && !rollover ? old.baseFolder : old.snapshot?.package.folder_name ?? null,
+      stale: old.readRequired || (id && !rollover ? old.stale : false), error: old.readRequired ? old.error : null };
+    if (rollover) {
+      void persist({ ...old, storedDraft: null });
+      update({ ...next, draftKey: { ...old.draftKey!, packageId: old.snapshot!.package.id } });
+    } else edit(next);
+  }, [edit, persist, update]);
   const save = useCallback(async () => {
     const old = current.current, values = numeric(old);
     if (!old.snapshot || !dirty(old) || Object.keys(values.validationErrors).length) return false;
     const total = proposedDuration(old.snapshot, values.draft, values.photoDurations);
     if (total === null || total > old.snapshot.montage.max_duration_seconds) return false;
-    return mutate((folder, signal) => api.saveSelections({ expected_folder_name: folder, selections: values.draft,
-      ...(Object.keys(values.photoDurations).length ? { photo_durations: values.photoDurations } : {}) }, signal),
+    const draft = editedDraft(old);
+    if (!draft) return false;
+    return mutate((folder, signal) => api.savePackageEdits({ expected_folder_name: folder,
+      expected_package_id: old.snapshot!.package.id, base_content_revision: draft.baseContentRevision,
+      changes: Object.entries(draft.groups).map(([key, group]) => ({ key, ...group })) }, signal),
     { kind: "selections", selections: values.draft, photos: values.photoDurations });
   }, [mutate]);
   const values = numeric(data), total = data.snapshot && !Object.keys(values.validationErrors).length ? proposedDuration(data.snapshot, values.draft, values.photoDurations) : null;
-  const saveBlockedReason: SaveBlockedReason = data.busy || data.loading ? "busy" : offline ? "offline" : data.stale || !data.snapshot ? "refresh"
+  const saveBlockedReason: SaveBlockedReason = data.busy || data.loading || data.restoring ? "busy" : data.persistenceError ? "storage" : !enabled || offline || phase !== "live" ? "offline" : data.stale || !data.snapshot ? "refresh"
     : !dirty(data) ? "unchanged" : Object.keys(values.validationErrors).length ? "invalid" : total === null ? "duration"
     : total > data.snapshot.montage.max_duration_seconds ? "limit" : null;
-  return { ...data, ...values, offline, dirty: dirty(data), proposedTotal: total,
+  return { ...data, ...values, offline: offline || phase !== "live", dirty: dirty(data), proposedTotal: total,
+    canEdit: enabled && phase === "live" && !data.busy && !data.restoring && !data.stale && !!data.snapshot,
+    draftFolder: data.storedDraft?.folderName ?? null,
+    retryDraftPersistence: async () => {
+      if (current.current.persistenceError !== "unavailable") return;
+      await persist({ ...current.current, persistenceError: null, storedDraft: editedDraft(current.current) });
+    },
+    loadStoredDraft,
+    resolveConflict: (key, choice) => {
+      const old = current.current;
+      if (live.getSnapshot() !== "live" || old.busy || !old.storedDraft || !old.snapshot || !old.conflicts[key]) return;
+      const draft = resolveDraftConflict(old.storedDraft, key, old.conflicts[key], choice, old.snapshot.content_revision);
+      const conflicts = { ...old.conflicts }; delete conflicts[key];
+      const fresh = inputs(old.snapshot);
+      void persist({ ...old, storedDraft: draft, conflicts, stale: Object.keys(conflicts).length > 0,
+        draftInputs: { ...fresh, ...draft?.inputs }, base: { ...fresh, ...(draft ? baselineInputs(draft) : {}) } });
+    },
     canSave: saveBlockedReason === null, saveBlockedReason,
     isDirty: id => changed(current.current, id), setRanges, setInput, save, discard,
     setPhotoDuration: (id, value) => setInput(id, 0, "end", value),
-    renderPreview: () => mutate((folder, signal) => api.renderPackage(folder, current.current.snapshot?.render_status === "failed", signal), { kind: "render" }),
+    renderPreview: () => mutate((folder, signal) => api.renderPackage(folder, current.current.snapshot?.render_status === "failed", current.current.snapshot!, signal), { kind: "render" }),
     clearPackage: async () => {
       let result: ClearPackageOut | null = null;
       const succeeded = await mutate(async (folder, signal) => {
         const target = current.current.pendingClear!;
-        result = await api.clearPackage({ expected_folder_name: folder, expected_package_id: target.id, confirmed: true }, signal);
+        result = await api.clearPackage({ expected_folder_name: folder, expected_package_id: target.id, confirmed: true }, { package: { id: target.id }, content_revision: target.content_revision }, signal);
       }, { kind: "clear" });
       return succeeded ? result : null;
     },
     refresh: () => load(true),
-    reorder: order => mutate((folder, signal) => api.saveOrder(order, folder, signal), { kind: "order", order }),
-    remove: id => changed(current.current, id) ? Promise.resolve(false) : mutate((folder, signal) => api.removeMedia(id, folder, signal), { kind: "remove", id }),
-    restore: id => mutate((folder, signal) => api.restoreMedia(id, folder, signal), { kind: "restore", id }),
+    reorder: order => mutate((folder, signal) => api.saveOrder(order, folder, current.current.snapshot!, signal), { kind: "order", order }),
+    remove: id => changed(current.current, id) ? Promise.resolve(false) : mutate((folder, signal) => api.removeMedia(id, folder, current.current.snapshot!, signal), { kind: "remove", id }),
+    restore: id => mutate((folder, signal) => api.restoreMedia(id, folder, current.current.snapshot!, signal), { kind: "restore", id }),
   };
 }

@@ -154,14 +154,14 @@ def test_caption_and_branding_edits_clear_render_revision(tmp_path):
     manifest_path = tmp_path / seam.get_active_package().folder_name / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["render_revision"] = "rev-1"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
 
     seam.set_caption("x")
     assert load_manifest(tmp_path, seam)["render_revision"] is None
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["render_revision"] = "rev-2"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
 
     seam.set_branding({"intro_asset": "y.mp4"})
     assert load_manifest(tmp_path, seam)["render_revision"] is None

@@ -118,7 +118,7 @@ def test_clear_identity_guard_preserves_files(tmp_path):
     assert (tmp_path / package.folder_name / "manifest.json").exists()
 
 
-def test_clear_serializes_with_running_renderer(tmp_path):
+def test_clear_during_render_does_not_restore_deleted_package_or_job(tmp_path):
     entered, release, cleared = Event(), Event(), Event()
 
     class SlowRenderer(StubReelRenderer):
@@ -131,19 +131,31 @@ def test_clear_serializes_with_running_renderer(tmp_path):
     folder = seam.get_active_package().folder_name
     seam.render_preview(expected_folder_name=folder)
     job = seam.claim_next_job()
-    thread = Thread(target=lambda: seam.process_job(job.job_id))
+    errors = []
+
+    def process():
+        try:
+            seam.process_job(job.job_id)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = Thread(target=process)
     thread.start()
     assert entered.wait(5)
     cleanup = Thread(target=lambda: (
         seam.clear_active_package(expected_folder_name=folder), cleared.set(),
     ))
     cleanup.start()
-    assert not cleared.wait(0.05)
-    release.set()
-    thread.join(5)
-    cleanup.join(5)
+    try:
+        assert cleared.wait(2), "cleanup must not wait for expensive rendering"
+    finally:
+        release.set()
+        thread.join(5)
+        cleanup.join(5)
     assert cleared.is_set()
+    assert not errors
     assert not (tmp_path / folder).exists()
+    assert not (tmp_path / "tmp" / f"render-{job.job_id}").exists()
 
 
 def test_failed_render_retry_never_replaces_last_complete_preview(tmp_path):

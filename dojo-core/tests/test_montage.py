@@ -104,7 +104,7 @@ def test_finalize_clears_render_revision(tmp_path):
     manifest_path = tmp_path / package.folder_name / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["render_revision"] = "rev-1"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(package, manifest)
 
     seam._media = StubMediaProcessor()
     seam.process_job(job.job_id)
@@ -252,14 +252,14 @@ def test_order_and_trim_edits_clear_render_revision(tmp_path):
     manifest_path = tmp_path / seam.get_active_package().folder_name / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["render_revision"] = "rev-1"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
 
     seam.set_order([video, a])
     assert load_manifest(tmp_path, seam)["render_revision"] is None
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["render_revision"] = "rev-2"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
 
     seam.set_trims({video: {"start": 0.0, "end": 5.0}})
     assert load_manifest(tmp_path, seam)["render_revision"] is None

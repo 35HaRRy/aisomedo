@@ -87,6 +87,7 @@ class ReviewScreenTest {
 
     private fun pickerConfirmationAfterLosingAuthority(tag: String, type: Class<out View>, select: (View) -> Unit) {
         val current = mutableStateOf(AppUiState(phase = Phase.READY, authoritative = true,
+            livePhase = com.dojo.aisomedo.live.LivePhase.LIVE,
             review = initial.copy(target = initial.target!!.copy(action = ReviewAction.RESCHEDULE))))
         var decisions = 0
         var cancelled = false

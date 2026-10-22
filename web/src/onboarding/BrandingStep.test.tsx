@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { SessionProvider } from "../session";
+import { invalidateLive } from "../test/live";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { BrandingStep } from "./BrandingStep";
@@ -38,7 +39,7 @@ it("patches only caption, rejects whitespace and preserves dirty text", async ()
   fireEvent.click(screen.getByRole("button", { name: "Açıklamayı kaydet" }));
   await screen.findByRole("alert"); expect(sent).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("Açıklama şablonu"), { target: { value: "Draft" } }); update();
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("Draft");
   fireEvent.click(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" }));
   expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("Fresh");
@@ -75,7 +76,7 @@ it("detects image-only server change without replacing selected logo", async () 
   await screen.findByText(/Logo tanımlı/);
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["x"], "draft.png", { type: "image/png" })] } });
   updateLogo();
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByRole("button", { name: "Logoyu kaydet" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" }));
   expect(screen.getByRole("button", { name: "Logoyu kaydet" })).toBeDisabled();

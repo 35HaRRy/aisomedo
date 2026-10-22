@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
+import { invalidateLive } from "../test/live";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { ConsentStep } from "./ConsentStep";
@@ -42,7 +43,7 @@ it("resets acknowledgement when live version changes", async () => {
   const { update } = mount();
   await screen.findByRole("checkbox"); fireEvent.click(screen.getByRole("checkbox"));
   update(2);
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("<b>Policy 2</b>")).toBeInTheDocument();
   expect(screen.getByRole("checkbox")).not.toBeChecked();
 });
@@ -68,7 +69,7 @@ it("missing policy blocks safely", async () => {
 it("reflects acceptance by another device", async () => {
   const { update, sent } = mount();
   await screen.findByRole("checkbox"); update(1, "2026-10-01T10:00:00Z");
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText(/Rıza kaydedildi/)).toBeInTheDocument();
   expect(sent).not.toHaveBeenCalled();
 });

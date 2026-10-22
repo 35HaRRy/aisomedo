@@ -1,12 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { tr } from "../i18n";
 import { usePackageEditor, type PackageEditorState } from "./usePackageEditor";
+import { useNavigation } from "../navigation";
 
-export type PackageEditorContext = PackageEditorState & { requestLeave(): Promise<boolean> };
+export type PackageEditorContext = PackageEditorState & { requestLeave(): Promise<boolean>; navigation: ReturnType<typeof useNavigation> };
 const Context = createContext<PackageEditorContext | null>(null);
 type Decision = "save" | "discard" | "cancel";
 export function PackageEditorProvider({ children }: { children: ReactNode }) {
-  const editor = usePackageEditor();
+  const leave = useRef<() => Promise<boolean>>(async () => true);
+  const navigation = useNavigation(useCallback(() => leave.current(), []));
+  const editor = usePackageEditor(navigation.area === "package");
   const [prompt, setPrompt] = useState<{ id?: string } | null>(null);
   const resolver = useRef<((value: Decision) => void) | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
@@ -17,12 +20,14 @@ export function PackageEditorProvider({ children }: { children: ReactNode }) {
     return new Promise<Decision>(resolve => { resolver.current = resolve; setPrompt({ id }); });
   }, []);
   const requestLeave = useCallback(async () => {
+    if (navigation.area !== "package") return true;
     if (active.current.busy) return false;
     if (!active.current.dirty) return true;
     const answer = await ask();
     if (answer === "discard") { active.current.discard(); return true; }
     return answer === "save" && await active.current.save();
-  }, [ask]);
+  }, [ask, navigation.area]);
+  leave.current = requestLeave;
   const remove = useCallback(async (id: string) => {
     if (active.current.isDirty(id)) {
       const answer = await ask(id);
@@ -52,7 +57,7 @@ export function PackageEditorProvider({ children }: { children: ReactNode }) {
     window.addEventListener("beforeunload", warn);
     return () => { window.removeEventListener("beforeunload", warn); resolver.current?.("cancel"); };
   }, []);
-  return <Context.Provider value={{ ...editor, remove, requestLeave }}>
+  return <Context.Provider value={{ ...editor, remove, requestLeave, navigation }}>
     <div {...(prompt ? { inert: "" } : {})} aria-hidden={prompt ? true : undefined}>{children}</div>
     {prompt && <div className="editor-dialog-backdrop"><div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="draft-dialog-title" className="panel editor-dialog">
       <h2 id="draft-dialog-title">{tr.editor.leaveTitle}</h2><p>{prompt.id ? tr.editor.removeDraft : tr.editor.leaveHelp}</p>

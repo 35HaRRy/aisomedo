@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
+import { invalidateLive } from "../test/live";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { OnboardingWizard } from "./OnboardingWizard";
@@ -19,7 +20,7 @@ it("keeps dirty current form when another device completes its checklist step", 
   await waitFor(() => expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("Old"));
   fireEvent.change(screen.getByLabelText("Açıklama şablonu"), { target: { value: "My draft" } });
   setup = setupState();
-  await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise(done => setTimeout(done, 20)); });
+  await act(async () => { invalidateLive(); await new Promise(done => setTimeout(done, 20)); });
   expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("My draft");
 });
 
@@ -49,7 +50,7 @@ it("announces failed setup refresh while preserving stale progress", async () =>
   render(<SessionProvider><OnboardingProvider><OnboardingWizard /></OnboardingProvider></SessionProvider>);
   await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
   failed = true;
-  await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise(done => setTimeout(done, 20)); });
+  await act(async () => { invalidateLive(); await new Promise(done => setTimeout(done, 20)); });
   expect(screen.getByRole("alert")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Kurulum tamamlandı" })).toBeInTheDocument();
 });

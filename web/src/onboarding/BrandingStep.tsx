@@ -5,7 +5,7 @@ import { useLiveData } from "../useLiveData";
 import { AssetPreview, imageError, ReloadDraft, useDraft, useFormSave } from "./forms";
 
 export function BrandingStep({ kind, onSaved }: { kind: "logo" | "caption_template"; onSaved: () => void }) {
-  const snapshot = useLiveData(api.branding);
+  const snapshot = useLiveData(api.branding, true, ["settings"]);
   const state = useDraft(snapshot.data ? { caption: snapshot.data.caption_template ?? "", logo: snapshot.data.logo_asset ?? null } : null, { caption: "", logo: null as string | null });
   const form = useFormSave(onSaved);
   const [file, setFile] = useState<File | null>(null);

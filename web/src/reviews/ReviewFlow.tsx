@@ -15,7 +15,7 @@ function ReviewPanel({ id, onRefresh, stale }: { id: number; onRefresh: () => vo
     try { const detail = await api.review(id, signal); if (!signal.aborted) setChecking(false); return detail; }
     catch (error) { if (error instanceof ApiError && error.status === 404) { if (!signal.aborted) setChecking(false); return null; } throw error; }
   }, [id]);
-  const snapshot = useLiveData(load), { invalidate } = useSession();
+  const snapshot = useLiveData(load, true, ["publication"]), { invalidate } = useSession();
   const detail = snapshot.data, review = detail?.review;
   const [decision, setDecision] = useState<Decision | null>(null);
   const [time, setTime] = useState("");
@@ -106,7 +106,7 @@ function DueContinuation({ data, occurrenceId, packageFolder, onRefresh, stale }
     try { return await api.packageEditor(signal); }
     catch (error) { if (error instanceof ApiError && error.status === 404) return null; throw error; }
   }, []);
-  const snapshot = useLiveData(load);
+  const snapshot = useLiveData(load, true, ["package:*", "publication", "settings"]);
   const actions = data.pending_actions.filter(item => item.occurrence_id === occurrenceId);
   const action = actions.find(item => item.state === "review_ready" && (!packageFolder || item.package_folder === packageFolder)) ?? actions[0];
   const boundFolder = useRef(packageFolder);
@@ -127,7 +127,7 @@ function DueContinuation({ data, occurrenceId, packageFolder, onRefresh, stale }
   const render = async () => {
     if (blocked || !editor || request.current) return;
     const current = new AbortController(); request.current = current; setBusy(true); setError(false);
-    try { await api.renderPackage(editor.package.folder_name, editor.render_status === "failed", current.signal); }
+    try { await api.renderPackage(editor.package.folder_name, editor.render_status === "failed", editor, current.signal); }
     catch (failure) {
       if (current.signal.aborted) return;
       if (failure instanceof ApiError && failure.status === 401) invalidate(); else setError(true);

@@ -236,7 +236,7 @@ def _finalize_one_photo(pub: DojoPublishing, package_folder: str) -> None:
         },
     }]
     manifest["order"] = ["m1"]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    pub._write_manifest(pub.get_active_package(), manifest)
 
 
 def _render_jobs(store: PostgresStore) -> list[tuple[str, str]]:

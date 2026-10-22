@@ -1,7 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 import { client, dashboard, emptyEditor, setupState } from "../src/test/fixtures";
+import { installLiveStream, invalidateLive } from "./live-fixture";
 
 async function fixture(page: Page) {
+  await installLiveStream(page);
   const state = {
     plan: dashboard().plan,
     branding: { logo_asset: null, caption_template: "Dojo", intro_asset: null, intro_duration: null, outro_asset: null, outro_duration: null },
@@ -84,7 +86,7 @@ test("failed reminder save preserves draft; OAuth reconnect preserves package an
   await expect(region.getByRole("alert")).toBeVisible();
   await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("60");
   state.reminders.interval_minutes = 90;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await invalidateLive(page);
   await expect(region.getByRole("button", { name: "Sunucudaki değerleri yükle" })).toBeVisible();
   await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("60");
   await region.getByRole("button", { name: "Sunucudaki değerleri yükle" }).click();
@@ -98,4 +100,16 @@ test("failed reminder save preserves draft; OAuth reconnect preserves package an
   await expect(page.getByText("03-08-2026 10-00")).toBeVisible();
   expect(state.plan.anchor_date).toBe("2026-08-03");
   expect(state.errors).toEqual([]);
+});
+
+test("lost live transport locks controls without losing visible draft", async ({ page }, info) => {
+  await fixture(page);
+  const input = page.getByLabel("Hatırlatma aralığı (dakika)");
+  await input.fill("45");
+  await page.evaluate(() => window.dispatchEvent(new Event("fixture:disconnect")));
+  await expect(input).toBeDisabled();
+  await expect(input).toHaveValue("45");
+  await expect(page.getByRole("button", { name: "Canlı bağlantıyı yeniden dene" })).toBeEnabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  if (process.env.CAPTURE_UI) await page.screenshot({ path: info.outputPath("live-disconnected.png"), fullPage: true });
 });

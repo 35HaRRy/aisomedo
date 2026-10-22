@@ -2,6 +2,13 @@ package com.dojo.aisomedo.api
 
 import android.util.Log
 import com.dojo.aisomedo.BuildConfig
+import com.dojo.aisomedo.live.LiveEvent
+import com.dojo.aisomedo.live.readLiveEvents
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.delay
 import kotlinx.serialization.SerializationException
@@ -22,7 +29,30 @@ import kotlin.coroutines.resumeWithException
 
 enum class ApiTransportIssue { TIMEOUT, DNS, TLS, CONNECTION, STORAGE, INVALID_RESPONSE }
 class ApiFailure(val status: Int, val updateUrl: String? = null, val detail: String? = null,
-    val transportIssue: ApiTransportIssue? = null) : Exception("API failure: $status")
+    val transportIssue: ApiTransportIssue? = null, val editConflict: EditConflictOut? = null) : Exception("API failure: $status")
+
+class SnapshotSuperseded : Exception("Snapshot superseded")
+/** Shared only by one paired ViewModel; observations fence late or pre-change HTTP bodies. */
+class SnapshotVersions {
+    private var epoch = 0L
+    private val values = mutableMapOf<String, Long>()
+    @Synchronized fun epoch() = epoch
+    @Synchronized fun reset() { epoch++; values.clear() }
+    @Synchronized fun observe(versions: Map<String, Long>) {
+        for ((key, version) in versions) values[key] = maxOf(values[key] ?: 0, version)
+    }
+    @Synchronized fun accept(started: Long, key: String?, rawVersion: String?) {
+        if (started != epoch) throw SnapshotSuperseded()
+        if (key == null && rawVersion == null) return
+        val version = rawVersion?.toLongOrNull()
+        require(!key.isNullOrEmpty() && version != null && version >= 0)
+        if (version < (values[key] ?: 0)) throw SnapshotSuperseded()
+        values[key] = version
+    }
+}
+
+data class PackageRevision(val packageId: Int, val contentRevision: Long)
+fun ActiveEditorOut.packageRevision() = PackageRevision(`package`.id, contentRevision)
 
 private fun transportFailure(error: Exception) = ApiFailure(0, transportIssue = when (error) {
     is java.io.InterruptedIOException -> ApiTransportIssue.TIMEOUT
@@ -45,6 +75,7 @@ private val diagnosticSegments = setOf(
 )
 
 class DojoApi(private val origin: String, private val token: String?, private val versionCode: Int, http: OkHttpClient,
+    private val versions: SnapshotVersions = SnapshotVersions(),
     private val diagnostic: (String) -> Unit = { if (BuildConfig.DEBUG) Log.d("DojoHttp", it); Unit }) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = true }
     private val client = http.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
@@ -58,14 +89,38 @@ class DojoApi(private val origin: String, private val token: String?, private va
         .readTimeout(0, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
     private val waitingUploadReadClient = waitingUploadClient.newBuilder().retryOnConnectionFailure(true).build()
 
+    fun liveEvents(): Flow<LiveEvent> = channelFlow {
+        val transport = client.newBuilder().readTimeout(45, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
+        val request = Request.Builder().url(origin.toHttpUrl().resolve("/api/events")!!)
+            .header("X-Android-Version-Code", versionCode.toString()).header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+        token?.let { request.header("Authorization", "Bearer $it") }
+        val call = transport.newCall(request.build())
+        val worker = launch(Dispatchers.IO) {
+            try {
+                call.execute().use { response ->
+                    if (!response.isSuccessful) throw ApiFailure(response.code)
+                    require(response.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase() == "text/event-stream")
+                    val body = requireNotNull(response.body)
+                    readLiveEvents(body.byteStream()) { send(it) }
+                }
+                close()
+            } catch (error: Exception) { close(error) }
+        }
+        awaitClose { call.cancel(); worker.cancel() }
+    }
+
     private suspend fun bytes(method: String, path: String, body: RequestBody? = null, authenticated: Boolean = true,
-        destination: File? = null, limit: Long = 10L * 1024 * 1024, waitForUpload: Boolean = false): ByteArray {
+        destination: File? = null, limit: Long = 10L * 1024 * 1024, waitForUpload: Boolean = false,
+        packageRevision: PackageRevision? = null): ByteArray {
+        val readEpoch = versions.epoch()
         require(path.startsWith("/api/") && !path.contains('\\'))
         val base = origin.toHttpUrl()
         val url = base.resolve(path) ?: throw IllegalArgumentException("path")
         require(url.host == base.host && url.port == base.port && url.scheme == base.scheme && url.encodedPath.startsWith("/api/"))
         val builder = Request.Builder().url(url).header("X-Android-Version-Code", versionCode.toString())
         if (authenticated && token != null) builder.header("Authorization", "Bearer $token")
+        packageRevision?.let { builder.header("If-Match", "\"${it.packageId}:${it.contentRevision}\"") }
         builder.method(method, body ?: if (method == "POST" || method == "PUT" || method == "PATCH") ByteArray(0).toRequestBody() else null)
         val transport = when {
             waitForUpload && (path == "/api/media/upload-limits" || path == "/api/media/uploads" || path.startsWith("/api/media/uploads/")) ->
@@ -113,7 +168,11 @@ class DojoApi(private val origin: String, private val token: String?, private va
                                 }.getOrNull()
                                 val update = if (response.code == 426) (error?.get("update_url") as? JsonPrimitive)?.contentOrNull else null
                                 val detail = (error?.get("detail") as? JsonPrimitive)?.contentOrNull?.take(1024)
-                                val failure = ApiFailure(response.code, update, detail)
+                                val conflict = if (response.code == 409) runCatching {
+                                    json.decodeFromJsonElement<EditConflictOut>(error?.get("detail") ?: JsonNull)
+                                        .takeIf { it.code == "edit_conflict" && it.contentRevision > 0 && it.conflicts.all { group -> group.key.isNotBlank() } }
+                                }.getOrNull() else null
+                                val failure = ApiFailure(response.code, update, detail, editConflict = conflict)
                                 trace("failed", response.code, failure)
                                 continuation.resumeWithException(failure)
                             } else {
@@ -136,6 +195,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
                                     ByteArray(0)
                                 }
                                 if (continuation.isActive) {
+                                    versions.accept(readEpoch, response.header("X-Resource-Key"), response.header("X-Resource-Version"))
                                     trace("end", response.code)
                                     continuation.resume(data)
                                 } else destination?.delete()
@@ -144,7 +204,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
                             destination?.delete()
                             if (continuation.isActive) {
                                 trace("failed", response.code, e)
-                                continuation.resumeWithException(if (e is ApiFailure) e else transportFailure(e))
+                                continuation.resumeWithException(if (e is ApiFailure || e is SnapshotSuperseded) e else transportFailure(e))
                             }
                         }
                     }
@@ -153,12 +213,13 @@ class DojoApi(private val origin: String, private val token: String?, private va
         }
     }
 
-    suspend fun request(method: String, path: String, body: JsonElement? = null, waitForUpload: Boolean = false): JsonElement {
+    suspend fun request(method: String, path: String, body: JsonElement? = null, waitForUpload: Boolean = false,
+        packageRevision: PackageRevision? = null): JsonElement {
         val public = path == "/api/compat" || path == "/api/pairing/validate"
         var retries = 0
         while (true) {
             try {
-                val data = bytes(method, path, body?.toString()?.toRequestBody("application/json".toMediaType()), !public, waitForUpload = waitForUpload)
+                val data = bytes(method, path, body?.toString()?.toRequestBody("application/json".toMediaType()), !public, waitForUpload = waitForUpload, packageRevision = packageRevision)
                 return try { if (data.isEmpty()) JsonNull else json.parseToJsonElement(data.toString(Charsets.UTF_8)) }
                 catch (_: SerializationException) { throw SerializationException("Invalid server response") }
             } catch (e: ApiFailure) {
@@ -185,7 +246,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun rescheduleReview(id: Int, version: Int, newDueAt: String): JsonObject = reviewDecision(id, "reschedule", json.encodeToJsonElement(RescheduleIn(newDueAt, version)))
     suspend fun skipEmptyOccurrence(id: Int, body: EmptySkipIn): OccurrenceDecisionOut = decode(request("POST", "/api/reviews/occurrences/$id/skip", json.encodeToJsonElement(body)))
     suspend fun rescheduleEmptyOccurrence(id: Int, body: EmptyRescheduleIn): OccurrenceDecisionOut = decode(request("POST", "/api/reviews/occurrences/$id/reschedule", json.encodeToJsonElement(body)))
-    suspend fun renderPackage(folder: String, retry: Boolean = false): RenderOut = decode(request("POST", "/api/packages/active/render", json.encodeToJsonElement(RenderIn(expectedFolderName = folder, retry = retry))))
+    suspend fun renderPackage(folder: String, expected: PackageRevision, retry: Boolean = false): RenderOut = decode(request("POST", "/api/packages/active/render", json.encodeToJsonElement(RenderIn(expectedFolderName = folder, retry = retry)), packageRevision = expected))
     suspend fun registerPushToken(token: String) { request("PUT", "/api/pairing/me/push-token", json.encodeToJsonElement(PushTokenIn(token))) }
     suspend fun removePushToken() { request("DELETE", "/api/pairing/me/push-token") }
     suspend fun downloadReviewPreview(path: String, destination: File, limit: Long = 512L * 1024 * 1024) {
@@ -214,12 +275,13 @@ class DojoApi(private val origin: String, private val token: String?, private va
     }
     suspend fun preview(path: String): ByteArray = bytes("GET", path)
     suspend fun mediaEditor(): ActiveEditorOut = decode(request("GET", "/api/packages/active/editor"))
-    suspend fun orderMedia(folder: String, order: List<String>) = request("PUT", "/api/packages/active/order",
-        json.encodeToJsonElement(OrderIn(expectedFolderName = folder, order = order)))
-    suspend fun selectVideoRanges(folder: String, selections: Map<String, List<VideoRangeOut>>) = request("PUT", "/api/packages/active/selections",
-        json.encodeToJsonElement(SelectionIn(expectedFolderName = folder, selections = selections)))
-    suspend fun removeMedia(folder: String, id: String) = request("POST", "/api/packages/active/media/${segment(id)}/remove?expected_folder_name=${segment(folder)}")
-    suspend fun restoreMedia(folder: String, id: String) = request("POST", "/api/packages/active/media/${segment(id)}/restore?expected_folder_name=${segment(folder)}")
+    suspend fun savePackageEdits(body: PackageEditIn): ActiveEditorOut = decode(request("PUT", "/api/packages/active/edits", json.encodeToJsonElement(body)))
+    suspend fun orderMedia(folder: String, order: List<String>, expected: PackageRevision) = request("PUT", "/api/packages/active/order",
+        json.encodeToJsonElement(OrderIn(expectedFolderName = folder, order = order)), packageRevision = expected)
+    suspend fun selectVideoRanges(folder: String, selections: Map<String, List<VideoRangeOut>>, expected: PackageRevision) = request("PUT", "/api/packages/active/selections",
+        json.encodeToJsonElement(SelectionIn(expectedFolderName = folder, selections = selections)), packageRevision = expected)
+    suspend fun removeMedia(folder: String, id: String, expected: PackageRevision) = request("POST", "/api/packages/active/media/${segment(id)}/remove?expected_folder_name=${segment(folder)}", packageRevision = expected)
+    suspend fun restoreMedia(folder: String, id: String, expected: PackageRevision) = request("POST", "/api/packages/active/media/${segment(id)}/restore?expected_folder_name=${segment(folder)}", packageRevision = expected)
     suspend fun uploadLimits(): UploadLimitsOut = decode(request("GET", "/api/media/upload-limits", waitForUpload = true))
     suspend fun startUpload(body: UploadInitIn): UploadOut = decode(request("POST", "/api/media/uploads", json.encodeToJsonElement(body), waitForUpload = true))
     suspend fun uploadStatus(id: String, waitForUpload: Boolean = false): UploadOut = decode(request("GET", "/api/media/uploads/${segment(id)}", waitForUpload = waitForUpload))

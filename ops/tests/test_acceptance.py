@@ -236,6 +236,24 @@ def test_acceptance_requires_two_passed_cases(tmp_path, report):
         validate_report(path)
 
 
+def test_acceptance_includes_live_synchronization_case(tmp_path):
+    import json
+
+    from acceptance.run import validate_report
+
+    titles = [
+        "scheduled publication preserves reviewed artifact",
+        "manual publication preserves cadence",
+        "live profiles merge drafts and recover without polling through the gateway",
+    ]
+    specs = [{"title": title, "tests": [{"expectedStatus": "passed", "results": [
+        {"status": "passed", "retry": 0},
+    ]}]} for title in titles]
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps({"suites": [{"specs": specs}], "errors": []}))
+    validate_report(path)
+
+
 def test_fixture_exposes_read_only_worker_progress(tmp_path, monkeypatch):
     path = tmp_path / "health.json"
     monkeypatch.setenv("WORKER_HEALTH_PATH", str(path))

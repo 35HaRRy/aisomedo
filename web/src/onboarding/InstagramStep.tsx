@@ -8,7 +8,7 @@ import { useOnboarding } from "./useOnboarding";
 
 export function InstagramStep({ onSaved }: { onSaved: () => void }) {
   const { save } = useOnboarding();
-  const snapshot = useLiveData(api.instagram);
+  const snapshot = useLiveData(api.instagram, true, ["settings", "setup"]);
   const [verified, setVerified] = useState<StatusOut | null>(null);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -73,7 +73,7 @@ export function InstagramStep({ onSaved }: { onSaved: () => void }) {
         setError(failure instanceof ApiError && failure.status === 503 ? tr.instagramUnconfigured : tr.oauthFailed);
         setAttempt(null);
       }
-    });
+    }, ["setup", "settings"]);
     return () => { active = false; stop(); };
   }, [attempt]);
   async function select(id: string) {

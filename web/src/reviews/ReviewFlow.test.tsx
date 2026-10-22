@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { client, dashboard, emptyEditor, setupState } from "../test/fixtures";
+import { invalidateLive, liveResponse } from "../test/live";
 
 let state = dashboard(), editor = emptyEditor();
 let detail = reviewDetail();
@@ -24,6 +25,7 @@ beforeEach(() => {
   state.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 3, state: "review_ready", package_folder: state.package!.folder_name, due_at: state.generated_at }];
   window.location.hash = "#/package?review=2";
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    if (url === "/api/events") return liveResponse();
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
     if (url.endsWith("/compat")) return json({ api_version: "0.1.0" });
     if (url.endsWith("/me")) return json(client);
@@ -87,7 +89,7 @@ it("successful approval HTTP response still displays publication failure after r
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Instagram'a yayın yapılamadı"));
   expect(screen.getByRole("alert")).toHaveTextContent(publication.error!);
   expect(screen.queryByText("Yayınlama onayı alındı.")).not.toBeInTheDocument();
-  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { invalidateLive(); });
   expect(screen.getByRole("alert")).toHaveTextContent("Video korunuyor");
   expect(writes).toHaveLength(1);
   expect(screen.queryByRole("button", { name: "Onayla ve yayınla" })).not.toBeInTheDocument();
@@ -111,7 +113,7 @@ it.each(["failed", "publishing", "uncertain"])("continuation retains %s outcome 
   fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
   const outcome = status === "failed" ? /Instagram'a yayın yapılamadı/ : /Yayın henüz doğrulanmadı/;
   await screen.findByText(outcome);
-  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { invalidateLive(); });
   expect(screen.getByText(outcome)).toBeInTheDocument();
   expect(screen.queryByText("Bu inceleme başka bir cihazda tamamlanmış veya artık mevcut değil.")).not.toBeInTheDocument();
   expect(writes).toHaveLength(1);
@@ -143,7 +145,7 @@ it("failed live read and failed preview block decisions; retry restores authorit
   fireEvent.error(video);
   expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeDisabled();
   readStatus = 500;
-  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { invalidateLive(); });
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("İnceleme bilgileri"));
   expect(screen.getByRole("button", { name: "Bu zamanı atla" })).toBeDisabled();
   readStatus = 200;
@@ -161,12 +163,12 @@ it("empty due package continues to render and review without creating another oc
   const next = screen.getByRole("button", { name: "Render ve incelemeye devam et" });
   expect(next).toBeDisabled();
   editor.montage.order = ["clip"];
-  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { invalidateLive(); });
   await waitFor(() => expect(next).toBeEnabled());
   fireEvent.click(next);
   await waitFor(() => expect(writes).toEqual([{ path: "/api/packages/active/render", body: { expected_folder_name: "03-08-2026 10-00", retry: false } }]));
   state.pending_actions[0] = { ...state.pending_actions[0], review_id: 2, version: 3, state: "review_ready" };
-  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { invalidateLive(); });
   await loadedPreview();
   expect(screen.queryByLabelText("Fotoğraf ve video seç")).not.toBeInTheDocument();
 });

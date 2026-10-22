@@ -14,6 +14,7 @@ from dojo.adapters.stubs import (
 )
 from dojo.testing import FIXED_AT, ISTANBUL, FakeClock
 from fastapi.testclient import TestClient
+from live_helpers import include_displayed_revision
 
 from backend.main import create_app
 
@@ -39,6 +40,7 @@ def make_app(tmp_path: Path):
     activity = DojoActivity(audit=store, pairing=store)
     setup = DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock())
     client = TestClient(create_app(publishing, pairing, activity, setup, cookie_secure=False))
+    include_displayed_revision(client, publishing)
     return client, publishing, pairing, store
 
 
