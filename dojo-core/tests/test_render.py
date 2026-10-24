@@ -315,5 +315,6 @@ def test_scheduler_leaves_ineligible_package_pending_without_render(tmp_path, re
                          content_type="video/mp4", duration=30)
     invalidate_render_inputs(tmp_path, seam, store, mid, reason)
     seam.evaluate_due_work()
-    assert seam.claim_next_job() is None
+    assert not [job for job in store.package_work(seam.get_active_package())[1]
+                if job.kind == "render" and job.status in ("queued", "processing")]
     assert "render.queued" not in [event.action for event in seam.list_audit()]

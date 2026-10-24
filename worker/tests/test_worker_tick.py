@@ -177,7 +177,7 @@ def test_build_publishing_skips_ddl_without_database(
 ) -> None:
     media = tmp_path / "media-does-not-exist"
     monkeypatch.setenv("SKIP_CREATE_ALL", "1")
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://127.0.0.1:1/unreachable")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://127.0.0.1:1/unreachable?connect_timeout=1")
     monkeypatch.setenv("MEDIA_ROOT", str(media))
     monkeypatch.delenv("META_TOKEN_ENCRYPTION_KEY", raising=False)
     monkeypatch.delenv("SIGNED_URL_SECRET", raising=False)

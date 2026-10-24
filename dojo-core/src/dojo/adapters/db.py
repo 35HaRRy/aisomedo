@@ -1408,8 +1408,8 @@ class PostgresStore:
         self, job_id: str, *, status: str, finished_at: datetime,
         error_reason: str | None = None,
     ) -> Job | None:
-        if status not in ("done", "failed"):
-            raise ValueError("job finish status must be done or failed")
+        if status not in ("done", "failed", "cancelled"):
+            raise ValueError("job finish status must be terminal")
         with self._session() as session:
             row = session.scalar(select(JobRow).where(
                 JobRow.job_id == job_id, JobRow.status == "processing",

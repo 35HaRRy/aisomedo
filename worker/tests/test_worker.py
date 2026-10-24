@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 
+import pytest
 from dojo import DojoPublishing, InMemoryStore, Job
 from dojo.adapters.stubs import StubMediaProcessor
 from dojo.testing import FakeClock
@@ -68,20 +69,24 @@ def test_run_tick_sweeps_when_claims_exhausted() -> None:
 
 
 class RenderSpyPublishing(SpyPublishing):
+    kind = "render"
+
     def claim_next_job(self) -> Job | None:
         return Job(
             id=2,
             job_id="r-1",
             upload_id=None,
-            kind="render",
+            kind=self.kind,
             status="queued",
             payload={"package": "pkg", "digest": "d-1"},
             created_at=datetime.now(),
         )
 
 
-def test_run_tick_processes_render_job() -> None:
+@pytest.mark.parametrize("kind", ["render", "section_preview", "thumbnail"])
+def test_run_tick_processes_render_and_preview_jobs(kind) -> None:
     spy = RenderSpyPublishing()
+    spy.kind = kind
     run_tick(spy)
     assert spy.processed_jobs == ["r-1"]
 

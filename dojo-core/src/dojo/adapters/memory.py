@@ -659,8 +659,8 @@ class InMemoryStore:
         self, job_id: str, *, status: str, finished_at: datetime,
         error_reason: str | None = None,
     ) -> Job | None:
-        if status not in ("done", "failed"):
-            raise ValueError("job finish status must be done or failed")
+        if status not in ("done", "failed", "cancelled"):
+            raise ValueError("job finish status must be terminal")
         with self._creation_lock:
             job = self.get(job_id)
             if not isinstance(job, Job) or job.status != "processing":
