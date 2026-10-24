@@ -111,13 +111,18 @@ from Instagram: enter it in **Instagram erişim tokenı**, then **Token ile bağ
 The backend verifies and encrypts the credential; the masked input clears after
 submission, and the application does not store it in browser storage or URLs.
 
-An administrator first creates the consent policy using `dojo-consent set-policy`.
-Acceptance applies installation-wide to the displayed version. If a newer policy
+Installations start with a default media-consent policy (version 1) reading
+"Görsellerimin paylaşılmasını onaylıyorum." An administrator updates its text with
+`dojo-consent set-policy`; acceptance applies installation-wide to the displayed version. If a newer policy
 is committed before submission, the wizard reloads it and requires a new explicit
 acknowledgement; it never automatically accepts changed text.
 
-New logo/card uploads accept single-frame PNG/JPEG only, up to **10 MiB** and
-**4096 pixels per side**. Uploads are independent of active packages. Partial saves
+Logo uploads accept single-frame PNG/JPEG. Intro/outro cards also accept MP4,
+MOV, WebM, MKV and AVI videos. Each upload is limited to **10 MiB** and
+**4096 pixels per side**; card duration is a positive integer in seconds (blank
+uses the default photo duration). Setup uses an integrated step widget with
+shared actions; finishing replaces the resume-later action. Uploads are
+independent of active packages. Partial saves
 preserve other settings and existing package snapshots. Scheduling requires ready
 setup and an enabled valid plan.
 
