@@ -70,7 +70,7 @@ it("review header has icon-only refresh/edit controls and collapses without subm
   fireEvent.click(within(panel).getByRole("button", { name: `${detail.review.package_folder} panelini kapat` }));
   expect(screen.queryByRole("button", { name: "Onayla ve yayınla" })).not.toBeInTheDocument();
   fireEvent.click(within(panel).getByRole("button", { name: `${detail.review.package_folder} panelini aç` }));
-  expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled());
   expect(writes).toEqual([]);
   fireEvent.click(edit);
   await screen.findByRole("heading", { name: "Aktif paket medyası" });

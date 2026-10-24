@@ -84,9 +84,6 @@ export function ActivePackagePanel() {
           <p className="muted">{editor.dirty ? copy.unsaved : copy.saved}</p>
           {snapshot.render_stale && <p className="muted">{copy.renderStale}</p>}
         </div>
-        <div className="upload-actions package-save-actions"><button className="primary" disabled={!editor.canSave} aria-describedby="package-save-reason" onClick={() => void editor.save()}>{editor.busy ? copy.saving : copy.save}</button>
-          <button title={copy.discardHelp} disabled={!editor.dirty || editor.busy || editor.offline} onClick={() => editor.discard()}>{copy.discard}</button></div>
-        <p id="package-save-reason" className="muted" role="status">{editor.saveBlockedReason ? copy.saveReasons[editor.saveBlockedReason] : ""}</p>
         <CollapsiblePanel className="saved-reel-preview" title={copy.savedPreview} level={3}>
           <p className="muted">{copy.renderHelp}</p>
           <p role="status">{copy.renderStates[snapshot.render_status ?? "missing"]}</p>
@@ -129,6 +126,9 @@ export function ActivePackagePanel() {
           </label>}
           {opened === media.media_id && media.is_video && <VideoSectionEditor key={media.media_id} media={media} ranges={editor.draft[media.media_id] ?? []} inputs={editor.draftInputs[media.media_id] ?? []} validationError={editor.validationErrors[media.media_id] ?? null} disabled={blocked}
             onChange={ranges => editor.setRanges(media.media_id, ranges)} onInputChange={(i, bound, value) => editor.setInput(media.media_id, i, bound, value)} />}
+          <div className="upload-actions package-save-actions"><button className="primary" disabled={!editor.canSaveMedia(media.media_id)} aria-describedby={`save-reason-${media.media_id}`} onClick={() => void editor.save(media.media_id)}>{editor.busy ? copy.saving : copy.save}</button>
+            <button title={copy.discardHelp} disabled={!editor.isDirty(media.media_id) || editor.busy || editor.offline} onClick={() => editor.discard(media.media_id)}>{copy.discard}</button></div>
+          <p id={`save-reason-${media.media_id}`} className="muted" role="status">{editor.saveBlockedReasonFor(media.media_id) ? copy.saveReasons[editor.saveBlockedReasonFor(media.media_id)!] : ""}</p>
         </li>)}</ol>
         {!!removed.length && <CollapsiblePanel className="removed-media" title={copy.removed} level={3}><p className="muted">{copy.removedHelp}</p><ul className="package-media-list">{removed.map(media => <li key={media.media_id} className="package-media-heading"><h3>{media.filename}</h3>
           <button className="media-icon-button" disabled={blocked} aria-label={`${media.filename} ${copy.restoreLabel}`} title={`${media.filename} ${copy.restoreLabel}`} onClick={() => void editor.restore(media.media_id)}><MediaActionIcon action="restore" /></button></li>)}</ul></CollapsiblePanel>}

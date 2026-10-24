@@ -61,11 +61,14 @@ export interface PackageEditorState {
   setPhotoDuration(id: string, value: string): void;
   renderPreview(): Promise<boolean>;
   clearPackage(): Promise<ClearPackageOut | null>;
-  save(): Promise<boolean>;
+  save(id: string): Promise<boolean>;
+  canSaveMedia(id: string): boolean;
+  saveBlockedReasonFor(id: string): SaveBlockedReason;
+  retrySectionPreview(id: string): Promise<boolean>;
   discard(id?: string): void;
   refresh(): Promise<void>;
   reorder(order: string[]): Promise<boolean>;
-  remove(id: string): Promise<boolean>;
+  remove(id: string, confirmedDiscard?: boolean): Promise<boolean>;
   restore(id: string): Promise<boolean>;
 }
 const empty = (): Data => ({ draftKey: null, storedDraft: null, restoring: false, persisting: false, persistenceError: null, conflicts: {}, pendingClear: null, snapshot: null, draftInputs: {}, base: {}, baseFolder: null, stale: false, readRequired: false, loading: false, busy: false, error: null });
@@ -124,7 +127,7 @@ function editedDraft(data: Data): StoredDraft | null {
     baseContentRevision: data.storedDraft?.baseContentRevision ?? snapshot!.content_revision,
     groups, inputs: edited, uncertain };
 }
-type WriteChange = { kind: "selections"; selections: SelectionMap; photos: Record<string, number> } | { kind: "order"; order: string[] } | { kind: "remove" | "restore"; id: string } | { kind: "render" | "clear" };
+type WriteChange = { kind: "selections"; selections: SelectionMap; photos: Record<string, number> } | { kind: "order"; order: string[] } | { kind: "remove" | "restore" | "retry"; id: string } | { kind: "render" | "clear" };
 function expectedWrite(snapshot: ActiveEditorOut, change: WriteChange): ActiveEditorOut {
   const next = { ...snapshot, montage: { ...snapshot.montage }, media: snapshot.media.map(m => ({ ...m })) };
   if (change.kind === "selections") {
@@ -158,6 +161,23 @@ function numeric(data: Data): { draft: SelectionMap; photoDurations: Record<stri
     else if (ranges.length) draft[id] = ranges.sort((a, b) => a.start - b.start);
   }
   return { draft, photoDurations, validationErrors };
+}
+
+function cardValues(data: Data, id: string) {
+  return numeric({ ...data, draftInputs: data.snapshot
+    ? { ...inputs(data.snapshot), [id]: data.draftInputs[id] ?? [] } : {} });
+}
+
+function cardSaveReason(data: Data, id: string, enabled: boolean): SaveBlockedReason {
+  if (data.busy || data.loading || data.restoring) return "busy";
+  if (data.persistenceError) return "storage";
+  if (!enabled || !navigator.onLine || live.getSnapshot() !== "live") return "offline";
+  if (data.stale || data.readRequired || !data.snapshot) return "refresh";
+  if (!data.snapshot.media.some(m => m.media_id === id && m.status === "finalized") || !changed(data, id)) return "unchanged";
+  const values = cardValues(data, id);
+  if (values.validationErrors[id]) return "invalid";
+  const total = proposedDuration(data.snapshot, values.draft, values.photoDurations);
+  return total === null ? "duration" : total > data.snapshot.montage.max_duration_seconds ? "limit" : null;
 }
 
 export function usePackageEditor(enabled = true): PackageEditorState {
@@ -307,7 +327,18 @@ export function usePackageEditor(enabled = true): PackageEditorState {
         await persist({ ...current.current, storedDraft: null });
         rememberClear(client?.id, null); update({ ...empty(), persistenceError: current.current.persistenceError }); return true;
       }
-      if (change.kind === "selections" && response && typeof response === "object" && "package" in response) await accept(response as ActiveEditorOut, false, expected);
+      if (change.kind === "remove") {
+        const acknowledged = current.current;
+        const fresh = inputs(acknowledged.snapshot!);
+        const groups = { ...acknowledged.storedDraft?.groups }, conflicts = { ...acknowledged.conflicts };
+        for (const key of [`video:${change.id}`, `photo:${change.id}`]) { delete groups[key]; delete conflicts[key]; }
+        const next = { ...acknowledged, conflicts,
+          storedDraft: acknowledged.storedDraft && { ...acknowledged.storedDraft, groups, uncertain: false },
+          draftInputs: { ...acknowledged.draftInputs, [change.id]: fresh[change.id] ?? [] },
+          base: { ...acknowledged.base, [change.id]: fresh[change.id] ?? [] } };
+        await persist({ ...next, storedDraft: editedDraft(next) });
+      }
+      if ((change.kind === "selections" || change.kind === "retry") && response && typeof response === "object" && "package" in response) await accept(response as ActiveEditorOut, false, expected);
       await load(false, undefined, expected);
       // Acknowledged writes may succeed even if the follow-up read fails, but
       // further mutations wait for an explicit successful read in that case.
@@ -329,6 +360,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
           error: definite ? error.status === 422 ? "invalid" : change.kind === "render" ? "render" : "conflict" : "uncertain" });
         if (definite && current.current.storedDraft) await persist({ ...current.current,
           storedDraft: { ...current.current.storedDraft, uncertain: false } });
+        if (change.kind === "retry" && error instanceof ApiError && error.status === 409) await load(true, undefined, expected);
       }
       return false;
     } finally { if (write.current === controller && alive.current) { write.current = null; update({ ...current.current, busy: false }); } }
@@ -366,18 +398,18 @@ export function usePackageEditor(enabled = true): PackageEditorState {
       update({ ...next, draftKey: { ...old.draftKey!, packageId: old.snapshot!.package.id } });
     } else edit(next);
   }, [edit, persist, update]);
-  const save = useCallback(async () => {
-    const old = current.current, values = numeric(old);
-    if (!old.snapshot || !dirty(old) || Object.keys(values.validationErrors).length) return false;
-    const total = proposedDuration(old.snapshot, values.draft, values.photoDurations);
-    if (total === null || total > old.snapshot.montage.max_duration_seconds) return false;
+  const save = useCallback(async (id: string) => {
+    const old = current.current, values = cardValues(old, id);
+    if (cardSaveReason(old, id, enabled)) return false;
     const draft = editedDraft(old);
-    if (!draft) return false;
+    const media = old.snapshot!.media.find(m => m.media_id === id)!;
+    const key = `${media.is_video ? "video" : "photo"}:${id}`, group = draft?.groups[key];
+    if (!draft || !group) return false;
     return mutate((folder, signal) => api.savePackageEdits({ expected_folder_name: folder,
       expected_package_id: old.snapshot!.package.id, base_content_revision: draft.baseContentRevision,
-      changes: Object.entries(draft.groups).map(([key, group]) => ({ key, ...group })) }, signal),
+      changes: [{ key, ...group }] }, signal),
     { kind: "selections", selections: values.draft, photos: values.photoDurations });
-  }, [mutate]);
+  }, [enabled, mutate]);
   const values = numeric(data), total = data.snapshot && !Object.keys(values.validationErrors).length ? proposedDuration(data.snapshot, values.draft, values.photoDurations) : null;
   const saveBlockedReason: SaveBlockedReason = data.busy || data.loading || data.restoring ? "busy" : data.persistenceError ? "storage" : !enabled || offline || phase !== "live" ? "offline" : data.stale || !data.snapshot ? "refresh"
     : !dirty(data) ? "unchanged" : Object.keys(values.validationErrors).length ? "invalid" : total === null ? "duration"
@@ -400,6 +432,14 @@ export function usePackageEditor(enabled = true): PackageEditorState {
         draftInputs: { ...fresh, ...draft?.inputs }, base: { ...fresh, ...(draft ? baselineInputs(draft) : {}) } });
     },
     canSave: saveBlockedReason === null, saveBlockedReason,
+    canSaveMedia: id => cardSaveReason(data, id, enabled) === null,
+    saveBlockedReasonFor: id => cardSaveReason(data, id, enabled),
+    retrySectionPreview: id => {
+      const snapshot = current.current.snapshot, preview = snapshot?.media.find(m => m.media_id === id)?.section_preview;
+      if (!snapshot || preview?.status !== "failed" || !preview.generation) return Promise.resolve(false);
+      return mutate((folder, signal) => api.retrySectionPreview(id, { expected_package_id: snapshot.package.id,
+        expected_folder_name: folder, expected_generation: preview.generation! }, signal), { kind: "retry", id });
+    },
     isDirty: id => changed(current.current, id), setRanges, setInput, save, discard,
     setPhotoDuration: (id, value) => setInput(id, 0, "end", value),
     renderPreview: () => mutate((folder, signal) => api.renderPackage(folder, current.current.snapshot?.render_status === "failed", current.current.snapshot!, signal), { kind: "render" }),
@@ -413,7 +453,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     },
     refresh: () => load(true),
     reorder: order => mutate((folder, signal) => api.saveOrder(order, folder, current.current.snapshot!, signal), { kind: "order", order }),
-    remove: id => changed(current.current, id) ? Promise.resolve(false) : mutate((folder, signal) => api.removeMedia(id, folder, current.current.snapshot!, signal), { kind: "remove", id }),
+    remove: (id, confirmedDiscard = false) => changed(current.current, id) && !confirmedDiscard ? Promise.resolve(false) : mutate((folder, signal) => api.removeMedia(id, folder, current.current.snapshot!, signal), { kind: "remove", id }),
     restore: id => mutate((folder, signal) => api.restoreMedia(id, folder, current.current.snapshot!, signal), { kind: "restore", id }),
   };
 }

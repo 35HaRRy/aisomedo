@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
 import { UploadProvider } from "../uploads/UploadProvider";
@@ -16,7 +16,7 @@ it("collapsing the editor retains unsaved video ranges", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Aktif paket medyası panelini kapat" }));
   expect(screen.queryByRole("button", { name: "Bölümleri kaydet" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Aktif paket medyası panelini aç" }));
-  expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeEnabled();
+  const card = screen.getByRole("heading", { name: "a.mp4" }).closest("li")!;
+  expect(within(card).getByRole("button", { name: "Bölümleri kaydet" })).toBeEnabled();
   expect(server.writes).toEqual([]);
 });

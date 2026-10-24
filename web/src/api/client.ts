@@ -2,7 +2,7 @@ import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, Co
 import type { ApproveIn, SkipIn, RescheduleIn, ReviewDetailOut } from "./openapi";
 import type { ReminderPolicyIn, ReminderPolicyOut } from "./openapi";
 import type { DashboardSlotOut, OneoffDateIn, OneoffDecisionIn, OneoffDecisionOut } from "./openapi";
-import type { PackageEditIn, EditConflictOut } from "./openapi";
+import type { PackageEditIn, EditConflictOut, SectionPreviewRetryIn } from "./openapi";
 
 export type PackagePrecondition = { package: { id: number }; content_revision: number };
 const packageHeaders = (expected: PackagePrecondition) => ({ "If-Match": `"${expected.package.id}:${expected.content_revision}"` });
@@ -90,6 +90,7 @@ export const api = {
   rescheduleReview: (id: number, body: RescheduleIn, signal?: AbortSignal) => request(`/api/reviews/${id}/reschedule`, { method: "POST", body: JSON.stringify(body), signal }),
   packageEditor: (signal?: AbortSignal) => request<ActiveEditorOut>("/api/packages/active/editor", { signal }),
   savePackageEdits: (body: PackageEditIn, signal?: AbortSignal) => request<ActiveEditorOut>("/api/packages/active/edits", { method: "PUT", body: JSON.stringify(body), signal }),
+  retrySectionPreview: (id: string, body: SectionPreviewRetryIn, signal?: AbortSignal) => request<ActiveEditorOut>(`/api/packages/active/media/${encodeURIComponent(id)}/sections/retry`, { method: "POST", body: JSON.stringify(body), signal }),
   clearPackage: (body: ClearPackageIn, expected: PackagePrecondition, signal?: AbortSignal) => request<ClearPackageOut>("/api/packages/active/clear", { method: "POST", body: JSON.stringify(body), headers: packageHeaders(expected), signal }, 120000),
   renderPackage: (folder: string, retry: boolean, expected: PackagePrecondition, signal?: AbortSignal) => request<RenderOut>("/api/packages/active/render", { method: "POST", body: JSON.stringify({ expected_folder_name: folder, retry }), headers: packageHeaders(expected), signal }),
   saveSelections: (body: SelectionIn, expected: PackagePrecondition, signal?: AbortSignal) => request<MontageOut>("/api/packages/active/selections", { method: "PUT", body: JSON.stringify(body), headers: packageHeaders(expected), signal }),
