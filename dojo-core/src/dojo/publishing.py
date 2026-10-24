@@ -1515,7 +1515,8 @@ class DojoPublishing:
         review) or, when the render is already current, create it directly. An empty
         active package creates no review and leaves the occurrence pending.
         """
-        self._select_due_occurrence()
+        if self._select_due_occurrence() is None:
+            return
         package = self._packages.get_active()
         if package is None:
             return
@@ -1528,7 +1529,7 @@ class DojoPublishing:
             # Keep due occurrences pending until the editor makes inputs eligible.
             return
         digest = self._render_digest(package, manifest)
-        if manifest.get("render_revision") == digest:
+        if self._has_current_render(package, manifest, digest):
             self._create_review_if_due(package, digest)
         else:
             self._enqueue_render(package, digest)
@@ -3315,10 +3316,19 @@ class DojoPublishing:
         manifest = self._load_manifest(package)
         self._validate_montage(manifest)
         digest = self._render_digest(package, manifest)
-        stale = manifest.get("render_revision") != digest
+        stale = not self._has_current_render(package, manifest, digest)
         if stale or retry:
             self._enqueue_render(package, digest, retry=retry)
         return {"stale": stale, "render_revision": digest}
+
+    def _has_current_render(self, package: Package, manifest: dict, digest: str) -> bool:
+        if manifest.get("render_revision") != digest:
+            return False
+        try:
+            resolve_artifact(self.media_root / package.folder_name, manifest, "render/reel.mp4")
+        except (MediaNotFound, ValueError):
+            return False
+        return True
 
     def render_if_stale(self) -> bool:
         """Trigger a render only when inputs changed; no-op when fresh."""
@@ -3423,6 +3433,7 @@ class DojoPublishing:
         work = self.media_root / "tmp" / f"render-{job.job_id}"
         staged = work / "reel.mp4"
         renderer.render(build, work, staged)
+        duration = renderer.probe_duration(staged, cancelled=lambda: False)
         with self._packages.package_lock(), self._packages.command_transaction():
             if self._jobs.get(job.job_id) is None:
                 shutil.rmtree(work, ignore_errors=True)
@@ -3446,6 +3457,7 @@ class DojoPublishing:
             staged.replace(out)
             manifest = fresh.document
             manifest["render_revision"] = digest
+            manifest["render_duration"] = duration
             self._write_manifest(package, manifest)
             self._create_review_if_due(package, digest)
             self._audit.append(AuditEvent(

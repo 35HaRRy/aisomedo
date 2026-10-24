@@ -302,6 +302,7 @@ def test_run_tick_slow_render_second_tick_enqueues_no_second_job(
     package = pub.ensure_active_package()
     _finalize_one_photo(pub, package.folder_name)
 
+    pg_store.create(YayinZamani(0, "oneoff", FIXED_AT, "pending", FIXED_AT))
     monkeypatch.setattr(pub, "claim_next_job", lambda: None)
     run_tick(pub, None)
     queued = _render_jobs(pg_store)

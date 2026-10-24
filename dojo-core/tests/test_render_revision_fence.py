@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Event
 
+import pytest
 from dojo import RenderFailed
 
 from .test_render import finalize_media, make_seam
@@ -128,3 +129,98 @@ def test_concurrent_same_digest_completion_keeps_first_ready_artifact(tmp_path):
         second.result(timeout=5)
     artifact = seam.get_render_preview(expected_folder_name=seam.get_active_package().folder_name)
     assert artifact.path.read_bytes() == b"first"
+
+
+def test_automatic_render_requires_an_actual_due_occurrence(tmp_path):
+    from dojo.model import YayinZamani
+
+    store, seam, renderer = make_seam(tmp_path)
+    finalize_media(tmp_path, seam)
+    store.set("branding.logo_asset", "logo.png", updated_at=seam._clock.now())
+    seam.evaluate_due_work()
+    seam.evaluate_due_work()
+    jobs = store.package_work(seam.get_active_package())[1]
+    assert [job for job in jobs if job.kind == "render"] == []
+    now = seam._clock.now()
+    store.create(YayinZamani(0, "oneoff", now, "pending", now))
+    seam.evaluate_due_work()
+    seam.evaluate_due_work()
+    jobs = store.package_work(seam.get_active_package())[1]
+    assert len([job for job in jobs if job.kind == "render"]) == 1
+    job = seam.claim_next_job()
+    seam.process_job(job.job_id)
+    seam.evaluate_due_work()
+    assert len(seam.list_pending_reviews()) == 1
+    assert len(renderer.calls) == 1
+    assert seam._meta.created == []
+
+
+def test_reel_duration_comes_from_output_probe_not_calculated_montage(tmp_path):
+    store, seam, renderer = make_seam(tmp_path)
+    finalize_media(tmp_path, seam)
+    store.set("branding.logo_asset", "logo.png", updated_at=seam._clock.now())
+    renderer.probe_duration = lambda path, *, cancelled: 3.08
+    seam.render_preview()
+    seam.process_job(seam.claim_next_job().job_id)
+    editor = seam.get_active_editor()
+    assert editor["render_status"] == "ready"
+    assert editor["render_duration"] == 3.08
+    assert editor["montage"]["combined_duration"] == 3.0
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_render_recovers_a_missing_current_artifact(tmp_path, automatic):
+    from dojo.model import YayinZamani
+
+    store, seam, _ = make_seam(tmp_path)
+    finalize_media(tmp_path, seam)
+    store.set("branding.logo_asset", "logo.png", updated_at=seam._clock.now())
+    seam.render_preview()
+    seam.process_job(seam.claim_next_job().job_id)
+    output = seam.get_render_preview(expected_folder_name=seam.get_active_package().folder_name)
+    output.path.unlink()
+    if automatic:
+        now = seam._clock.now()
+        store.create(YayinZamani(0, "oneoff", now, "pending", now))
+        seam.evaluate_due_work()
+    else:
+        seam.render_preview()
+    job = seam.claim_next_job()
+    assert job is not None and job.kind == "render"
+    seam.process_job(job.job_id)
+    assert seam.get_active_editor()["render_status"] == "ready"
+
+
+def test_ready_legacy_render_does_not_invent_missing_output_duration(tmp_path):
+    store, seam, _ = make_seam(tmp_path)
+    finalize_media(tmp_path, seam)
+    store.set("branding.logo_asset", "logo.png", updated_at=seam._clock.now())
+    seam.render_preview()
+    seam.process_job(seam.claim_next_job().job_id)
+    package = seam.get_active_package()
+    document = seam._load_manifest(package)
+    document.pop("render_duration")
+    seam._write_manifest(package, document)
+    editor = seam.get_active_editor()
+    assert editor["render_status"] == "ready"
+    assert editor["render_duration"] is None
+
+
+def test_section_preview_completion_keeps_the_ready_reel_and_its_duration(tmp_path):
+    store, seam, _ = make_seam(tmp_path)
+    mid = finalize_media(tmp_path, seam, filename="video.mp4",
+                         content_type="video/mp4", duration=30)
+    store.set("branding.logo_asset", "logo.png", updated_at=seam._clock.now())
+    seam.set_selections({mid: [{"start": 0, "end": 5}]},
+                         expected_folder_name=seam.get_active_package().folder_name)
+    section_job = seam.claim_next_job()
+    assert section_job.kind == "section_preview"
+    seam.render_preview()
+    seam.process_job(seam.claim_next_job().job_id)
+    before = seam.get_active_editor()
+    seam.process_job(section_job.job_id)
+    after = seam.get_active_editor()
+    assert after["render_status"] == "ready"
+    assert after["render_revision"] == before["render_revision"]
+    assert after["render_duration"] == 5.0
+    assert after["content_revision"] == before["content_revision"]

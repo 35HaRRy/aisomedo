@@ -57,6 +57,7 @@ def test_api_scheduler_race_creates_one_job_and_audit(pg_store, other, tmp_path)
     api, scheduler = seam(pg_store, tmp_path), seam(other, tmp_path)
     pg_store.set("branding.logo_asset", "logo.png", updated_at=FIXED_AT)
     finalize_media(tmp_path, api)
+    pg_store.create(YayinZamani(0, "oneoff", FIXED_AT, "pending", FIXED_AT))
     gate = Barrier(2)
 
     def request():
@@ -90,6 +91,7 @@ def test_later_tick_during_blocked_render(pg_store, other, tmp_path):
     second = seam(other, tmp_path)
     pg_store.set("branding.logo_asset", "logo.png", updated_at=FIXED_AT)
     finalize_media(tmp_path, first)
+    pg_store.create(YayinZamani(0, "oneoff", FIXED_AT, "pending", FIXED_AT))
     first.evaluate_due_work()
     claimed = first.claim_next_job()
     with ThreadPoolExecutor(1) as pool:

@@ -86,6 +86,9 @@ def test_legacy_digest_and_manifest_survive_reads_until_explicit_edit(tmp_path):
                                           ensure_ascii=False).encode()).hexdigest()
     manifest["render_revision"] = old_digest
     seam._write_manifest(seam.get_active_package(), manifest)
+    rendered = path.parent / "render" / "reel.mp4"
+    rendered.parent.mkdir(exist_ok=True)
+    rendered.write_bytes(b"existing-legacy-render")
     before = path.read_bytes()
     assert seam.get_montage_status().combined_duration == 10.0
     assert seam.render_preview() == {"stale": False, "render_revision": old_digest}
