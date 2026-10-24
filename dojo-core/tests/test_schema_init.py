@@ -55,12 +55,13 @@ def legacy(engine):
 def assert_head(engine):
     with engine.connect() as conn:
         version = conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0020_schedule_uniqueness"
+        assert version == "0021_media_preview_jobs"
         assert conn.execute(text(
             "SELECT text, created_by FROM consent_policies WHERE version = 1"
         )).one() == ("Görsellerimin paylaşılmasını onaylıyorum.", "installation")
     for table, expected in [
-        ("jobs", "uq_jobs_active_render"), ("yayin_zamani", "uq_yayin_zamani_regular_due"),
+        ("jobs", "uq_jobs_active_render"), ("jobs", "uq_jobs_active_media_preview"),
+        ("yayin_zamani", "uq_yayin_zamani_regular_due"),
         ("yayin_zamani", "uq_yayin_zamani_pending_regular"),
         ("yayin_zamani", "uq_yayin_zamani_pending_exception"),
         ("yayin_incelemesi", "uq_yayin_incelemesi_actionable"),
@@ -324,7 +325,7 @@ def test_default_consent_seed_does_not_overwrite_existing_policy(database):
     initialize_database(url)
     with engine.connect() as conn:
         assert conn.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0020_schedule_uniqueness"
+            == "0021_media_preview_jobs"
         assert conn.scalar(text(
             "SELECT text FROM consent_policies WHERE version = 1"
         )) == "custom text"
