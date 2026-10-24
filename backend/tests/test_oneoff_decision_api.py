@@ -37,7 +37,10 @@ def test_review_moves_same_occurrence_to_server_now_and_worker_creates_exact_rev
     assert decide(client, slot).status_code == 409
     publishing.evaluate_due_work()
     job = publishing.claim_next_job()
-    assert job is not None
+    while job is not None and job.kind in ("thumbnail", "section_preview"):
+        publishing.process_job(job.job_id)
+        job = publishing.claim_next_job()
+    assert job is not None and job.kind == "render"
     publishing.process_job(job.job_id)
     publishing.evaluate_due_work()
     reviews = publishing.list_pending_reviews()

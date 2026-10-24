@@ -207,7 +207,7 @@ def main() -> None:
         "UploadLimitsOut", "UploadInitIn", "UploadOut", "ResolveConflictIn",
         "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "MontageOut",
         "ClearPackageIn", "ClearPackageOut", "RenderIn", "RenderOut",
-        "PackageEditIn", "EditConflictOut",
+        "PackageEditIn", "EditConflictOut", "SectionPreviewRetryIn",
         "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn", "OneoffDateIn",
         "OneoffDecisionIn", "OneoffDecisionOut",
         "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut",
@@ -242,11 +242,13 @@ def main() -> None:
         "AttemptOut", "SelectIn",
         "ReminderPolicyIn", "ReminderPolicyOut",
         "UploadLimitsOut", "UploadInitIn", "UploadOut",
-        "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "OrderIn", "ResolveConflictIn", "ActivityPageOut",
+        "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "OrderIn", "ResolveConflictIn",
+        "ActivityPageOut",
         "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn", "RenderIn", "RenderOut",
         "PushTokenIn", "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut", "OneoffDateIn",
         "OneoffDecisionIn", "OneoffDecisionOut",
-        "PackageEditIn", "EditConflictOut",
+        "PackageEditIn", "EditConflictOut", "SectionPreviewRetryIn",
+        "ClearPackageIn", "ClearPackageOut",
     ]))
     ANDROID_TARGET.parent.mkdir(parents=True, exist_ok=True)
     ANDROID_TARGET.write_text("\n".join(kt_lines), encoding="utf-8")

@@ -48,9 +48,13 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/active/complete",
   "/api/packages/active/editor",
   "/api/packages/active/edits",
+  "/api/packages/active/media/{media_id}/original",
   "/api/packages/active/media/{media_id}/preview",
   "/api/packages/active/media/{media_id}/remove",
   "/api/packages/active/media/{media_id}/restore",
+  "/api/packages/active/media/{media_id}/sections/preview",
+  "/api/packages/active/media/{media_id}/sections/retry",
+  "/api/packages/active/media/{media_id}/thumbnail",
   "/api/packages/active/montage",
   "/api/packages/active/order",
   "/api/packages/active/publication",
@@ -110,6 +114,7 @@ export type ActiveEditorOut = {
   "media": Array<EditorMediaOut>;
   "montage": MontageOut;
   "package": PackageOut;
+  "render_duration"?: number | null;
   "render_preview_url"?: string | null;
   "render_revision"?: string | null;
   "render_stale": boolean;
@@ -269,12 +274,15 @@ export type EditorMediaOut = {
   "filename": string;
   "is_video": boolean;
   "media_id": string;
+  "original_url"?: string | null;
   "preview_url": string | null;
   "processed": ProcessedMetadataOut;
   "removed_position"?: number | null;
+  "section_preview"?: SectionPreviewOut | null;
   "size_bytes": number;
   "source_duration": number | null;
   "status": string;
+  "thumbnail_url"?: string | null;
   "uploaded_at": string;
 };
 
@@ -453,6 +461,19 @@ export type ReviewOut = {
   "revision_digest": string;
   "status": string;
   "version": number;
+};
+
+export type SectionPreviewOut = {
+  "duration"?: number | null;
+  "generation"?: string | null;
+  "status"?: "missing" | "queued" | "processing" | "ready" | "failed";
+  "url"?: string | null;
+};
+
+export type SectionPreviewRetryIn = {
+  "expected_folder_name": string;
+  "expected_generation": string;
+  "expected_package_id": number;
 };
 
 export type SelectIn = {

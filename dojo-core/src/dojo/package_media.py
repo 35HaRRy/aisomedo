@@ -1,6 +1,7 @@
 """Manifest-bound private artifacts; no directory browsing or public signing."""
 from __future__ import annotations
 
+import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from dojo.exceptions import MediaNotFound
@@ -48,6 +49,21 @@ def _known_artifacts(manifest: dict) -> list[dict]:
             "filename": f"{Path(filename).stem}.processed{processed_suffix}",
             "content_type": processed_type or "application/octet-stream", "valid": valid,
         })
+        if entry["status"] == "finalized":
+            for key, kind, suffix, mime in (
+                ("thumbnails", "thumbnail", ".jpg", "image/jpeg"),
+                ("section_previews", "section_preview", ".mp4", "video/mp4"),
+            ):
+                record = manifest.get(key, {}).get(mid, {})
+                generation = record.get("generation", "")
+                if record.get("status") != "ready" or not isinstance(generation, str) \
+                        or not re.fullmatch(r"[a-f0-9]{32}", generation):
+                    continue
+                expected = f"media/{mid}/previews/{generation}{suffix}"
+                if record.get("artifact_ref") == expected:
+                    artifacts.append({"artifact_ref": expected, "kind": kind,
+                        "filename": f"{Path(filename).stem}.{kind}{suffix}",
+                        "content_type": mime, "valid": True})
     artifacts.append({
         "artifact_ref": "render/reel.mp4", "kind": "render", "filename": "reel.mp4",
         "content_type": "video/mp4", "valid": True,
@@ -73,6 +89,8 @@ def _contained_path(root: Path, reference: str) -> Path:
 def describe_artifacts(root: Path, manifest: dict) -> list[dict]:
     result = []
     for spec in _known_artifacts(manifest):
+        if spec["kind"] in ("thumbnail", "section_preview"):
+            continue  # Preview DTOs expose these without changing historical artifact lists.
         try:
             available = spec["valid"] and _contained_path(root, spec["artifact_ref"]).is_file()
         except (ValueError, OSError):

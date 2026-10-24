@@ -2209,12 +2209,27 @@ class DojoPublishing:
                             if a["kind"] == "processed" and a["available"]), None)
             is_video = str(entry.get("content_type", "")).startswith("video/")
             source = source_duration(entry) if is_video else None
+            active = entry.get("status") == "finalized"
+            original = next((a["artifact_ref"] for a in items
+                             if a["kind"] == "original" and a["available"]), None)
+            section = manifest.get("section_previews", {}).get(mid, {}) if active else {}
+            thumbnail = manifest.get("thumbnails", {}).get(mid, {}) if active else {}
             media.append({
                 **public_media(entry), "is_video": is_video, "source_duration": source,
                 "effective_duration": effective_duration(
                     entry, selections.get(mid), limits.photo_duration_seconds
                 ) if not is_video or source is not None else None,
                 "preview_ref": preview, "artifacts": items,
+                "original_ref": original if active else None,
+                "thumbnail_ref": thumbnail.get("artifact_ref")
+                    if thumbnail.get("status") == "ready" else None,
+                "thumbnail_generation": thumbnail.get("generation"),
+                "section_preview": {
+                    "status": section.get("status", "missing"),
+                    "generation": section.get("generation"),
+                    "artifact_ref": section.get("artifact_ref"),
+                    "duration": section.get("duration"), "url": None,
+                },
             })
         digest = self._render_digest(package, manifest)
         stale = manifest.get("render_revision") != digest
@@ -2236,6 +2251,8 @@ class DojoPublishing:
             "render_stale": stale,
             "render_status": render_status,
             "render_revision": manifest.get("render_revision"),
+            "render_duration": (manifest.get("render_duration")
+                                if render_status == "ready" else None),
             "media": media, "montage": self._montage_status(manifest).to_dict(),
         }
 
@@ -2261,6 +2278,42 @@ class DojoPublishing:
         suffix = extension_for(str(entry.get("processed", {}).get("content_type", "")))
         reference = f"{prefix}/{media_id}/processed{suffix}"
         return resolve_artifact(root, manifest, reference)
+
+    def get_active_media_artifact(
+        self, media_id: str, kind: str, *, expected_package_id: int,
+        expected_folder_name: str, generation: str | None = None,
+    ) -> PackageArtifact:
+        package = self._require_editor_package(expected_folder_name)
+        if package.id != expected_package_id:
+            raise PackageChanged("active package identity changed")
+        manifest = self._load_manifest(package)
+        entry = next((e for e in manifest.get("media", []) if e["media_id"] == media_id), None)
+        if entry is None or entry.get("status") != "finalized":
+            raise MediaNotFound("active media is unavailable")
+        root = self.media_root / package.folder_name
+        if kind == "original":
+            original = next((a for a in describe_artifacts(root, manifest)
+                             if a["kind"] == "original" and a["artifact_ref"].startswith(
+                                 f"media/{media_id}/")), None)
+            if original is None:
+                raise MediaNotFound("original is unavailable")
+            return resolve_artifact(root, manifest, original["artifact_ref"])
+        if kind not in ("thumbnail", "section_preview"):
+            raise MediaNotFound("unknown media preview")
+        key = "thumbnails" if kind == "thumbnail" else "section_previews"
+        record = manifest.get(key, {}).get(media_id, {})
+        inputs = (self._thumbnail_input(entry) if kind == "thumbnail" else
+                  self._section_preview_input(
+                      entry, manifest_selections(manifest).get(media_id, []),
+                  ))
+        if record.get("status") != "ready" or inputs is None \
+                or inputs["input_digest"] != record.get("input_digest") \
+                or generation is not None and generation != record.get("generation"):
+            raise MediaNotFound("current media preview is unavailable")
+        try:
+            return resolve_artifact(root, manifest, record.get("artifact_ref", ""))
+        except ValueError as exc:
+            raise MediaNotFound("current media preview is unavailable") from exc
 
     def resolve_completed_artifact(self, folder_name: str, artifact_ref: str) -> PackageArtifact:
         package = self._get_completed_package(folder_name)

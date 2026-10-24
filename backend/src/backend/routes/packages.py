@@ -47,6 +47,7 @@ from backend.routes.package_models import (
     PackageOut,
     RenderIn,
     RenderOut,
+    SectionPreviewRetryIn,
     SelectionIn,
 )
 from backend.snapshots import versioned_snapshot
@@ -229,6 +230,19 @@ def _editor_out(snapshot: dict) -> dict:
         url = (f"/api/packages/active/media/{quote(media['media_id'], safe='')}/preview?"
                + urlencode({"expected_folder_name": folder})) if media["preview_ref"] else None
         media["preview_url"] = url
+        identity = {"expected_package_id": snapshot["package"]["id"],
+                    "expected_folder_name": folder}
+        prefix = f"/api/packages/active/media/{quote(media['media_id'], safe='')}"
+        media["original_url"] = (prefix + "/original?" + urlencode(identity)
+                                 if media.get("original_ref") else None)
+        media["thumbnail_url"] = (prefix + "/thumbnail?" + urlencode({
+            **identity, "generation": media["thumbnail_generation"],
+        }) if media.get("thumbnail_ref") else None)
+        section = media.get("section_preview")
+        if section is not None:
+            section["url"] = (prefix + "/sections/preview?" + urlencode({
+                **identity, "generation": section["generation"],
+            }) if section.get("status") == "ready" and section.get("artifact_ref") else None)
         media["artifacts"] = [{**artifact,
                                "url": url if artifact["kind"] == "processed" else None,
                                "preview_url": url if artifact["kind"] == "processed" else None}
@@ -339,6 +353,62 @@ def media_preview(
         artifact = publishing.get_media_preview(media_id, expected_folder_name=expected_folder_name)
         return _file(artifact, download=False)
     except (NoActivePackage, MediaNotFound, PackageChanged, ValueError) as exc:
+        _map_mutation_error(exc)
+
+
+def _active_media_file(
+    publishing: DojoPublishing, media_id: str, kind: str, package_id: int, folder: str,
+    generation: str | None = None,
+) -> FileResponse:
+    try:
+        return _file(publishing.get_active_media_artifact(
+            media_id, kind, expected_package_id=package_id,
+            expected_folder_name=folder, generation=generation,
+        ), download=False)
+    except (NoActivePackage, MediaNotFound, PackageChanged, ValueError) as exc:
+        _map_mutation_error(exc)
+
+
+@router.get("/active/media/{media_id}/original")
+def original_media(
+    media_id: str, expected_package_id: int, expected_folder_name: str,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> FileResponse:
+    return _active_media_file(publishing, media_id, "original",
+                              expected_package_id, expected_folder_name)
+
+
+@router.get("/active/media/{media_id}/thumbnail")
+def media_thumbnail(
+    media_id: str, expected_package_id: int, expected_folder_name: str,
+    generation: str | None = None,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> FileResponse:
+    return _active_media_file(publishing, media_id, "thumbnail", expected_package_id,
+                              expected_folder_name, generation)
+
+
+@router.get("/active/media/{media_id}/sections/preview")
+def media_sections_preview(
+    media_id: str, expected_package_id: int, expected_folder_name: str, generation: str,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> FileResponse:
+    return _active_media_file(publishing, media_id, "section_preview", expected_package_id,
+                              expected_folder_name, generation)
+
+
+@router.post("/active/media/{media_id}/sections/retry", response_model=ActiveEditorOut)
+def retry_media_sections_preview(
+    media_id: str, body: SectionPreviewRetryIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict:
+    try:
+        return _editor_out(publishing.retry_section_preview(media_id, **body.model_dump()))
+    except (NoActivePackage, MediaNotFound, PackageChanged) as exc:
         _map_mutation_error(exc)
 
 

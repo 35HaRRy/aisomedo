@@ -150,10 +150,27 @@ class CompletedMediaOut(MediaOut):
     artifacts: list[PackageArtifactOut]
 
 
+class SectionPreviewOut(BaseModel):
+    status: Literal["missing", "queued", "processing", "ready", "failed"] = "missing"
+    generation: str | None = None
+    url: str | None = None
+    duration: float | None = None
+
+
+class SectionPreviewRetryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_package_id: Annotated[int, Field(strict=True, gt=0)]
+    expected_folder_name: str
+    expected_generation: Annotated[str, Field(min_length=1, max_length=128)]
+
+
 class EditorMediaOut(CompletedMediaOut):
     is_video: bool
     source_duration: float | None
     effective_duration: float | None
+    original_url: str | None = None
+    thumbnail_url: str | None = None
+    section_preview: SectionPreviewOut | None = None
 
 
 class ActiveEditorOut(BaseModel):
@@ -168,6 +185,7 @@ class ActiveEditorOut(BaseModel):
     ] = "missing"
     render_revision: str | None = None
     render_preview_url: str | None = None
+    render_duration: float | None = None
 
 
 class CompletedPackageOut(BaseModel):
