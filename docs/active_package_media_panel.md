@@ -1,6 +1,6 @@
 ## Confirmed decisions
 
-Shared requirements understanding approved by the user. Technical design and implementation remain pending; this approval does not approve an implementation plan.
+Shared requirements understanding, written technical specification, and implementation plan approved by the user. Native execution selected on branch `feature/active-package`.
 
 - Each photo card has its own save and discard icon buttons for its display duration. Changes are not saved automatically.
 - Saving or discarding one media card affects only that card; unsaved changes in other cards remain untouched.
@@ -68,10 +68,13 @@ Shared requirements understanding approved by the user. Technical design and imp
 - [x] Resolve contradictions discovered in the current implementation.
 - [x] Compare technical approaches and approve the sectioned design.
 - [x] Write and self-review the English technical specification.
-- [ ] Obtain user review of the written specification.
-- [ ] Write the implementation plan after specification approval.
+- [x] Obtain user review of the written specification.
+- [x] Write the implementation plan after specification approval.
+- [x] Obtain implementation plan approval and execution-method selection.
 
 Written specification: `docs/superpowers/specs/2026-10-24-active-package-media-panel-design.md`.
+
+Implementation plan: `docs/superpowers/plans/2026-10-24-active-package-media-panel.md`.
 
 ## Original requirements
 
