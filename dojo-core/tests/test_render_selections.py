@@ -45,6 +45,8 @@ def make_video(tmp_path, duration=30.0):
 def run_render(seam):
     seam.render_preview()
     job = seam.claim_next_job()
+    while job is not None and job.kind in ("section_preview", "thumbnail"):
+        job = seam.claim_next_job()
     assert job is not None and job.kind == "render"
     seam.process_job(job.job_id)
     assert seam._jobs.get(job.job_id).status == "done"

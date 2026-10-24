@@ -95,6 +95,7 @@ from dojo.model import (
     Upload,
     UploadLimits,
     UploadStatus,
+    VideoRange,
     VideoSelections,
     YayinIncelemesi,
     YayinZamani,
@@ -451,7 +452,8 @@ class DojoPublishing:
             if not ready:
                 continue
             try:
-                resolve_artifact(self.media_root / review.package_folder, manifest, "render/reel.mp4")
+                resolve_artifact(self.media_root / review.package_folder, manifest,
+                                 "render/reel.mp4")
             except MediaNotFound:
                 continue
             actions.append(PendingAction(
@@ -478,7 +480,8 @@ class DojoPublishing:
                 actions, key=lambda action: (action.due_at, action.occurrence_id),
             ),
             plan=plan,
-            manual_review_allowed=not reviews and not actions and not self._schedule.has_pending_exception(),
+            manual_review_allowed=(not reviews and not actions
+                                   and not self._schedule.has_pending_exception()),
             next_slots=[NextSlot(o.kind, o.due_at, o.id) for o in sorted(
                 occurrences, key=lambda o: (o.due_at, o.id),
             ) if o.status == "pending"],
@@ -2160,12 +2163,91 @@ class DojoPublishing:
             old = self._packages.read_package_state(package.id, for_update=True)
             if old is not None and old.document == manifest:
                 return
+            self._reconcile_section_previews(package, old.document if old else {}, manifest)
             changed = old is None or content_fields(old.document) != content_fields(manifest)
             self._packages.write_package_state(package.id, manifest, content_changed=changed)
             self._packages.queue_change(["dashboard", "publication", f"package:{package.id}"])
             self._packages.after_commit(
                 f"manifest:{package.id}", lambda: self.export_manifest(package),
             )
+
+    @staticmethod
+    def _section_preview_input(entry: dict | None, ranges: list[VideoRange]) -> dict | None:
+        if not entry or entry.get("status") != "finalized" or not ranges \
+                or not str(entry.get("content_type", "")).startswith("video/"):
+            return None
+        try:
+            ranges = validate_ranges(ranges, source_duration(entry) or 0)
+        except MontageTrimInvalid:
+            return None  # Recovery may persist an ineligible source; do not enqueue invalid work.
+        processed = entry.get("processed", {})
+        source = {"media_id": entry["media_id"], "uploaded_at": entry.get("uploaded_at"),
+                  "filename": entry.get("filename"), "processed": {
+                      key: processed.get(key) for key in ("path", "size_bytes", "duration")}}
+        identity = hashlib.sha256(
+            json.dumps(source, sort_keys=True, default=str).encode(),
+        ).hexdigest()
+        inputs = {"source_identity": identity, "ranges": ranges}
+        return {**inputs, "input_digest": hashlib.sha256(
+            json.dumps(inputs, sort_keys=True).encode()).hexdigest()}
+
+    def _enqueue_section_preview(
+        self, package: Package, media_id: str, inputs: dict, *, retry_of: str | None = None,
+    ) -> dict:
+        now = self._clock.now()
+        job, _ = self._jobs.create_job_once(Job(
+            id=0, job_id=uuid.uuid4().hex, upload_id=None, kind="section_preview",
+            status="queued", created_at=now, payload={
+                "package_id": package.id, "package": package.folder_name,
+                "media_id": media_id, **inputs,
+            },
+        ))
+        return {"generation": job.job_id, "input_digest": inputs["input_digest"],
+                "status": job.status, "artifact_ref": None, "duration": None,
+                "retry_of": retry_of}
+
+    def _reconcile_section_previews(self, package: Package, before: dict, after: dict) -> None:
+        old_media = {e["media_id"]: e for e in before.get("media", [])}
+        new_media = {e["media_id"]: e for e in after.get("media", [])}
+        old_ranges, new_ranges = manifest_selections(before), manifest_selections(after)
+        for mid in old_media.keys() | new_media.keys():
+            previous = self._section_preview_input(old_media.get(mid), old_ranges.get(mid, []))
+            current = self._section_preview_input(new_media.get(mid), new_ranges.get(mid, []))
+            if previous == current:
+                continue
+            self._jobs.cancel_media_jobs(package.id, mid, kinds=("section_preview",),
+                                         cancelled_at=self._clock.now())
+            records = after.setdefault("section_previews", {})
+            records.pop(mid, None)
+            if current is not None:
+                records[mid] = self._enqueue_section_preview(package, mid, current)
+
+    @_package_edit
+    def retry_section_preview(
+        self, media_id: str, *, expected_package_id: int, expected_folder_name: str,
+        expected_generation: str,
+    ) -> dict:
+        package = self._require_editor_package(expected_folder_name)
+        if package.id != expected_package_id:
+            raise PackageChanged("active package identity changed")
+        manifest = self._load_manifest(package)
+        record = manifest.get("section_previews", {}).get(media_id)
+        if not record or expected_generation not in (record["generation"], record.get("retry_of")):
+            raise PackageChanged("section preview generation changed")
+        entry = next((e for e in manifest.get("media", []) if e["media_id"] == media_id), None)
+        inputs = self._section_preview_input(entry, manifest_selections(manifest).get(media_id, []))
+        if inputs is None or inputs["input_digest"] != record["input_digest"]:
+            raise PackageChanged("saved sections changed")
+        job = self._jobs.get(record["generation"])
+        if job is not None and job.status in ("queued", "processing"):
+            return self.get_active_editor()
+        if job is None or job.status != "failed":
+            raise PackageChanged("section preview is not retryable")
+        manifest["section_previews"][media_id] = self._enqueue_section_preview(
+            package, media_id, inputs, retry_of=expected_generation,
+        )
+        self._write_manifest(package, manifest)
+        return self.get_active_editor()
 
     def export_manifest(self, package: Package) -> None:
         """Project current committed state; a disk failure never rolls it back."""
