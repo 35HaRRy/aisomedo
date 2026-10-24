@@ -22,6 +22,7 @@ from dojo.model import (
     ProcessedMedia,
     PushRegistration,
     ReelBuild,
+    ReelClip,
     Upload,
     YayinIncelemesi,
     YayinZamani,
@@ -234,6 +235,14 @@ class MediaProcessor(Protocol):
 @runtime_checkable
 class ReelRenderer(Protocol):
     def render(self, build: ReelBuild, work_dir: Path, out_path: Path) -> Path: ...
+    def render_sections(
+        self, clips: list[ReelClip], work_dir: Path, out_path: Path, *,
+        cancelled: Callable[[], bool],
+    ) -> Path: ...
+    def render_thumbnail(
+        self, source: Path, out_path: Path, *, cancelled: Callable[[], bool],
+    ) -> Path: ...
+    def probe_duration(self, path: Path, *, cancelled: Callable[[], bool]) -> float: ...
 
 
 @runtime_checkable
