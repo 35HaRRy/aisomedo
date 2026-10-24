@@ -23,6 +23,8 @@ export const API_PATHS: readonly string[] = [
   "/api/activity",
   "/api/compat",
   "/api/dashboard",
+  "/api/dashboard/occurrences/{occurrence_id}",
+  "/api/dashboard/occurrences/{occurrence_id}/decision",
   "/api/events",
   "/api/media/upload-limits",
   "/api/media/uploads",
@@ -221,6 +223,7 @@ export type DashboardActionOut = {
   "occurrence_id": number;
   "package_folder": string | null;
   "review_id": number | null;
+  "review_status"?: string | null;
   "state": "review_ready" | "empty_package" | "preparing";
   "version": number | null;
 };
@@ -233,7 +236,9 @@ export type DashboardInstagramOut = {
 export type DashboardOut = {
   "generated_at": string;
   "instagram": DashboardInstagramOut;
+  "manual_review_allowed"?: boolean;
   "next_slot": DashboardSlotOut | null;
+  "next_slots"?: Array<DashboardSlotOut> | null;
   "package": PackageOut | null;
   "pending_actions": Array<DashboardActionOut>;
   "plan": PlanOut;
@@ -243,6 +248,7 @@ export type DashboardOut = {
 export type DashboardSlotOut = {
   "due_at": string;
   "kind": string;
+  "occurrence_id"?: number | null;
 };
 
 export type DashboardWorkerOut = {
@@ -328,6 +334,24 @@ export type OccurrenceDecisionOut = {
   "occurrence_id": number;
   "oneoff_occurrence_id": number | null;
   "package_folder": string;
+  "status": string;
+};
+
+export type OneoffDateIn = {
+  "expected_due_at": string;
+  "new_due_at": string;
+};
+
+export type OneoffDecisionIn = {
+  "action": "review" | "skip";
+  "confirmed"?: boolean;
+  "expected_due_at": string;
+};
+
+export type OneoffDecisionOut = {
+  "due_at": string;
+  "occurrence_id": number;
+  "package_folder": string | null;
   "status": string;
 };
 
@@ -423,6 +447,7 @@ export type ReviewOut = {
   "caption": string | null;
   "created_at": string;
   "id": number;
+  "instagram_fail_message"?: string | null;
   "occurrence_id": number;
   "package_folder": string;
   "revision_digest": string;

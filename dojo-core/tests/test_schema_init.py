@@ -40,6 +40,9 @@ def legacy(engine):
     with engine.begin() as conn:
         conn.execute(text("DROP INDEX IF EXISTS uq_jobs_active_render"))
         conn.execute(text("DROP INDEX IF EXISTS uq_yayin_zamani_regular_due"))
+        conn.execute(text("DROP INDEX IF EXISTS uq_yayin_zamani_pending_regular"))
+        conn.execute(text("DROP INDEX IF EXISTS uq_yayin_zamani_pending_exception"))
+        conn.execute(text("DROP INDEX IF EXISTS uq_yayin_incelemesi_actionable"))
         conn.execute(text("ALTER TABLE jobs DROP COLUMN failure_generation"))
         conn.execute(text("DROP TABLE operational_deliveries"))
         conn.execute(text("DROP TABLE operational_alerts"))
@@ -52,9 +55,15 @@ def legacy(engine):
 def assert_head(engine):
     with engine.connect() as conn:
         version = conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0017_live_state"
+        assert version == "0020_schedule_uniqueness"
+        assert conn.execute(text(
+            "SELECT text, created_by FROM consent_policies WHERE version = 1"
+        )).one() == ("Görsellerimin paylaşılmasını onaylıyorum.", "installation")
     for table, expected in [
         ("jobs", "uq_jobs_active_render"), ("yayin_zamani", "uq_yayin_zamani_regular_due"),
+        ("yayin_zamani", "uq_yayin_zamani_pending_regular"),
+        ("yayin_zamani", "uq_yayin_zamani_pending_exception"),
+        ("yayin_incelemesi", "uq_yayin_incelemesi_actionable"),
     ]:
         indexes = inspect(engine).get_indexes(table)
         assert any(i["name"] == expected and i["unique"] for i in indexes)
@@ -79,6 +88,44 @@ def test_monitoring_check_constraints_are_created_and_enforced(database):
             conn.execute(text("""INSERT INTO operational_alerts
                 (alert_id, event_key, kind, title, body, data, created_at)
                 VALUES ('a', 'e', 'not-a-kind', 't', 'b', '{}', now())"""))
+
+
+def test_schedule_migration_preserves_due_history_and_one_pending_regular(database):
+    url, engine = database
+    command.upgrade(config(url), "0019_review_publication_status")
+    with engine.begin() as conn:
+        conn.execute(text("""INSERT INTO yayin_zamani (kind, due_at, status, created_at)
+            VALUES ('regular', now() - interval '14 days', 'pending', now()),
+                   ('regular', now() - interval '1 day', 'pending', now()),
+                   ('regular', now() + interval '13 days', 'pending', now())"""))
+    command.upgrade(config(url), "head")
+    with engine.connect() as conn:
+        statuses = conn.execute(text("SELECT status FROM yayin_zamani ORDER BY due_at")).scalars()
+        assert list(statuses) == ["due", "due", "pending"]
+
+
+@pytest.mark.parametrize("table", ["yayin_zamani", "yayin_incelemesi"])
+def test_schedule_migration_reports_conflicts_and_rolls_back_every_change(database, table):
+    url, engine = database
+    command.upgrade(config(url), "0019_review_publication_status")
+    with engine.begin() as conn:
+        conn.execute(text("""INSERT INTO yayin_zamani (id, kind, due_at, status, created_at)
+            VALUES (1, 'regular', now() - interval '1 day', 'pending', now())"""))
+        if table == "yayin_zamani":
+            conn.execute(text("""INSERT INTO yayin_zamani (id, kind, due_at, status, created_at)
+                VALUES (41, 'manual', now(), 'pending', now()),
+                       (42, 'oneoff', now(), 'pending', now())"""))
+        else:
+            conn.execute(text("""INSERT INTO yayin_incelemesi
+                (id, occurrence_id, package_folder, revision_digest, status, created_at, version)
+                VALUES (41, 1, 'p', 'a', 'pending', now(), 1),
+                       (42, 1, 'p', 'b', 'failed', now(), 1)"""))
+    with pytest.raises(RuntimeError, match=rf"{table}: row IDs \[41, 42\]"):
+        command.upgrade(config(url), "head")
+    with engine.connect() as conn:
+        assert conn.scalar(text("SELECT status FROM yayin_zamani WHERE id = 1")) == "pending"
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0019_review_publication_status"
 
 
 def _shape(engine, table):
@@ -262,6 +309,25 @@ def test_current_create_all_schema_can_be_initialized(database):
     assert_head(engine)
     initialize_database(url)
     assert_head(engine)
+
+
+def test_default_consent_seed_does_not_overwrite_existing_policy(database):
+    from dojo.schema import initialize_database
+
+    url, engine = database
+    command.upgrade(config(url), "0017_live_state")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO consent_policies (version, text, created_at, created_by) "
+            "VALUES (1, 'custom text', now(), 'cli')"
+        ))
+    initialize_database(url)
+    with engine.connect() as conn:
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0020_schedule_uniqueness"
+        assert conn.scalar(text(
+            "SELECT text FROM consent_policies WHERE version = 1"
+        )) == "custom text"
 
 
 def test_initializer_upgrades_versioned_database(database):

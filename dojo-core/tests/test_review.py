@@ -93,6 +93,32 @@ def test_due_occurrence_creates_one_durable_review(tmp_path) -> None:
     assert "review.created" in [e.action for e in seam.list_audit()]
 
 
+def test_postgres_review_error_roundtrip_and_decision_guards(pg_store):
+    from dataclasses import replace
+
+    from dojo.model import YayinIncelemesi
+
+    for status in ("failed", "uncertain", "publishing"):
+        review = pg_store.create(YayinIncelemesi(
+            id=0, occurrence_id=1, package_folder="active", revision_digest=status,
+            caption="caption", status="pending", created_at=FIXED_AT,
+        ))
+        updated = pg_store.update(replace(
+            review, status=status, instagram_fail_message="Instagram error",
+        ))
+        assert pg_store.get(review.id) == updated
+        assert updated in pg_store.list_pending()
+        resolved = pg_store.resolve_if_pending(review.id, review.version, "skipped", FIXED_AT, "7")
+        if status == "publishing":
+            assert resolved is None
+            completed = pg_store.resolve_if_pending(
+                review.id, review.version, "approved", FIXED_AT, "7",
+            )
+            assert completed.status == "approved"
+        else:
+            assert resolved.status == "skipped"
+
+
 def test_reviews_idempotent_across_rerun_and_restart(tmp_path) -> None:
     store, seam, renderer = make_seam(tmp_path)
     set_logo(store, "logo.png")
@@ -148,7 +174,7 @@ def test_review_snapshots_caption(tmp_path) -> None:
     assert reviews[0].caption == "dojo monday recap"
 
 
-def test_empty_package_at_due_creates_no_review_and_stays_pending(tmp_path) -> None:
+def test_empty_package_at_due_creates_no_review_and_stays_due(tmp_path) -> None:
     store, seam, renderer = make_seam(tmp_path)
     seam.get_or_create_active_package()  # empty active package
     now = set_plan_due(seam, monday_dt())
@@ -158,7 +184,7 @@ def test_empty_package_at_due_creates_no_review_and_stays_pending(tmp_path) -> N
     assert seam.list_pending_reviews() == []
     due = seam.list_due_occurrences(now)
     assert len(due) == 1
-    assert due[0].status == "pending"
+    assert due[0].status == "due"
 
 
 def test_upload_after_empty_due_reviews_same_package(tmp_path) -> None:

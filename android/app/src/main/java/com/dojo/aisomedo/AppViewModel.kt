@@ -20,12 +20,13 @@ import java.net.URI
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.OffsetDateTime
 import java.time.Instant
 import java.io.File
 import kotlinx.serialization.json.*
 
 enum class Phase { ADDRESS, LOADING, PAIRING, READY, UPDATE_REQUIRED, CONNECTION_ERROR }
-enum class Destination { DASHBOARD, PACKAGE, ACTIVITY, SETTINGS }
+enum class Destination { DASHBOARD, PACKAGE, COMPLETED, ACTIVITY, SETTINGS }
 enum class UiIssue { INVALID_SERVER, NETWORK, INVALID_CODE, RATE_LIMIT, INVALID_INPUT, PROVIDER_UNAVAILABLE, POLICY_MISSING, POLICY_CHANGED, STORAGE, UNKNOWN }
 
 data class AppUiState(
@@ -55,6 +56,8 @@ data class AppUiState(
     val pendingAssets: Map<String, BrandingAssetOut> = emptyMap(),
     val editor: MediaEditorState = MediaEditorState(),
     val review: ReviewState = ReviewState(),
+    val oneoffDecision: OneoffDecisionOut? = null,
+    val oneoffDecisionIssue: ReviewIssue? = null,
     val outcomePackage: String? = null,
     val networkConnected: Boolean = true,
     val authoritative: Boolean = false,
@@ -64,6 +67,10 @@ data class AppUiState(
     val editorFetchedAt: Long? = null,
     val activityFetchedAt: Long? = null,
     val livePhase: LivePhase = LivePhase.CONNECTING,
+    val completedPackages: List<PackageOut>? = null,
+    val completedFolder: String? = null,
+    val completedDetail: CompletedPackageOut? = null,
+    val completedError: Boolean = false,
 ) {
     val showConnectionNotice get() = phase == Phase.READY &&
         (!networkConnected || livePhase == LivePhase.DISCONNECTED || !authoritative && issue != null)
@@ -97,6 +104,8 @@ class AppViewModel(
     private var prompted = false
     private var reviewJob: Job? = null
     private var reviewEpoch = 0
+    private var oneoffEpoch = 0
+    private var oneoffDecisionRevision = 0L
     private var pendingPushRefresh = false
     private var refreshRequested = false
     private var boundRevision = store.revision.value
@@ -227,6 +236,7 @@ class AppViewModel(
                 require(activity.events.size <= 50)
                 mutable.update { it.copy(activity = activity, activityFetchedAt = now()) }
             }
+            if ((all || "completed" in resources) && state.value.destination == Destination.COMPLETED) loadCompleted(current)
             if (state.value.review.target != null && state.value.review.issue != ReviewIssue.UNCERTAIN && (content || "dashboard" in resources)) loadReview(current, reviewEpoch)
             checkRead(current, epoch)
             authoritativeEpoch = epoch
@@ -236,7 +246,7 @@ class AppViewModel(
         catch (error: Exception) {
             if (generation == current) { mutable.update { it.copy(authoritative = false) }; failure(error) }
             throw error
-        } finally { if (generation == current) { liveReading = false; mutable.update { it.copy(busy = false) } } }
+        } finally { if (generation == current) { liveReading = false; mutable.update { it.copy(busy = false) }; resumeOneoffReview() } }
     }
 
     override fun onCleared() { cleared = true; stopLive(); super.onCleared() }
@@ -284,6 +294,7 @@ class AppViewModel(
             catch (e: Exception) { if (generation == current) failure(e, pairing) }
             finally { if (generation == current) {
                 mutable.update { it.copy(busy = false) }
+                resumeOneoffReview()
                 if (pendingPushRefresh) { pendingPushRefresh = false; if (state.value.phase == Phase.READY) refresh() }
                 if (refreshRequested) { refreshRequested = false; refresh() }
             } }
@@ -446,6 +457,7 @@ class AppViewModel(
         if (step != null || state.value.destination == Destination.SETTINGS) loadConfiguration(current)
         checkKnownAttempt(current)
         if (state.value.dashboard?.`package` != null || state.value.destination == Destination.PACKAGE) readSection(current) { loadEditor(current) }
+        if (state.value.destination == Destination.COMPLETED) readSection(current) { loadCompleted(current) }
         persistState(current)
         restoreReviewTarget()
         if (state.value.review.target != null) refreshReview()
@@ -585,9 +597,12 @@ class AppViewModel(
     private fun clearSaved() { saved.keys().toList().forEach { saved.remove<Any>(it) } }
     fun navigate(destination: Destination) {
         if (state.value.phase != Phase.READY) return
+        oneoffEpoch++
         saved["destination"] = destination.name
-        closeSetup(); mutable.update { it.copy(destination = destination) }
+        closeSetup(); mutable.update { it.copy(destination = destination,
+            oneoffDecision = it.oneoffDecision.takeIf { destination == Destination.DASHBOARD }, oneoffDecisionIssue = null) }
         if (destination == Destination.ACTIVITY) live?.invalidate(setOf("activity"))
+        if (destination == Destination.COMPLETED) refreshCompleted()
         if (liveReading) { live?.invalidate(setOf("*")); return }
         if (destination == Destination.PACKAGE && network.value.connected) refreshEditor()
         if (destination == Destination.SETTINGS && network.value.connected) {
@@ -667,7 +682,8 @@ class AppViewModel(
             checkRead(current, epoch)
             if (generation == current) {
                 remoteDrafts("caption_template", mapOf("caption" to branding.captionTemplate.orEmpty()), state.value.branding != null && state.value.branding?.captionTemplate != branding.captionTemplate)
-                remoteDrafts("cards", mapOf("intro_duration" to (branding.introDuration?.toString() ?: "3"), "outro_duration" to (branding.outroDuration?.toString() ?: "3")), state.value.branding != null && state.value.branding != branding)
+                fun duration(value: Double?) = value?.toBigDecimal()?.stripTrailingZeros()?.toPlainString() ?: "3"
+                remoteDrafts("cards", mapOf("intro_duration" to duration(branding.introDuration), "outro_duration" to duration(branding.outroDuration)), state.value.branding != null && state.value.branding != branding)
                 mutable.update { it.copy(branding = branding, configurationFresh = it.configurationFresh + setOf("caption_template", "cards", "logo")) }
             }
         }
@@ -721,6 +737,88 @@ class AppViewModel(
         val valid = runCatching { LocalDate.parse(anchorDate).dayOfWeek == DayOfWeek.MONDAY && LocalTime.parse(anchorTime) != null }.getOrDefault(false)
         if (!valid) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
         mutation("schedule") { api().savePlan(PlanIn(anchorDate, anchorTime, enabled)) }
+    }
+
+    fun refreshCompleted() { live?.invalidate(setOf("completed")) }
+
+    fun selectCompleted(folder: String) {
+        if (state.value.completedPackages?.none { it.folderName == folder } != false) return
+        mutable.update { it.copy(completedFolder = folder, completedDetail = null) }
+        refreshCompleted()
+    }
+
+    private suspend fun loadCompleted(current: Int) {
+        val epoch = network.value.epoch
+        mutable.update { it.copy(completedError = false) }
+        try {
+            val packages = api().completedPackages(); checkRead(current, epoch)
+            val folder = state.value.completedFolder?.takeIf { name -> packages.any { it.folderName == name } }
+                ?: packages.firstOrNull()?.folderName
+            mutable.update { it.copy(completedPackages = packages, completedFolder = folder,
+                completedDetail = it.completedDetail?.takeIf { detail -> detail.folderName == folder }) }
+            val detail = folder?.let { api().completedPackage(it) }; checkRead(current, epoch)
+            if (state.value.completedFolder == folder) mutable.update { it.copy(completedDetail = detail) }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            checkSession(current)
+            mutable.update { it.copy(completedError = true) }
+            if (e is ApiFailure && e.status in setOf(401, 426)) throw e
+        }
+    }
+    fun decideOneoff(slot: DashboardSlotOut, skip: Boolean) {
+        if (!admit() || state.value.stale || state.value.issue != null || slot.kind != "oneoff" || slot.occurrenceId == null ||
+            state.value.oneoffDecision?.let { it.status == "pending" || it.occurrenceId == slot.occurrenceId } == true ||
+            OffsetDateTime.parse(slot.dueAt).toInstant() <= Instant.now()) return
+        val epoch = network.value.epoch
+        val continuation = oneoffEpoch
+        launch { current ->
+            checkWrite(current, epoch)
+            try {
+                val result = api().decideOneoff(slot.occurrenceId, OneoffDecisionIn(
+                    action = if (skip) "skip" else "review", expectedDueAt = slot.dueAt, confirmed = skip,
+                ))
+                checkSession(current)
+                require(result.occurrenceId == slot.occurrenceId && result.status == if (skip) "skipped" else "pending")
+                if (continuation == oneoffEpoch) {
+                    oneoffDecisionRevision = state.value.dashboardRevision
+                    mutable.update { it.copy(oneoffDecision = result, oneoffDecisionIssue = null) }
+                }
+            } finally { if (generation == current) live?.invalidate(setOf("dashboard", "activity")) }
+        }
+    }
+    private fun resumeOneoffReview() {
+        val value = state.value
+        val decision = value.oneoffDecision ?: return
+        if (decision.status != "pending" || value.busy || value.stale || !value.authoritative || !network.value.connected ||
+            value.destination != Destination.DASHBOARD || value.review.target != null) return
+        val dashboard = value.dashboard ?: return
+        val actions = dashboard.pendingActions.filter { it.occurrenceId == decision.occurrenceId }
+        val slots = dashboard.nextSlots ?: listOfNotNull(dashboard.nextSlot)
+        if (value.dashboardRevision > oneoffDecisionRevision && actions.isEmpty() && slots.none { it.occurrenceId == decision.occurrenceId }) {
+            mutable.update { it.copy(oneoffDecision = null, oneoffDecisionIssue = ReviewIssue.ALREADY_HANDLED) }; return
+        }
+        val action = actions.find { it.state == "review_ready" } ?: return
+        if (action.reviewId == null) return
+        if (decision.packageFolder != null && (action.packageFolder != decision.packageFolder || value.dashboard.`package`?.folderName != decision.packageFolder)) {
+            mutable.update { it.copy(oneoffDecision = null, oneoffDecisionIssue = ReviewIssue.PACKAGE_CHANGED) }; return
+        }
+        openReview(ReviewTarget(reviewId = action.reviewId, packageFolder = action.packageFolder, expectedVersion = action.version))
+        saved["review_source_occurrence"] = decision.occurrenceId
+    }
+    fun changeOneoffDate(slot: DashboardSlotOut, date: LocalDate, time: LocalTime) {
+        if (!admit() || state.value.stale || slot.kind != "oneoff" || slot.occurrenceId == null ||
+            OffsetDateTime.parse(slot.dueAt).toInstant() <= Instant.now()) return
+        val regular = state.value.dashboard?.nextSlots.orEmpty()
+            .filter { it.kind == "regular" && OffsetDateTime.parse(it.dueAt).toInstant() > Instant.now() }
+            .minByOrNull { OffsetDateTime.parse(it.dueAt).toInstant() }?.dueAt
+        val due = futureIstanbulInstant(date, time, Instant.now(), regular)
+        if (due == null) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
+        val epoch = network.value.epoch
+        launch { current ->
+            checkWrite(current, epoch)
+            try { api().changeOneoffDate(slot.occurrenceId, OneoffDateIn(slot.dueAt, due)) }
+            finally { if (generation == current) live?.invalidate(setOf("dashboard", "activity")) }
+        }
     }
     fun saveCaption(text: String) {
         if (text.isBlank()) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
@@ -822,7 +920,7 @@ class AppViewModel(
             return
         }
         if (!admit(if (field == "logo_asset") "logo" else "cards")) return
-        if (bytes.isEmpty() || bytes.size > 10 * 1024 * 1024 || (field != "logo_asset" && cardDuration(field) == null)) {
+        if (bytes.isEmpty() || bytes.size > 10 * 1024 * 1024 || (field != "logo_asset" && !state.value.drafts[field.replace("_asset", "_duration")].isNullOrEmpty() && cardDuration(field) == null)) {
             mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return
         }
         mutation(if (field == "logo_asset") "logo" else "cards") { current ->
@@ -834,12 +932,17 @@ class AppViewModel(
             installAsset(field, uploaded, current, epoch)
         }
     }
-    private fun cardDuration(field: String): Double? = state.value.drafts[field.replace("_asset", "_duration")]?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }
+    private fun cardDuration(field: String): Double? = state.value.drafts[field.replace("_asset", "_duration")]?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 && it % 1.0 == 0.0 }
     private suspend fun installAsset(field: String, uploaded: BrandingAssetOut, current: Int, epoch: Long = network.value.epoch) {
         checkWrite(current, epoch, if (field == "logo_asset") "logo" else "cards")
         val changes = buildJsonObject {
             put(field, uploaded.asset)
-            if (field != "logo_asset") put(field.replace("_asset", "_duration"), cardDuration(field) ?: throw IllegalArgumentException("duration"))
+            if (field != "logo_asset") {
+                val key = field.replace("_asset", "_duration")
+                val value = cardDuration(field)
+                require(state.value.drafts[key].isNullOrEmpty() || value != null)
+                put(key, value?.let(::JsonPrimitive) ?: JsonNull)
+            }
         }
         val branding = api().patchBranding(changes)
         checkSession(current)
@@ -850,8 +953,22 @@ class AppViewModel(
         val uploaded = state.value.pendingAssets[field] ?: return
         mutation(if (field == "logo_asset") "logo" else "cards") { installAsset(field, uploaded, it) }
     }
+    fun clearCard(field: String) {
+        require(field in setOf("intro_asset", "outro_asset"))
+        if (!state.value.canConfigure("cards")) return
+        val branding = state.value.branding ?: return
+        saved.remove<String>("pending_$field"); saved.remove<String>("preview_$field")
+        mutable.update { it.copy(pendingAssets = it.pendingAssets - field) }
+        setDraft(field.replace("_asset", "_duration"), "", "cards")
+        if ((if (field == "intro_asset") branding.introAsset else branding.outroAsset) != null) {
+            saveCards(if (field == "intro_asset") null else branding.introAsset,
+                if (field == "intro_asset") null else branding.introDuration,
+                if (field == "outro_asset") null else branding.outroAsset,
+                if (field == "outro_asset") null else branding.outroDuration)
+        }
+    }
     fun saveCards(introAsset: String?, introDuration: Double?, outroAsset: String?, outroDuration: Double?) {
-        fun valid(asset: String?, duration: Double?) = if (asset == null) duration == null else duration != null && duration.isFinite() && duration > 0
+        fun valid(asset: String?, duration: Double?) = if (asset == null) duration == null else duration == null || duration.isFinite() && duration > 0 && duration % 1.0 == 0.0
         if (!valid(introAsset, introDuration) || !valid(outroAsset, outroDuration)) { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) }; return }
         val baseline = state.value.branding ?: return
         val changes = buildJsonObject {
@@ -1093,11 +1210,12 @@ class AppViewModel(
     private fun clearReviewSaved() { saved.keys().filter { it.startsWith("review_") }.forEach { saved.remove<Any>(it) } }
     fun openReview(target: ReviewTarget) {
         if (state.value.phase != Phase.READY || !target.valid) return
+        oneoffEpoch++
         reviewEpoch++; reviewJob?.cancel()
         clearReviewSaved()
         saved["review_owner"] = state.value.destination.name
         saveReviewTarget(target)
-        mutable.update { it.copy(review = ReviewState(target = target)) }
+        mutable.update { it.copy(review = ReviewState(target = target), oneoffDecision = null, oneoffDecisionIssue = null) }
         if (target.action == ReviewAction.UPLOAD) navigate(Destination.PACKAGE)
         refreshReview()
     }
@@ -1147,7 +1265,7 @@ class AppViewModel(
     fun refreshReviewOnInvalidation() {
         val review = state.value.review
         if (review.target != null && !review.busy && review.issue == null &&
-            (review.detail?.review?.status == "pending" || review.target.occurrenceId != null)) refreshReview()
+            (review.detail?.review?.status in setOf("pending", "failed", "uncertain", "publishing") || review.target.occurrenceId != null)) refreshReview()
     }
     suspend fun downloadReviewPreview(id: Int, revision: String, destination: File) {
         val current = generation
@@ -1182,10 +1300,10 @@ class AppViewModel(
             checkReview(current, epoch)
             checkRead(current, networkEpoch)
             require(detail.review.id > 0 && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank() &&
-                detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "approved", "skipped", "rescheduled"))
+                 detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "failed", "uncertain", "publishing", "approved", "skipped", "rescheduled"))
             saved.get<Int>("review_source_occurrence")?.let { require(detail.review.occurrenceId == it) }
             val source = saved.get<Int>("review_source_occurrence")
-            if (source != null && detail.review.status == "pending" && !detail.renderReady) {
+            if (source != null && detail.review.status in setOf("pending", "failed", "uncertain") && !detail.renderReady) {
                 val next = ReviewTarget(occurrenceId = source, packageFolder = target.packageFolder, action = ReviewAction.UPLOAD)
                 saveReviewTarget(next); saved["review_continuing"] = true
                 mutable.update { it.copy(review = ReviewState(target = next, busy = true, continuing = true)) }
@@ -1193,7 +1311,7 @@ class AppViewModel(
             }
             val issue = when {
                 detail.review.id != target.reviewId || target.packageFolder != null && target.packageFolder != detail.review.packageFolder -> ReviewIssue.STALE
-                detail.review.status != "pending" -> ReviewIssue.ALREADY_HANDLED
+                detail.review.status !in setOf("pending", "failed", "uncertain", "publishing") -> ReviewIssue.ALREADY_HANDLED
                 target.expectedVersion != null && target.expectedVersion != detail.review.version -> ReviewIssue.STALE
                 else -> null
             }
@@ -1234,7 +1352,7 @@ class AppViewModel(
                 val detail = transport.review(pending.reviewId)
                 checkReview(current, epoch)
                 checkRead(current, networkEpoch)
-                if (detail.renderReady && detail.review.status == "pending" && detail.review.id == pending.reviewId &&
+                if ((detail.renderReady || detail.review.status == "publishing") && detail.review.status in setOf("pending", "failed", "uncertain", "publishing") && detail.review.id == pending.reviewId &&
                     detail.review.occurrenceId == target.occurrenceId && detail.review.packageFolder == target.packageFolder &&
                     detail.review.version == pending.version && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank()) {
                     saved["review_source_occurrence"] = target.occurrenceId
@@ -1342,7 +1460,7 @@ class AppViewModel(
         val review = state.value.review
         val validated = review.copy(issue = review.issue.takeUnless { it == ReviewIssue.INVALID_TIME })
         if (!validated.canDecide || review.target?.action != ReviewAction.RESCHEDULE) return
-        val due = futureIstanbulInstant(date, time, Instant.now())
+        val due = futureIstanbulInstant(date, time, Instant.now(), review.nextRegularAt)
         if (due == null) { mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.INVALID_TIME)) }; return }
         mutable.update { it.copy(review = it.review.copy(issue = null)) }
         decideReview("reschedule", due)
@@ -1378,7 +1496,7 @@ class AppViewModel(
                 if (e.status == 409) {
                     loadReview(current, epoch)
                     mutable.update { it.copy(review = it.review.copy(readRequired = true,
-                        issue = if (it.review.detail?.review?.status?.let { status -> status != "pending" } == true)
+                        issue = if (it.review.detail?.review?.status?.let { status -> status !in setOf("pending", "failed", "uncertain", "publishing") } == true)
                              ReviewIssue.ALREADY_HANDLED else ReviewIssue.STALE)) }
                     refreshReviewDashboard(current, epoch)
                 } else throw e

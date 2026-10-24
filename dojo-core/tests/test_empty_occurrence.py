@@ -45,7 +45,7 @@ def test_empty_skip_requires_confirmation_and_preserves_package(tmp_path):
     }
     assert seam.get_active_package().folder_name == folder
     assert seam.list_pending_reviews() == []
-    assert store.list_all()[0].status == "resolved"
+    assert next(o for o in store.list_all() if o.id == occ.id).status == "resolved"
     event = seam.list_audit()[0]
     assert (event.action, event.actor) == ("occurrence.skipped", "9")
 
@@ -134,7 +134,7 @@ def test_late_empty_decision_rejects_finalized_or_reviewed_context(tmp_path, ren
     with pytest.raises(exceptions.OccurrenceChanged):
         seam.reschedule_empty_occurrence(occ.id, folder, monday_dt() + timedelta(days=1))
     assert seam.list_pending_reviews() == reviews
-    assert store.list_all()[0].status == "pending"
+    assert next(o for o in store.list_all() if o.id == occ.id).status == "due"
 
 
 def test_empty_decision_race_has_one_winner(pg_store, tmp_path):

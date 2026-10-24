@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { formatDate, tr } from "../i18n";
 import { useLiveData } from "../useLiveData";
 import { useOnboarding } from "./useOnboarding";
+import { StepActions } from "./forms";
 
 export function ConsentStep({ onSaved, readOnly = false }: { onSaved: () => void; readOnly?: boolean }) {
+  const formId = useId();
   const { save } = useOnboarding();
   const load = useCallback(async (signal: AbortSignal) => {
     try { return { policy: await api.consent(signal) }; }
@@ -44,13 +46,13 @@ export function ConsentStep({ onSaved, readOnly = false }: { onSaved: () => void
     } finally { if (alive.current) setBusy(false); }
   }
   return <div className="onboarding-form">
-    {snapshot.error && <div role="alert">{tr.loadError}<button onClick={snapshot.retry}>{tr.retry}</button></div>}
+    {snapshot.error && <div role="alert">{tr.loadError}<StepActions><button onClick={snapshot.retry}>{tr.retry}</button></StepActions></div>}
     {!snapshot.data && !snapshot.error && <p role="status">{tr.loading}</p>}
-    {snapshot.data && !policy && <><p>{tr.consentMissing}</p><button onClick={snapshot.retry}>{tr.retry}</button></>}
+    {snapshot.data && !policy && <><p>{tr.consentMissing}</p><StepActions><button onClick={snapshot.retry}>{tr.retry}</button></StepActions></>}
     {policy && <><p>Rıza metni · Sürüm {policy.version}</p><div className="consent-text">{policy.text}</div>
-      {acceptedAt ? <p role="status">Rıza kaydedildi · {formatDate(acceptedAt)}</p> : readOnly ? <p role="status">{tr.settingsPage.consentPending}</p> : <form onSubmit={event => { event.preventDefault(); void accept(); }}>
+      {acceptedAt ? <p role="status">Rıza kaydedildi · {formatDate(acceptedAt)}</p> : readOnly ? <p role="status">{tr.settingsPage.consentPending}</p> : <form id={formId} onSubmit={event => { event.preventDefault(); void accept(); }}>
         <label className="checkbox-label"><input type="checkbox" checked={acknowledgedVersion === policy.version} disabled={busy || snapshot.error} onChange={event => setAcknowledgedVersion(event.target.checked ? policy.version : null)} />Metni okudum ve medya kullanımına rıza veriyorum.</label>
-        <button className="primary" disabled={busy || snapshot.error || acknowledgedVersion !== policy.version}>{busy ? "Kaydediliyor…" : "Rızayı kaydet"}</button>
+        <StepActions><button form={formId} className="primary" disabled={busy || snapshot.error || acknowledgedVersion !== policy.version}>{busy ? "Kaydediliyor…" : "Rızayı kaydet"}</button></StepActions>
       </form>}</>}
     {error && <p role="alert">{error}</p>}
   </div>;

@@ -30,19 +30,22 @@ import com.dojo.aisomedo.ui.statusLabel
     }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         state.instagram?.let { Text(it.igUsername ?: stringResource(R.string.no_account)); Text(stringResource(statusLabel(it.health))) }
-        InstagramTokenForm(state.busy, active, model::connectInstagramToken, canMutate = state.canConfigure("instagram"))
-        OutlinedButton(onClick = { model.startOAuth(openUrl) }, enabled = state.canConfigure("instagram")) { Text(stringResource(R.string.oauth_start)) }
+        InstagramTokenForm(state.busy, active, model::connectInstagramToken, canMutate = state.canConfigure("instagram"), actions = {
+            OutlinedButton(onClick = { model.startOAuth(openUrl) }, enabled = state.canConfigure("instagram")) { Text(stringResource(R.string.oauth_start)) }
+            state.attempt?.let { attempt ->
+                if (attempt.status == "completed") attempt.candidates.forEach { candidate ->
+                    OutlinedButton(onClick = { model.selectAccount(candidate.igUserId) }, enabled = state.canConfigure("instagram")) {
+                        Text(stringResource(R.string.oauth_select_account, candidate.igUsername))
+                    }
+                }
+                TextButton(onClick = model::checkOAuth, enabled = !state.busy) { Text(stringResource(R.string.oauth_check)) }
+            }
+        })
         state.attempt?.let { attempt ->
             Text(stringResource(when (attempt.status) {
                 "pending" -> R.string.oauth_pending; "completed" -> R.string.oauth_choose
                 "selected" -> R.string.oauth_selected; else -> R.string.oauth_failed
             }))
-            if (attempt.status == "completed") attempt.candidates.forEach { candidate ->
-                OutlinedButton(onClick = { model.selectAccount(candidate.igUserId) }, enabled = state.canConfigure("instagram")) {
-                    Text(stringResource(R.string.oauth_select_account, candidate.igUsername))
-                }
-            }
-            TextButton(onClick = model::checkOAuth, enabled = !state.busy) { Text(stringResource(R.string.oauth_check)) }
         }
     }
 }
@@ -51,15 +54,18 @@ import com.dojo.aisomedo.ui.statusLabel
     InstagramTokenForm(busy, active, onSubmit, canMutate = true)
 }
 
-@Composable fun InstagramTokenForm(busy: Boolean, active: Boolean, onSubmit: (String) -> Unit, canMutate: Boolean) {
+@Composable fun InstagramTokenForm(busy: Boolean, active: Boolean, onSubmit: (String) -> Unit, canMutate: Boolean, actions: @Composable () -> Unit = {}) {
     var token by remember { mutableStateOf("") }
     LaunchedEffect(active) { if (!active) token = "" }
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        StepHeading(R.string.instagram) {
+            Button(onClick = { val value = token; token = ""; onSubmit(value) }, enabled = canMutate && !busy && active && token.isNotBlank()) {
+                Text(stringResource(R.string.instagram_connect))
+            }
+            actions()
+        }
         OutlinedTextField(token, { token = it }, label = { Text(stringResource(R.string.instagram_token)) },
             visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = canMutate && !busy,
             modifier = Modifier.fillMaxWidth().testTag("instagram-token"))
-        Button(onClick = { val value = token; token = ""; onSubmit(value) }, enabled = canMutate && !busy && active && token.isNotBlank()) {
-            Text(stringResource(R.string.instagram_connect))
-        }
     }
 }

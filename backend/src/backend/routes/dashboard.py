@@ -6,11 +6,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from dojo import DojoPublishing
+from dojo import (
+    Client,
+    DojoPublishing,
+    OccurrenceChanged,
+    OccurrenceNotFound,
+    RescheduleTimeInvalid,
+    SkipRequiresConfirmation,
+)
 from dojo.worker_health import read_worker_status
-from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import AwareDatetime, BaseModel
 
+from backend.deps import get_current_client
 from backend.routes.packages import PackageOut, get_publishing
 from backend.routes.settings import PlanOut
 from backend.snapshots import versioned_snapshot
@@ -21,6 +29,65 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 class DashboardSlotOut(BaseModel):
     kind: str
     due_at: datetime
+    occurrence_id: int | None = None
+
+
+class OneoffDateIn(BaseModel):
+    expected_due_at: datetime
+    new_due_at: datetime
+
+
+class OneoffDecisionIn(BaseModel):
+    expected_due_at: AwareDatetime
+    action: Literal["review", "skip"]
+    confirmed: bool = False
+
+
+class OneoffDecisionOut(BaseModel):
+    occurrence_id: int
+    due_at: datetime
+    status: str
+    package_folder: str | None
+
+
+@router.post("/occurrences/{occurrence_id}/decision", response_model=OneoffDecisionOut)
+def decide_oneoff(
+    occurrence_id: int, body: OneoffDecisionIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.decide_oneoff(
+            occurrence_id, body.expected_due_at, body.action,
+            confirmed=body.confirmed, requester=str(client.id),
+        )
+    except OccurrenceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OccurrenceChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SkipRequiresConfirmation as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/occurrences/{occurrence_id}", response_model=DashboardSlotOut)
+def change_oneoff_date(
+    occurrence_id: int, body: OneoffDateIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> DashboardSlotOut:
+    try:
+        occurrence = publishing.change_oneoff_date(
+            occurrence_id, body.expected_due_at, body.new_due_at, requester=str(client.id),
+        )
+    except OccurrenceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OccurrenceChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RescheduleTimeInvalid as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return DashboardSlotOut(
+        kind=occurrence.kind, due_at=occurrence.due_at, occurrence_id=occurrence.id,
+    )
 
 
 class DashboardActionOut(BaseModel):
@@ -30,6 +97,7 @@ class DashboardActionOut(BaseModel):
     due_at: datetime
     package_folder: str | None
     state: Literal["review_ready", "empty_package", "preparing"]
+    review_status: str | None = None
 
 
 class DashboardInstagramOut(BaseModel):
@@ -50,6 +118,8 @@ class DashboardOut(BaseModel):
     plan: PlanOut
     instagram: DashboardInstagramOut
     worker: DashboardWorkerOut
+    manual_review_allowed: bool = True
+    next_slots: list[DashboardSlotOut] | None = None
 
 
 @router.get("", response_model=DashboardOut)
@@ -80,4 +150,6 @@ def dashboard(
         ],
         plan=PlanOut(**summary.plan.to_dict()), instagram=instagram,
         worker=DashboardWorkerOut(**asdict(worker)),
+        manual_review_allowed=summary.manual_review_allowed,
+        next_slots=[DashboardSlotOut(**asdict(slot)) for slot in summary.next_slots],
     )

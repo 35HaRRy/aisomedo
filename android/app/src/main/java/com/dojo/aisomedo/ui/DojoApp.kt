@@ -36,7 +36,8 @@ import com.dojo.aisomedo.notifications.*
     onNotificationPermission: () -> Unit = {}, onNotificationSettings: () -> Unit = {}, openUrl: (String) -> Unit) {
     val state by model.state.collectAsStateWithLifecycle()
     val onPending: (com.dojo.aisomedo.api.DashboardActionOut, ReviewAction) -> Unit = { pending, action ->
-        if (pending.reviewId != null) model.openReview(ReviewTarget(reviewId = pending.reviewId, packageFolder = pending.packageFolder, expectedVersion = pending.version, action = action))
+        if (action == ReviewAction.UPLOAD) model.navigate(Destination.PACKAGE)
+        else if (pending.reviewId != null) model.openReview(ReviewTarget(reviewId = pending.reviewId, packageFolder = pending.packageFolder, expectedVersion = pending.version, action = action))
         else if (pending.packageFolder != null) model.openReview(ReviewTarget(occurrenceId = pending.occurrenceId, packageFolder = pending.packageFolder, action = action))
         else model.navigate(Destination.PACKAGE)
     }
@@ -81,23 +82,22 @@ import com.dojo.aisomedo.notifications.*
                         if (!ready) StartupScreen(state, model, openUrl)
                         else if (state.review.target != null && state.review.target?.action != ReviewAction.UPLOAD) ReviewScreen(state.review, state.canMutate && !state.stale,
                             model::requestReviewAction, model::approveReview, model::skipReview, model::rescheduleReview,
-                            model::refreshReview, model::closeReview) { detail ->
+                            model::refreshReview, model::closeReview, preview = { detail ->
                                 if (state.networkConnected && state.authoritative) ReviewPreview(detail, model::downloadReviewPreview, model::markReviewPreviewReady)
                                 else Text(stringResource(R.string.offline_media), modifier = Modifier.testTag("review-offline-preview"))
-                            }
+                            }, onEdit = { model.closeReview(); model.navigate(Destination.PACKAGE) })
                         else if (state.step != null) OnboardingScreen(model, openUrl)
                         else when (state.destination) {
                             Destination.DASHBOARD -> DashboardScreen(state.dashboard, state.setup, state.stale, wide, model::refresh, model::openSetup, onPending,
-                                canMutate = state.canMutate)
+                                canMutate = state.canMutate && state.issue == null, onChangeOneoffDate = model::changeOneoffDate,
+                                onDecideOneoff = model::decideOneoff, oneoffDecision = state.oneoffDecision, oneoffDecisionIssue = state.oneoffDecisionIssue)
                             Destination.PACKAGE -> {
-                                if (state.review.target?.action == ReviewAction.UPLOAD) {
-                                    val continuationRows = uploads?.rows?.collectAsStateWithLifecycle()?.value.orEmpty()
-                                    ReviewContinuation(state.review, state.canMutate && !state.stale, continuationRows, model::continueReview,
-                                        model::requestReviewAction, model::refreshReview, model::closeReview)
+                                Heading(R.string.active_package)
+                                CollapsiblePanel(stringResource(R.string.package_summary)) {
+                                    PackageSummary(state.dashboard)
+                                    LastFetchedAt(state.dashboardFetchedAt, "package-fetched-at")
+                                    LastFetchedAt(state.editorFetchedAt, "editor-fetched-at")
                                 }
-                                Heading(R.string.active_package); PackageSummary(state.dashboard)
-                                LastFetchedAt(state.dashboardFetchedAt, "package-fetched-at")
-                                LastFetchedAt(state.editorFetchedAt, "editor-fetched-at")
                                 if (state.editor.snapshot == null && state.editor.storedDraft == null && state.editor.persistenceIssue == null && state.editorFetchedAt == null && (state.dashboardFetchedAt == null || state.dashboard?.`package` != null)) {
                                     Text(stringResource(R.string.cache_unavailable))
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
@@ -128,7 +128,9 @@ import com.dojo.aisomedo.notifications.*
                                         })
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
+                                PendingPanel(state.dashboard, state.canMutate && !state.stale, onPending)
                             }
+                            Destination.COMPLETED -> CompletedPackagesScreen(state, model::selectCompleted, model::refreshCompleted, model::downloadMediaPreview)
                             Destination.ACTIVITY -> {
                                 state.outcomePackage?.let { Text(stringResource(R.string.publication_context, it)) }
                                 ApprovalInbox(state.dashboard, state.stale, model::refresh, onPending, canMutate = state.canMutate)
@@ -160,11 +162,11 @@ import com.dojo.aisomedo.notifications.*
 }
 @Composable private fun NavigationIcon(item: Destination) {
     Icon(when (item) { Destination.DASHBOARD -> Icons.Default.Home; Destination.PACKAGE -> Icons.Default.Star;
-        Destination.ACTIVITY -> Icons.Default.List; Destination.SETTINGS -> Icons.Default.Settings }, contentDescription = null)
+        Destination.COMPLETED -> Icons.Default.CheckCircle; Destination.ACTIVITY -> Icons.Default.List; Destination.SETTINGS -> Icons.Default.Settings }, contentDescription = null)
 }
 fun destinationLabel(item: Destination) = when (item) {
     Destination.DASHBOARD -> R.string.dashboard; Destination.PACKAGE -> R.string.package_nav
-    Destination.ACTIVITY -> R.string.activity; Destination.SETTINGS -> R.string.settings
+    Destination.COMPLETED -> R.string.completed_nav; Destination.ACTIVITY -> R.string.activity; Destination.SETTINGS -> R.string.settings
 }
 @Composable fun Heading(label: Int) { Text(stringResource(label), style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() }) }
 @Composable fun SectionHeading(label: Int) { Text(stringResource(label), style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() }) }

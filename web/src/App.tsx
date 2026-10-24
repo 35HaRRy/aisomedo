@@ -4,6 +4,7 @@ import { ContractBanner } from "./api/compat";
 import { ActivitySummary } from "./components/ActivitySummary";
 import { Dashboard } from "./components/Dashboard";
 import { PackageSummary } from "./components/PackageSummary";
+import { CompletedPackages } from "./packages/CompletedPackages";
 import { PairingForm } from "./components/PairingForm";
 import { SettingsSummary } from "./components/SettingsSummary";
 import { tr } from "./i18n";
@@ -35,7 +36,7 @@ function PairedShell() {
   const dashboardVisible = area === "dashboard" || area === "package";
   const snapshot = useLiveData(api.dashboard, dashboardVisible, ["dashboard"]);
   const activity = useLiveData(api.activity, area === "activity", ["activity"]);
-  const areas: Exclude<Area, "onboarding">[] = ["dashboard", "package", "activity", "settings"];
+  const areas: Exclude<Area, "onboarding">[] = ["dashboard", "package", "completed", "activity", "settings"];
   useEffect(() => { document.title = `${area === "onboarding" ? "Kurulum" : tr[area]} · ${tr.app}`; }, [area]);
   return <UploadProvider><div className="app-shell">
     <aside className="sidebar"><a className="brand" href="#/dashboard" onClick={event => { event.preventDefault(); void navigate("#/dashboard"); }}>{tr.app}</a>
@@ -46,11 +47,14 @@ function PairedShell() {
       {area !== "onboarding" && onboarding.error && <ErrorNotice stale={!!onboarding.setup} retry={() => void onboarding.refresh().catch(() => {})} />}
       {dashboardVisible && snapshot.error && <ErrorNotice stale={!!snapshot.data} retry={snapshot.retry} />}
       {dashboardVisible && !snapshot.data && !snapshot.error && <p role="status">{tr.loading}</p>}
-      {area === "onboarding" ? <OnboardingWizard /> : area === "activity" ? <><header className="page-heading"><h1>{tr.activity}</h1><p>{tr.activityIntro}</p></header>
+      {area === "onboarding" ? <OnboardingWizard /> : area === "completed" ? <>
+        <header className="page-heading"><h1>{tr.completed}</h1><p>{tr.packageManagement.readOnly}</p></header>
+        <CompletedPackages onBack={() => void navigate("#/package")} />
+      </> : area === "activity" ? <><header className="page-heading"><h1>{tr.activity}</h1><p>{tr.activityIntro}</p></header>
         {activity.error && <ErrorNotice stale={!!activity.data} retry={activity.retry} />}
         {activity.data ? <ActivitySummary data={activity.data} /> : !activity.error && <p role="status">{tr.loading}</p>}
       </> : area === "settings" && client ? <SettingsSummary client={client} onRefresh={snapshot.retry} /> : snapshot.data && <>
-        {area === "dashboard" && <Dashboard data={snapshot.data} />}
+        {area === "dashboard" && <Dashboard data={snapshot.data} stale={snapshot.error} onRefresh={snapshot.retry} />}
         {area === "package" && <PackageSummary data={snapshot.data} reviewId={reviewId} occurrenceId={occurrenceId} packageFolder={packageFolder} onRefresh={snapshot.retry} stale={snapshot.error} />}
       </>}
     </main>

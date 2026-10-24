@@ -95,6 +95,41 @@ async function gesture(page: Page, target: Locator, start: { x: number; y: numbe
   }
 }
 
+test("package panels toggle independently and completed navigation protects drafts", async ({ page }, info) => {
+  const server = await fixture(page);
+  await expect(page.getByRole("heading", { name: "Bekleyen işlem" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Tamamlanmış paketler", exact: true })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath("package-panels.png"), fullPage: true });
+  const panel = page.getByRole("region", { name: "Aktif paket medyası", exact: true });
+  const toggle = panel.getByRole("button", { name: "Aktif paket medyası panelini kapat", exact: true });
+  const heading = await panel.getByRole("heading", { name: "Aktif paket medyası", exact: true }).boundingBox();
+  const bounds = await toggle.boundingBox();
+  expect(Math.abs(bounds!.y - heading!.y)).toBeLessThan(50);
+  expect(heading!.width).toBeGreaterThan(120);
+  await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
+  await page.getByRole("button", { name: "Bölüm ekle", exact: true }).click();
+  await page.getByLabel("1. bölüm bitişi (saniye)").fill("5");
+  await toggle.click();
+  await expect(panel.getByRole("button", { name: "Bölümleri kaydet" })).toBeHidden();
+  await expect(page.getByLabel("Fotoğraf ve video seç")).toBeVisible();
+  await panel.getByRole("button", { name: "Aktif paket medyası panelini aç", exact: true }).click();
+  await expect(page.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("5");
+  await page.getByRole("link", { name: "Tamamlanmış paketler", exact: true }).click();
+  await page.getByRole("button", { name: "Vazgeç", exact: true }).click();
+  await expect(page).toHaveURL(/#\/package$/);
+  await expect(page.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("5");
+  await page.getByRole("link", { name: "Tamamlanmış paketler", exact: true }).click();
+  await page.getByRole("button", { name: "Değişiklikleri at", exact: true }).click();
+  await expect(page).toHaveURL(/#\/completed$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Tamamlanmış paketler" })).toBeVisible();
+  expect(server.writes).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1, name: "Tamamlanmış paketler" })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("completed-page.png"), fullPage: true });
+  expect(server.errors).toEqual([]);
+});
+
 test("timeline geometry, native seek, drafts, persistence and cancellation", async ({ page, isMobile }, info) => {
   const server = await fixture(page);
   await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
@@ -153,7 +188,7 @@ test("media order/removal/restoration and immutable authenticated archive", asyn
   await expect(page.getByRole("region", { name: "Paketten çıkarılmış medya" }).getByRole("heading", { name: "a.mp4", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "a.mp4 dosyasını geri yükle" }).click();
   await expect.poll(() => server.snapshot.montage.order).toEqual(["b", "a"]);
-  await page.getByRole("button", { name: "Tamamlanmış paketler", exact: true }).click();
+  await page.getByRole("link", { name: "Tamamlanmış paketler", exact: true }).click();
   const link = page.getByRole("link", { name: /Orijinali indir/ }); await expect(link).toHaveAttribute("href", server.original);
   await expect(page.getByRole("button", { name: "Bölümleri kaydet" })).toHaveCount(0);
   await expect(page.getByLabel("Fotoğraf ve video seç")).toHaveCount(0);

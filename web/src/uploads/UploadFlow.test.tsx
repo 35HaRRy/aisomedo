@@ -138,7 +138,7 @@ it("completed browsing leaves active upload File and accepted offsets intact", a
   await select(new File([new Uint8Array(2097155)], "dojo.mp4", { type: "video/mp4" }));
   await waitFor(() => expect(f.offsets).toEqual([0]));
   fireEvent.click(screen.getByRole("button", { name: "Duraklat" }));
-  fireEvent.click(screen.getByRole("button", { name: "Tamamlanmış paketler" }));
+  fireEvent.click(screen.getByRole("link", { name: "Tamamlanmış paketler" }));
   await screen.findByText("Henüz tamamlanmış paket yok.");
   expect(screen.queryByLabelText("Fotoğraf ve video seç")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Aktif pakete dön" }));

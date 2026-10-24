@@ -1,3 +1,5 @@
+import { MediaPreview } from "../components/MediaPreview";
+import { CollapsiblePanel } from "../components/CollapsiblePanel";
 import { tr } from "../i18n";
 import { useUploads } from "./UploadProvider";
 import { ConflictControls } from "./ConflictControls";
@@ -19,6 +21,7 @@ function UploadItem({ row }: { row: UploadRow }) {
   return <li className="upload-row" aria-labelledby={`${row.id}-name`}>
     <div className="upload-row-heading"><h3 id={`${row.id}-name`} tabIndex={-1}>{row.filename}</h3>
       <p className="upload-phase" role="status" aria-label={row.filename}>{tr.upload.phases[row.phase]}</p></div>
+    {row.previewUrl && <MediaPreview src={row.previewUrl} contentType={row.contentType} label={`${row.filename} önizlemesi`} />}
     <progress value={count} max={Math.max(1, row.size)} aria-label={row.filename} />
     <p className="upload-count muted">{bytes(count)} / {bytes(row.size)} <span>{percentage}</span></p>
     {row.phase === "preparing" && <div className="upload-preparation"><p className="muted">{tr.upload.preparingHelp}</p>
@@ -45,8 +48,7 @@ function UploadItem({ row }: { row: UploadRow }) {
 
 export function UploadPanel() {
   const { snapshot, controller } = useUploads();
-  return <section className="summary-sheet upload-panel" aria-labelledby="upload-heading">
-    <h2 id="upload-heading">{tr.upload.title}</h2>
+  return <CollapsiblePanel className="summary-sheet upload-panel" title={tr.upload.title}>
     <p>{tr.upload.intro}</p>
     <div className="upload-picker"><label htmlFor="upload-files">{tr.upload.choose}</label>
       <input id="upload-files" type="file" multiple accept={formats} disabled={!snapshot.limits || snapshot.limitsError}
@@ -62,5 +64,5 @@ export function UploadPanel() {
     {!snapshot.storageAvailable && <p role="status" className="notice">{tr.upload.storageUnavailable}</p>}
     {snapshot.rows.length ? <ul className="upload-rows">{snapshot.rows.map(row => <UploadItem key={row.id} row={row} />)}</ul>
       : <p className="muted">{tr.upload.empty}</p>}
-  </section>;
+  </CollapsiblePanel>;
 }

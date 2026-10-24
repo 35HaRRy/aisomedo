@@ -110,6 +110,30 @@ data class CompatInfo(
 )
 
 @Serializable
+data class CompletedMediaOut(
+    @SerialName("artifacts") val artifacts: List<PackageArtifactOut>,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("filename") val filename: String,
+    @SerialName("media_id") val mediaId: String,
+    @SerialName("preview_url") val previewUrl: String?,
+    @SerialName("processed") val processed: ProcessedMetadataOut,
+    @SerialName("removed_position") val removedPosition: Int? = null,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    @SerialName("status") val status: String,
+    @SerialName("uploaded_at") val uploadedAt: String,
+)
+
+@Serializable
+data class CompletedPackageOut(
+    @SerialName("artifacts") val artifacts: List<PackageArtifactOut>,
+    @SerialName("caption") val caption: String?,
+    @SerialName("folder_name") val folderName: String,
+    @SerialName("media") val media: List<CompletedMediaOut>,
+    @SerialName("order") val order: List<String>,
+    @SerialName("render_revision") val renderRevision: String?,
+)
+
+@Serializable
 data class ConsentOut(
     @SerialName("accepted_at") val acceptedAt: String?,
     @SerialName("text") val text: String,
@@ -122,6 +146,7 @@ data class DashboardActionOut(
     @SerialName("occurrence_id") val occurrenceId: Int,
     @SerialName("package_folder") val packageFolder: String?,
     @SerialName("review_id") val reviewId: Int?,
+    @SerialName("review_status") val reviewStatus: String? = null,
     @SerialName("state") val state: String,
     @SerialName("version") val version: Int?,
 )
@@ -136,7 +161,9 @@ data class DashboardInstagramOut(
 data class DashboardOut(
     @SerialName("generated_at") val generatedAt: String,
     @SerialName("instagram") val instagram: DashboardInstagramOut,
+    @SerialName("manual_review_allowed") val manualReviewAllowed: Boolean = true,
     @SerialName("next_slot") val nextSlot: DashboardSlotOut?,
+    @SerialName("next_slots") val nextSlots: List<DashboardSlotOut>? = null,
     @SerialName("package") val `package`: PackageOut?,
     @SerialName("pending_actions") val pendingActions: List<DashboardActionOut>,
     @SerialName("plan") val plan: PlanOut,
@@ -147,6 +174,7 @@ data class DashboardOut(
 data class DashboardSlotOut(
     @SerialName("due_at") val dueAt: String,
     @SerialName("kind") val kind: String,
+    @SerialName("occurrence_id") val occurrenceId: Int? = null,
 )
 
 @Serializable
@@ -243,6 +271,27 @@ data class OccurrenceDecisionOut(
     @SerialName("occurrence_id") val occurrenceId: Int,
     @SerialName("oneoff_occurrence_id") val oneoffOccurrenceId: Int?,
     @SerialName("package_folder") val packageFolder: String,
+    @SerialName("status") val status: String,
+)
+
+@Serializable
+data class OneoffDateIn(
+    @SerialName("expected_due_at") val expectedDueAt: String,
+    @SerialName("new_due_at") val newDueAt: String,
+)
+
+@Serializable
+data class OneoffDecisionIn(
+    @SerialName("action") val action: String,
+    @SerialName("confirmed") val confirmed: Boolean = false,
+    @SerialName("expected_due_at") val expectedDueAt: String,
+)
+
+@Serializable
+data class OneoffDecisionOut(
+    @SerialName("due_at") val dueAt: String,
+    @SerialName("occurrence_id") val occurrenceId: Int,
+    @SerialName("package_folder") val packageFolder: String?,
     @SerialName("status") val status: String,
 )
 
@@ -370,6 +419,7 @@ data class ReviewOut(
     @SerialName("caption") val caption: String?,
     @SerialName("created_at") val createdAt: String,
     @SerialName("id") val id: Int,
+    @SerialName("instagram_fail_message") val instagramFailMessage: String? = null,
     @SerialName("occurrence_id") val occurrenceId: Int,
     @SerialName("package_folder") val packageFolder: String,
     @SerialName("revision_digest") val revisionDigest: String,

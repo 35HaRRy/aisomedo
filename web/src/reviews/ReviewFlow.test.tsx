@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { client, dashboard, emptyEditor, setupState } from "../test/fixtures";
@@ -19,6 +19,7 @@ function reviewDetail(id = 2) {
     render_ready: true, preview_url: `/api/packages/active/render/preview?revision=exact-${id}`, next_regular_at: "2026-08-17T07:00:00Z" };
 }
 beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(new Date("2026-08-03T07:00:00Z").getTime());
   localStorage.clear(); state = dashboard(); editor = emptyEditor(); detail = reviewDetail();
   actionStatus = 200; readStatus = 200; editorStatus = 200; pendingRead = null; actionDetail = null; writes = [];
   publication = null;
@@ -38,8 +39,11 @@ beforeEach(() => {
     if (init?.method === "POST") {
       writes.push({ path: url, body: JSON.parse(String(init.body)) });
       if (actionStatus === 200 && url.startsWith("/api/reviews/")) {
-        detail.review.status = url.endsWith("/approve") ? "approved" : url.endsWith("/skip") ? "skipped" : "rescheduled";
-        state.pending_actions = [];
+        const unconfirmed = url.endsWith("/approve") && publication !== null && publication.status !== "confirmed";
+        if (!unconfirmed) {
+          detail.review.status = url.endsWith("/approve") ? "approved" : url.endsWith("/skip") ? "skipped" : "rescheduled";
+          state.pending_actions = [];
+        }
       }
       return json(actionDetail ? { detail: actionDetail } : { review: detail.review, publication, next_regular_at: detail.next_regular_at }, actionStatus);
     }
@@ -53,6 +57,57 @@ async function loadedPreview() {
   fireEvent.loadedData(video);
   return video;
 }
+
+it("review header has icon-only refresh/edit controls and collapses without submitting", async () => {
+  render(<App />); await loadedPreview();
+  const panel = screen.getByRole("region", { name: detail.review.package_folder });
+  const refresh = within(panel).getByRole("button", { name: "İncelemeyi yenile" });
+  const edit = within(panel).getByRole("link", { name: "Paketi düzenle" });
+  expect(refresh).toHaveTextContent("");
+  expect(edit).toHaveTextContent("");
+  for (const name of ["Onayla ve yayınla", "Bu zamanı atla", "Başka zamana planla"])
+    expect(within(panel).getByRole("button", { name }).querySelector("svg")).not.toBeNull();
+  fireEvent.click(within(panel).getByRole("button", { name: `${detail.review.package_folder} panelini kapat` }));
+  expect(screen.queryByRole("button", { name: "Onayla ve yayınla" })).not.toBeInTheDocument();
+  fireEvent.click(within(panel).getByRole("button", { name: `${detail.review.package_folder} panelini aç` }));
+  expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled();
+  expect(writes).toEqual([]);
+  fireEvent.click(edit);
+  await screen.findByRole("heading", { name: "Aktif paket medyası" });
+});
+
+it.each(["failed", "uncertain"])("reopened %s review keeps decisions available", async status => {
+  detail.review.status = status;
+  render(<App />); await loadedPreview();
+  expect(screen.getByText(status === "failed" ? "Hata alındı" : "Belirsiz")).toBeInTheDocument();
+  if (status === "uncertain") expect(screen.getByRole("alert")).toHaveTextContent("Medyanızın gönderimini kontrol ediniz");
+  expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Bu zamanı atla" })).toBeEnabled();
+});
+
+it("publishing review disables every decision", async () => {
+  detail.review.status = "publishing"; detail.render_ready = false;
+  render(<App />);
+  await screen.findByText("Yayınlanıyor");
+  for (const name of ["Onayla ve yayınla", "Bu zamanı atla", "Başka zamana planla"]) {
+    expect(screen.getByRole("button", { name })).toBeDisabled();
+  }
+  expect(screen.queryByRole("link", { name: "Paketi düzenle" })).not.toBeInTheDocument();
+  expect(writes).toEqual([]);
+});
+
+it("publishing review becomes actionable when live result is uncertain", async () => {
+  publication = { status: "publishing", error: null };
+  render(<App />); await loadedPreview();
+  fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
+  fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
+  await screen.findByText(/Yayın henüz doğrulanmadı/);
+  detail.review.status = "uncertain";
+  await act(async () => { invalidateLive(); });
+  await screen.findByText(/Medyanızın gönderimini kontrol ediniz/);
+  expect(screen.getByRole("button", { name: "Bu zamanı atla" })).toBeEnabled();
+  expect(writes).toHaveLength(1);
+});
 
 it("opens exact review without editing or publishing and requires loaded preview plus confirmation", async () => {
   render(<App />);
@@ -81,7 +136,7 @@ it("skip shows next regular slot and sends explicit confirmation only after seco
   expect(writes[0]).toEqual({ path: "/api/reviews/2/skip", body: { version: 3, confirmed: true } });
 });
 
-it("successful approval HTTP response still displays publication failure after review refresh", async () => {
+it("successful approval HTTP response with publication failure keeps every decision open", async () => {
   publication = { status: "failed", error: "PUBLIC_BASE_URL must use publicly reachable HTTPS" };
   render(<App />); await loadedPreview();
   fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
@@ -89,10 +144,41 @@ it("successful approval HTTP response still displays publication failure after r
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Instagram'a yayın yapılamadı"));
   expect(screen.getByRole("alert")).toHaveTextContent(publication.error!);
   expect(screen.queryByText("Yayınlama onayı alındı.")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Bu zamanı atla" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Başka zamana planla" })).toBeEnabled();
   await act(async () => { invalidateLive(); });
   expect(screen.getByRole("alert")).toHaveTextContent("Video korunuyor");
+  expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled();
   expect(writes).toHaveLength(1);
-  expect(screen.queryByRole("button", { name: "Onayla ve yayınla" })).not.toBeInTheDocument();
+});
+
+it.each(["approve", "skip", "reschedule"])("allows %s on same review after failed upload", async action => {
+  publication = { status: "failed", error: "bad video" };
+  render(<App />); await loadedPreview();
+  fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
+  fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
+  await screen.findByText("bad video");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled());
+  publication = null;
+  if (action === "approve") {
+    fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
+    fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
+    await screen.findByText("Yayınlama onayı alındı.");
+  } else if (action === "skip") {
+    fireEvent.click(screen.getByRole("button", { name: "Bu zamanı atla" }));
+    fireEvent.click(screen.getByRole("button", { name: "Atlamayı onayla" }));
+    await screen.findByText("Bu Yayın Zamanı atlandı. Paket korunuyor.");
+  } else {
+    fireEvent.click(screen.getByRole("button", { name: "Başka zamana planla" }));
+    fireEvent.change(screen.getByLabelText("Yeni Yayın Zamanı (İstanbul)"), { target: { value: "2026-08-04T12:30" } });
+    fireEvent.click(screen.getByRole("button", { name: "Yeni zamanı onayla" }));
+    await screen.findByText("Yeni Yayın Zamanı kaydedildi. Paket korunuyor.");
+  }
+  expect(writes).toHaveLength(2);
+  expect(writes[1].path).toBe(`/api/reviews/2/${action}`);
+  expect(writes[1].body).toMatchObject({ version: 3 });
+  expect(screen.queryByText("bad video")).not.toBeInTheDocument();
 });
 
 it.each(["publishing", "uncertain"])("%s publication is unconfirmed, not a successful publish", async status => {
@@ -100,7 +186,7 @@ it.each(["publishing", "uncertain"])("%s publication is unconfirmed, not a succe
   render(<App />); await loadedPreview();
   fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
   fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
-  await screen.findByText(/Yayın henüz doğrulanmadı/);
+  await screen.findByText(status === "uncertain" ? /Medyanızın gönderimini kontrol ediniz/ : /Yayın henüz doğrulanmadı/);
   expect(screen.queryByText("Yayınlama onayı alındı.")).not.toBeInTheDocument();
   expect(writes).toHaveLength(1);
 });
@@ -111,7 +197,7 @@ it.each(["failed", "publishing", "uncertain"])("continuation retains %s outcome 
   render(<App />); await loadedPreview();
   fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
   fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
-  const outcome = status === "failed" ? /Instagram'a yayın yapılamadı/ : /Yayın henüz doğrulanmadı/;
+  const outcome = status === "failed" ? /Instagram'a yayın yapılamadı/ : status === "uncertain" ? /Medyanızın gönderimini kontrol ediniz/ : /Yayın henüz doğrulanmadı/;
   await screen.findByText(outcome);
   await act(async () => { invalidateLive(); });
   expect(screen.getByText(outcome)).toBeInTheDocument();
@@ -124,10 +210,18 @@ it("reschedule validates future Istanbul time independently of browser timezone"
   fireEvent.click(screen.getByRole("button", { name: "Başka zamana planla" }));
   fireEvent.change(screen.getByLabelText("Yeni Yayın Zamanı (İstanbul)"), { target: { value: "2000-08-04T12:30" } });
   expect(screen.getByRole("button", { name: "Yeni zamanı onayla" })).toBeDisabled();
-  fireEvent.change(screen.getByLabelText("Yeni Yayın Zamanı (İstanbul)"), { target: { value: "2099-08-04T12:30" } });
+  fireEvent.change(screen.getByLabelText("Yeni Yayın Zamanı (İstanbul)"), { target: { value: "2026-08-04T12:30" } });
   fireEvent.click(screen.getByRole("button", { name: "Yeni zamanı onayla" }));
   await screen.findByText("Yeni Yayın Zamanı kaydedildi. Paket korunuyor.");
-  expect(writes[0]).toEqual({ path: "/api/reviews/2/reschedule", body: { version: 3, new_due_at: "2099-08-04T12:30:00+03:00" } });
+  expect(writes[0]).toEqual({ path: "/api/reviews/2/reschedule", body: { version: 3, new_due_at: "2026-08-04T12:30:00+03:00" } });
+});
+
+it.each(["2026-08-17T10:00", "2026-08-18T10:00"])("rejects reschedule at or beyond next regular slot: %s", async value => {
+  render(<App />); await loadedPreview();
+  fireEvent.click(screen.getByRole("button", { name: "Başka zamana planla" }));
+  fireEvent.change(screen.getByLabelText("Yeni Yayın Zamanı (İstanbul)"), { target: { value } });
+  expect(screen.getByRole("button", { name: "Yeni zamanı onayla" })).toBeDisabled();
+  expect(writes).toEqual([]);
 });
 
 it("stale action reports already handled and refreshes instead of replaying publication", async () => {
@@ -155,22 +249,17 @@ it("failed live read and failed preview block decisions; retry restores authorit
   expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled();
 });
 
-it("empty due package continues to render and review without creating another occurrence", async () => {
+it("dashboard empty package link opens active editor without a continuation screen", async () => {
   state.pending_actions[0] = { ...state.pending_actions[0], review_id: null, version: null, state: "empty_package" };
-  window.location.hash = `#/package?occurrence=1&folder=${encodeURIComponent(state.package!.folder_name)}`;
+  window.location.hash = "#/dashboard";
   render(<App />);
+  const links = await screen.findAllByRole("link", { name: "Pakete git" });
+  expect(links[0]).toHaveAttribute("href", "#/package");
+  await act(async () => { window.location.hash = links[0].getAttribute("href")!; window.dispatchEvent(new Event("hashchange")); });
+  await screen.findByRole("heading", { name: "Aktif paket medyası" });
   await screen.findByLabelText("Fotoğraf ve video seç");
-  const next = screen.getByRole("button", { name: "Render ve incelemeye devam et" });
-  expect(next).toBeDisabled();
-  editor.montage.order = ["clip"];
-  await act(async () => { invalidateLive(); });
-  await waitFor(() => expect(next).toBeEnabled());
-  fireEvent.click(next);
-  await waitFor(() => expect(writes).toEqual([{ path: "/api/packages/active/render", body: { expected_folder_name: "03-08-2026 10-00", retry: false } }]));
-  state.pending_actions[0] = { ...state.pending_actions[0], review_id: 2, version: 3, state: "review_ready" };
-  await act(async () => { invalidateLive(); });
-  await loadedPreview();
-  expect(screen.queryByLabelText("Fotoğraf ve video seç")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Render ve incelemeye devam et" })).not.toBeInTheDocument();
+  expect(writes).toEqual([]);
 });
 
 it("activity links open exact review and obsolete continuation cannot render another package", async () => {
@@ -201,7 +290,7 @@ it("absent active package still permits upload for an empty due occurrence", asy
   render(<App />);
   await screen.findByLabelText("Fotoğraf ve video seç");
   await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
-  expect(screen.getByRole("button", { name: "Render ve incelemeye devam et" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Render ve incelemeye devam et" })).not.toBeInTheDocument();
 });
 
 it("continuation selects ready revision over older preparing review for same occurrence", async () => {

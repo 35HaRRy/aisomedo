@@ -11,6 +11,21 @@ from tests.test_review import claim_render, finalize_media, make_seam, set_logo,
 NOW = datetime(2026, 8, 3, 10, tzinfo=ISTANBUL)
 
 
+@pytest.mark.parametrize("kind", ["manual", "oneoff"])
+@pytest.mark.parametrize("days", [-1, 1, 20])
+def test_dashboard_lists_all_pending_occurrences_in_time_order(tmp_path, kind, days):
+    store, seam, _ = make_seam(tmp_path)
+    set_plan_due(seam, NOW)
+    store.create(YayinZamani(0, "oneoff", NOW - timedelta(days=2), "resolved", NOW))
+    store.create(YayinZamani(0, "regular", NOW - timedelta(days=14), "due", NOW))
+    store.create(YayinZamani(0, kind, NOW + timedelta(days=days), "pending", NOW))
+    summary = seam.get_dashboard_summary()
+    expected = [(kind, NOW + timedelta(days=days)), ("regular", NOW + timedelta(days=14))]
+    assert [(slot.kind, slot.due_at) for slot in getattr(summary, "next_slots", [])] == sorted(
+        expected, key=lambda slot: slot[1],
+    )
+
+
 def test_dashboard_read_does_not_create_anything(tmp_path):
     _, seam, _ = make_seam(tmp_path)
     set_plan_due(seam, NOW)
@@ -70,12 +85,40 @@ def test_due_review_refresh_retains_versions_and_resolves(tmp_path):
     action = seam.get_dashboard_summary().pending_actions[0]
     assert (action.review_id, action.version, action.state) == (review.id, 1, "review_ready")
     seam.set_caption("Changed after render")
-    assert seam.get_dashboard_summary().pending_actions[0].state == "preparing"
+    assert seam.get_dashboard_summary().pending_actions == []
+    assert not seam.get_dashboard_summary().manual_review_allowed
     seam.skip(review.id, review.version, confirmed=True)
     assert seam.get_dashboard_summary().pending_actions == []
 
 
-def test_multiple_reviews_and_publishing_package_remain_visible(tmp_path):
+@pytest.mark.parametrize("change", ["missing_reel", "removed_media", "other_package"])
+def test_dashboard_excludes_unavailable_reviews_without_replacing_them(tmp_path, change):
+    store, seam, _ = make_seam(tmp_path)
+    set_logo(store, "logo.png")
+    finalize_media(tmp_path, seam)
+    set_plan_due(seam, NOW)
+    seam.evaluate_due_work()
+    claim_render(seam)
+    package = seam.get_active_package()
+    review = seam.list_pending_reviews()[0]
+    assert seam.get_dashboard_summary().pending_actions[0].review_id == review.id
+
+    if change == "missing_reel":
+        (tmp_path / package.folder_name / "render" / "reel.mp4").unlink()
+    elif change == "removed_media":
+        seam.remove_media(seam.get_active_editor()["montage"]["order"][0])
+    else:
+        store.update(replace(package, status="completed"))
+        seam.get_or_create_active_package()
+
+    before = seam.list_audit()
+    assert seam.get_dashboard_summary().pending_actions == []
+    assert not seam.get_dashboard_summary().manual_review_allowed
+    assert seam.list_pending_reviews() == [review]
+    assert seam.list_audit() == before
+
+
+def test_latest_review_and_publishing_package_remain_visible(tmp_path):
     store, seam, _ = make_seam(tmp_path)
     set_logo(store, "logo.png")
     finalize_media(tmp_path, seam)
@@ -83,7 +126,7 @@ def test_multiple_reviews_and_publishing_package_remain_visible(tmp_path):
     seam.manual_publish()
     seam.evaluate_due_work()
     claim_render(seam)
-    assert len(seam.get_dashboard_summary().pending_actions) == 2
+    assert len(seam.get_dashboard_summary().pending_actions) == 1
     package = seam.get_active_package()
     store.update(replace(package, status="publishing"))
     assert seam.get_dashboard_summary().package.status == "publishing"

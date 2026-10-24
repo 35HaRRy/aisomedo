@@ -236,6 +236,8 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun pair(code: String, name: String): PairingOut = decode(request("POST", "/api/pairing/validate", json.encodeToJsonElement(ValidateIn(code, "device", name))))
     suspend fun me(): ClientOut = decode(request("GET", "/api/pairing/me"))
     suspend fun dashboard(): DashboardOut = decode(request("GET", "/api/dashboard"))
+    suspend fun changeOneoffDate(id: Int, body: OneoffDateIn): DashboardSlotOut = decode(request("PATCH", "/api/dashboard/occurrences/$id", json.encodeToJsonElement(body)))
+    suspend fun decideOneoff(id: Int, body: OneoffDecisionIn): OneoffDecisionOut = decode(request("POST", "/api/dashboard/occurrences/$id/decision", json.encodeToJsonElement(body)))
     suspend fun activity(): ActivityPageOut = decode(request("GET", "/api/activity?limit=50"))
     suspend fun setup(): SetupOut = decode(request("GET", "/api/setup"))
     suspend fun review(id: Int): ReviewDetailOut = decode(request("GET", "/api/reviews/$id"))
@@ -275,6 +277,8 @@ class DojoApi(private val origin: String, private val token: String?, private va
     }
     suspend fun preview(path: String): ByteArray = bytes("GET", path)
     suspend fun mediaEditor(): ActiveEditorOut = decode(request("GET", "/api/packages/active/editor"))
+    suspend fun completedPackages(): List<PackageOut> = decode(request("GET", "/api/packages"))
+    suspend fun completedPackage(folder: String): CompletedPackageOut = decode(request("GET", "/api/packages/${segment(folder)}"))
     suspend fun savePackageEdits(body: PackageEditIn): ActiveEditorOut = decode(request("PUT", "/api/packages/active/edits", json.encodeToJsonElement(body)))
     suspend fun orderMedia(folder: String, order: List<String>, expected: PackageRevision) = request("PUT", "/api/packages/active/order",
         json.encodeToJsonElement(OrderIn(expectedFolderName = folder, order = order)), packageRevision = expected)

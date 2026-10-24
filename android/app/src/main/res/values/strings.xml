@@ -1,4 +1,30 @@
 <resources>
+    <string name="completed_nav">Tamamlananlar</string>
+    <string name="completed_packages">Tamamlanmış paketler</string>
+    <string name="completed_read_only">Tamamlanmış paketler yalnızca görüntülenebilir; düzenlenemez.</string>
+    <string name="completed_empty">Henüz tamamlanmış paket yok.</string>
+    <string name="completed_error">Tamamlanmış paketler alınamadı. Tekrar deneyin.</string>
+    <string name="completed_choose">Tamamlanmış paket seçin</string>
+    <string name="completed_file_missing">%1$s — Dosya bulunamıyor</string>
+    <string name="completed_preview">%1$s önizlemesi</string>
+    <string name="package_summary">Paket bilgileri</string>
+    <string name="upload_title">Fotoğraf ve video yükle</string>
+    <string name="panel_collapse">%1$s panelini kapat</string>
+    <string name="panel_expand">%1$s panelini aç</string>
+    <string name="panel_expanded">Açık</string>
+    <string name="panel_collapsed">Kapalı</string>
+    <string name="review_refresh">İncelemeyi yenile</string>
+    <string name="review_edit">Paketi düzenle</string>
+    <string name="card_media_help">Giriş ve çıkış kartları: PNG/JPEG görsel veya MP4, MOV, WebM, MKV, AVI video. En fazla 10 MiB ve 4096 × 4096 piksel. Süre sıfırdan büyük tam sayı olmalı; boşsa varsayılan süre kullanılır.</string>
+    <string name="choose_card_media">Görsel/video seç</string>
+    <string name="clear_named_card">%1$s kaldır</string>
+    <string name="oneoff_change_date">Tarihi değiştir</string>
+    <string name="oneoff_review">İncele ve yayınla</string>
+    <string name="oneoff_date_help">İstanbul saatine göre gelecekte bir zaman seçin. Düzenli yayın varsa ondan önce olmalı.</string>
+    <string name="review_publishing">Yayınlanıyor</string>
+    <string name="review_failed">Hata alındı</string>
+    <string name="review_status_uncertain">Belirsiz</string>
+    <string name="review_instagram_uncertain">Instagram\'a gönderim doğrulanamadı. Medyanızın gönderimini kontrol ediniz. Eğer gönderim gerçekleşmişse bu incelemeyi atlayabilirsiniz.</string>
     <string name="reminders">İnceleme hatırlatmaları</string>
     <string name="reminder_help">Bekleyen incelemeler için hatırlatma aralığını ve bildirim saatlerini seçin. Geceyi geçen bir aralık seçilebilir; başlangıç ve bitiş farklı olmalı.</string>
     <string name="reminder_interval">Hatırlatma aralığı (dakika, pozitif tam sayı)</string>
@@ -32,6 +58,7 @@
     <string name="review_approve">Onayla ve paylaş</string>
     <string name="review_open">İncele</string>
     <string name="review_upload">Medya yükle</string>
+    <string name="open_package">Pakete git</string>
     <string name="review_skip">Atla</string>
     <string name="review_reschedule">Yeniden zamanla</string>
     <string name="review_skip_warning">Bu Yayın Zamanı atlanacak; Dojo Yayın Planı değişmez.</string>
@@ -40,7 +67,7 @@
     <string name="review_next_regular">Sonraki düzenli Yayın Zamanı: %1$s</string>
     <string name="review_date">Tarih: %1$s</string>
     <string name="review_time">Saat: %1$s</string>
-    <string name="review_invalid_time">Europe/Istanbul saat diliminde gelecekte bir zaman seçin.</string>
+    <string name="review_invalid_time">İstanbul saatine göre gelecekte, sıradaki düzenli yayından önce bir zaman seçin.</string>
     <string name="review_stale">İnceleme değişti. Onay kutusundan güncel incelemeyi açın.</string>
     <string name="review_handled">Bu işlem zaten yapıldı. Güncel durum aşağıda.</string>
     <string name="review_not_found">İnceleme artık bulunamıyor. Onay kutusunu yenileyin.</string>
@@ -232,6 +259,7 @@
     <string name="active">Aktif</string>
     <string name="completed">Tamamlanmış</string>
     <string name="regular">Düzenli yayın</string>
+    <string name="manual">Manuel yayın</string>
     <string name="one_off">Tek seferlik yayın</string>
     <string name="setup_progress">%1$d / %2$d adım tamamlandı</string>
     <string name="remote_changed">Sunucu ayarları değişti. Taslağınız korunuyor; güncel ayarları yeniden yükleyebilirsiniz.</string>
@@ -279,6 +307,7 @@
     <string name="save_cards">Kart sürelerini kaydet</string>
     <string name="skip_cards">Kartları değiştirmeden devam et</string>
     <string name="image_preview">%1$s önizlemesi</string>
+    <string name="selected_image_preview">Seçilen %1$s önizlemesi</string>
     <string name="preview_failed">Görsel önizlemesi yüklenemedi. Tekrar deneyin.</string>
     <string name="refresh_due">Bağlantı yenilemesi gerekli</string>
     <string name="reconnect_required">Yeniden bağlantı gerekli</string>

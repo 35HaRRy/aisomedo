@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.engine.reflection import Inspector
 
 EMISSION_INDEXES = {"uq_jobs_active_render", "uq_yayin_zamani_regular_due"}
+SCHEDULE_INDEXES = {"uq_yayin_zamani_pending_regular", "uq_yayin_zamani_pending_exception",
+                    "uq_yayin_incelemesi_actionable"}
 MONITORING_TABLES = {"monitoring_incidents", "operational_alerts", "operational_deliveries"}
 LIVE_TABLES = {"package_states", "live_resource_versions", "live_change_events"}
 MONITORING_INDEXES = {"ix_operational_deliveries_due"}
@@ -131,15 +133,24 @@ def validate_legacy_schema(connection: Connection) -> str:
     present = EMISSION_INDEXES & {name for group in indexes.values() for name in group}
     if present and present != EMISSION_INDEXES:
         raise RuntimeError("Unsupported unversioned schema: incomplete emission indexes")
+    schedule_present = SCHEDULE_INDEXES & {name for group in indexes.values() for name in group}
+    if schedule_present and schedule_present != SCHEDULE_INDEXES:
+        raise RuntimeError("Unsupported unversioned schema: incomplete schedule indexes")
     expected = MetaData()
     for table in Base.metadata.sorted_tables:
         copied = table.to_metadata(expected)
         for index in list(copied.indexes):
             if index.name in EMISSION_INDEXES and not present:
                 copied.indexes.remove(index)
+            if index.name in SCHEDULE_INDEXES and not schedule_present:
+                copied.indexes.remove(index)
     differences = compare_metadata(MigrationContext.configure(connection, opts={
         "compare_type": True, "compare_server_default": True,
     }), expected)
+    differences = [d for d in differences if not (
+        d[0] == "add_column" and d[2] == "yayin_incelemesi"
+        and d[3].name == "instagram_fail_message"
+    )]
     for table in expected.sorted_tables:
         if table.name not in tables:
             continue  # 0015 creates these; only the objects above are pending.

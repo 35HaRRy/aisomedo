@@ -120,6 +120,13 @@ def test_android_editor_generation_emits_nested_selections_and_large_media(tmp_p
     assert "val selections: Map<String, List<VideoRangeOut>>" in kotlin
     assert "val expectedFolderName: String" in kotlin
     assert "val sizeBytes: Long" in kotlin
+    assert "val contentRevision: Long" in kotlin
+    assert "val viewRevision: Long" in kotlin
+    assert "data class PackageEditIn(" in kotlin
+    assert "data class EditConflictOut(" in kotlin
+    typescript = module.WEB_TARGET.read_text(encoding="utf-8")
+    assert "export type PackageEditIn =" in typescript
+    assert "export type EditConflictOut =" in typescript
 
 
 @pytest.mark.parametrize("bad", [

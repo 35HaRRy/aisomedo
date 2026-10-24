@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ReviewPreviewTest {
     @get:Rule val compose = createComposeRule()
     private val detail = ReviewDetailOut(null, "/api/packages/active/render/preview", true,
-        ReviewOut("Caption", "2026-10-11T10:00:00+03:00", 7, 2, "active", "exact", "pending", 3))
+        ReviewOut("Caption", "2026-10-11T10:00:00+03:00", 7, null, 2, "active", "exact", "pending", 3))
 
     @Test fun nativePlayerPreparesExactPrivateClipAndDisposalRevokesReadiness() {
         val visible = mutableStateOf(true)

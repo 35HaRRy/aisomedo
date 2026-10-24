@@ -1,6 +1,7 @@
 import type { ActivityPageOut, ClientOut, DashboardOut, ValidateIn, SetupOut, ConsentOut, AcceptanceOut, BrandingDefaultsOut, BrandingPatchIn, BrandingAssetOut, PlanIn, PlanOut, StatusOut, StartOut, AttemptOut, UploadLimitsOut, UploadInitIn, UploadOut, ResolveConflictIn, ActiveEditorOut, CompletedPackageOut, SelectionIn, MontageOut, PackageOut, ClearPackageIn, ClearPackageOut, RenderOut } from "./openapi";
 import type { ApproveIn, SkipIn, RescheduleIn, ReviewDetailOut } from "./openapi";
 import type { ReminderPolicyIn, ReminderPolicyOut } from "./openapi";
+import type { DashboardSlotOut, OneoffDateIn, OneoffDecisionIn, OneoffDecisionOut } from "./openapi";
 import type { PackageEditIn, EditConflictOut } from "./openapi";
 
 export type PackagePrecondition = { package: { id: number }; content_revision: number };
@@ -108,6 +109,8 @@ export const api = {
     await request("/api/pairing/validate", { method: "POST", body: JSON.stringify(body), signal });
   },
   dashboard: (signal?: AbortSignal) => request<DashboardOut>("/api/dashboard", { signal }),
+  changeOneoffDate: (id: number, body: OneoffDateIn, signal?: AbortSignal) => request<DashboardSlotOut>(`/api/dashboard/occurrences/${id}`, { method: "PATCH", body: JSON.stringify(body), signal }),
+  decideOneoff: (id: number, body: OneoffDecisionIn, signal?: AbortSignal) => request<OneoffDecisionOut>(`/api/dashboard/occurrences/${id}/decision`, { method: "POST", body: JSON.stringify(body), signal }),
   activity: (signal?: AbortSignal) => request<ActivityPageOut>("/api/activity?limit=20", { signal }),
   setup: (signal?: AbortSignal) => request<SetupOut>("/api/setup", { signal }),
   consent: (signal?: AbortSignal) => request<ConsentOut>("/api/setup/consent", { signal }),

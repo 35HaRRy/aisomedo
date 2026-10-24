@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.OffsetDateTime
 import java.time.ZoneId
 
 enum class ReviewAction { REVIEW, UPLOAD, SKIP, RESCHEDULE }
@@ -37,7 +38,7 @@ data class ReviewState(
 ) {
     val canDecide: Boolean get() = target?.valid == true && !busy && !readRequired && issue == null &&
         (target.reviewId == null || detail?.review?.let { review ->
-            review.status == "pending" && review.id == target.reviewId &&
+            review.status in setOf("pending", "failed", "uncertain") && review.id == target.reviewId &&
                 (target.packageFolder == null || review.packageFolder == target.packageFolder) &&
                 (target.expectedVersion == null || review.version == target.expectedVersion)
         } == true)
@@ -45,7 +46,8 @@ data class ReviewState(
         !detail.previewUrl.isNullOrBlank() && previewReady
 }
 
-fun futureIstanbulInstant(date: LocalDate, time: LocalTime, now: Instant): String? {
+fun futureIstanbulInstant(date: LocalDate, time: LocalTime, now: Instant, nextRegularAt: String? = null): String? {
     val due = date.atTime(time).atZone(ZoneId.of("Europe/Istanbul")).toOffsetDateTime()
-    return due.takeIf { it.toInstant() > now }?.toString()
+    val limit = nextRegularAt?.let { OffsetDateTime.parse(it).toInstant() }
+    return due.takeIf { it.toInstant() > now && (limit == null || it.toInstant() < limit) }?.toString()
 }

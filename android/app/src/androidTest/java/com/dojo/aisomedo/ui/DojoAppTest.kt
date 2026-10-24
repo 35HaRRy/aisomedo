@@ -29,6 +29,7 @@ class DojoAppTest {
     private lateinit var model: AppViewModel
     private val paths = java.util.concurrent.CopyOnWriteArrayList<String>()
     private var blocked = false
+    private var emptyPending = false
     private val network = MutableStateFlow(NetworkStatus(true))
     @Before fun setup() {
         server.dispatcher = object : Dispatcher() {
@@ -43,6 +44,7 @@ class DojoAppTest {
                     "/api/compat" -> """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":1,"update_url":"https://example.com/update"}"""
                     "/api/pairing/me" -> """{"id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
                     "/api/setup" -> """{"checklist":[],"ready":true}"""
+                    "/api/packages" -> "[]"
                     "/api/settings/plan" -> """{"anchor_date":"2026-10-05","anchor_time":"18:30:00","enabled":false,"timezone":"Europe/Istanbul"}"""
                     "/api/settings/branding" -> """{"caption_template":"Dojo #training","intro_asset":null,"intro_duration":null,"logo_asset":null,"outro_asset":null,"outro_duration":null}"""
                     "/api/settings/reminders" -> """{"interval_minutes":60,"delivery_start":"09:00:00","delivery_end":"21:00:00","timezone":"Europe/Istanbul"}"""
@@ -51,6 +53,7 @@ class DojoAppTest {
                     "/api/setup/consent" -> """{"accepted_at":null,"text":"Politika metni","version":2}"""
                     "/api/activity?limit=50" -> """{"events":[{"id":1,"action":"package.created","actor":"system","occurred_at":"2026-10-12T12:00:00Z","details":{}}],"next_cursor":null}"""
                     "/api/reviews/7" -> """{"next_regular_at":"2099-10-19T10:00:00+03:00","preview_url":"/api/packages/active/render/preview","render_ready":true,"review":{"caption":"Exact caption","created_at":"2026-10-11T10:00:00+03:00","id":7,"occurrence_id":2,"package_folder":"active","revision_digest":"exact","status":"pending","version":3}}"""
+                    "/api/dashboard" -> if (emptyPending) """{"generated_at":"2026-10-05T12:00:00Z","package":null,"next_slot":null,"pending_actions":[{"due_at":"2026-10-05T12:00:00Z","occurrence_id":2,"review_id":null,"version":null,"package_folder":"active","state":"empty_package"}],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}""" else """{"generated_at":"2026-10-05T12:00:00Z","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
                     else -> """{"generated_at":"2026-10-05T12:00:00Z","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
                 }
                 return MockResponse().setBody(body)
@@ -72,22 +75,39 @@ class DojoAppTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync { owner.clear() }
         server.shutdown()
     }
-    @Test fun fourDestinationsAreDistinctAndPackageDoesNotCreate() {
+    @Test fun fiveDestinationsAreDistinctAndPackageDoesNotCreate() {
         compose.setContent { DojoApp(model) {} }
         compose.waitUntil(10000) { model.state.value.canMutate && model.state.value.activity != null }
-        compose.onNodeWithText("Bekleyen işlemler").assertExists()
+        compose.onNodeWithText("Bekleyen işlemler").assertDoesNotExist()
         compose.onNodeWithText("Paket", useUnmergedTree = true).performClick()
         compose.onNodeWithText("Henüz aktif paket yok").assertExists()
+        compose.onNodeWithText("Tamamlananlar", useUnmergedTree = true).performClick()
+        compose.waitUntil(10000) { model.state.value.completedPackages != null }
+        compose.onNodeWithText("Henüz tamamlanmış paket yok.").assertExists()
         compose.onNodeWithText("Hareketler", useUnmergedTree = true).performClick()
         compose.onNodeWithText("Onay kutusu").assertExists()
         compose.onNodeWithText("package.created").assertExists()
         androidx.test.espresso.Espresso.pressBack()
-        compose.onNodeWithText("Bekleyen işlemler").assertExists()
+        compose.onNodeWithText("Bekleyen işlemler").assertDoesNotExist()
         compose.onNodeWithText("Ayarlar", useUnmergedTree = true).performClick()
         compose.onNodeWithText("Sunucuyu değiştir").performScrollTo().performClick()
         compose.onNodeWithText("Bu cihazın yeniden eşleştirilmesi gerekecek.").assertExists()
         compose.onNodeWithText("Vazgeç").performClick()
         Assert.assertTrue(paths.none { it.startsWith("POST /api/packages") })
+    }
+    @Test fun emptyPendingOpensPackageEditorWithoutReviewContinuation() {
+        compose.setContent { DojoApp(model) {} }
+        compose.waitUntil(10000) { model.state.value.canMutate }
+        compose.runOnIdle { emptyPending = true; model.refresh() }
+        compose.waitUntil(10000) { model.state.value.canMutate && model.state.value.dashboard?.pendingActions?.isNotEmpty() == true }
+        compose.onNodeWithText("Pakete git").performScrollTo().performClick()
+        compose.onNodeWithText("Aktif Paket").assertExists()
+        compose.onNodeWithTag("review-continue").assertDoesNotExist()
+        compose.runOnIdle {
+            Assert.assertEquals(Destination.PACKAGE, model.state.value.destination)
+            Assert.assertNull(model.state.value.review.target)
+        }
+        Assert.assertTrue(paths.none { it.startsWith("POST ") })
     }
     @Test fun backClosesFocusedReviewToOwningActivityWithoutSubmitting() {
         compose.setContent { DojoApp(model) {} }
@@ -123,15 +143,50 @@ class DojoAppTest {
     }
     @Test fun dashboardIncludesEveryPendingStateAndHealth() {
         val time = "2026-10-05T12:00:00Z"
-        val dashboard = DashboardOut(time, DashboardInstagramOut("healthy", "dojo"), null, null,
-            listOf("review_ready", "empty_package", "preparing").mapIndexed { i, state -> DashboardActionOut(time, i, null, null, state, null) },
+        val oneoff = DashboardSlotOut("2026-10-06T12:00:00Z", "oneoff")
+        val regular = DashboardSlotOut("2026-10-19T12:00:00Z", "regular")
+        val dashboard = DashboardOut(time, DashboardInstagramOut("healthy", "dojo"), true, oneoff, listOf(oneoff, regular), null,
+            listOf("review_ready", "empty_package", "preparing").mapIndexed { i, state -> DashboardActionOut(time, i, null, null, null, state, null) },
             PlanOut(null, null, false, "Europe/Istanbul"), DashboardWorkerOut("busy", "healthy"))
         compose.setContent { DojoTheme { Column { DashboardScreen(dashboard, SetupOut(emptyList(), true), false, true, {}, {}) } } }
-        listOf("İnceleme hazır", "Paket boş", "Hazırlanıyor", "dojo", "Çalışıyor", "Henüz aktif paket yok").forEach {
+        listOf("İnceleme hazır", "Paket boş", "Hazırlanıyor", "dojo", "Çalışıyor", "Henüz aktif paket yok", "Tek seferlik yayın", "Düzenli yayın").forEach {
             compose.onNodeWithText(it).assertExists()
         }
         compose.onNodeWithText("Bilgiler henüz alınamadı. Tekrar deneyin.").assertDoesNotExist()
     }
+    @Test fun futureOneoffCanChangeDateWithoutRegularSlot() {
+        val slot = DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 8)
+        val dashboard = DashboardOut("2026-10-05T12:00:00Z", DashboardInstagramOut("healthy"), false, slot, listOf(slot), null,
+            emptyList(), PlanOut(null, null, false, "Europe/Istanbul"), DashboardWorkerOut(null, "healthy"))
+        var changed: DashboardSlotOut? = null
+        compose.setContent { DojoTheme { Column {
+            DashboardScreen(dashboard, null, false, false, {}, {}, onChangeOneoffDate = { value, _, _ -> changed = value })
+        } } }
+        compose.onNodeWithText("Tarihi değiştir").performClick()
+        compose.onNodeWithText("Kaydet").performClick()
+        compose.runOnIdle { Assert.assertEquals(slot, changed) }
+    }
+
+    @Test fun futureOneoffDecisionsRequireSkipConfirmationAndRespectStaleState() {
+        val slot = DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 8)
+        val dashboard = DashboardOut(generatedAt = "2026-08-03T10:00:00+03:00", instagram = DashboardInstagramOut("unknown"),
+            nextSlot = slot, nextSlots = listOf(slot), `package` = null, pendingActions = emptyList(),
+            plan = PlanOut(null, null, false, "Europe/Istanbul"), worker = DashboardWorkerOut(null, "healthy"))
+        val stale = mutableStateOf(false)
+        val decisions = mutableListOf<Pair<DashboardSlotOut, Boolean>>()
+        compose.setContent { DojoTheme { Column {
+            DashboardScreen(dashboard, null, stale.value, false, {}, {}, onDecideOneoff = { value, skip -> decisions.add(value to skip) })
+        } } }
+        compose.onNodeWithText("Atla").performClick()
+        compose.runOnIdle { Assert.assertTrue(decisions.isEmpty()) }
+        compose.onNodeWithText("Atlamayı onayla").performClick()
+        compose.runOnIdle { Assert.assertEquals(listOf(slot to true), decisions) }
+        compose.onNodeWithText("İncele ve yayınla").performClick()
+        compose.runOnIdle { Assert.assertEquals(listOf(slot to true, slot to false), decisions); stale.value = true }
+        compose.onNodeWithText("İncele ve yayınla").assertIsNotEnabled()
+        compose.onNodeWithText("Atla").assertIsNotEnabled()
+    }
+
     @Test fun settingsExposeEditorsReconnectAndReadOnlyConsentWithoutWizard() {
         val urls = mutableListOf<String>()
         compose.setContent { DojoApp(model) { urls.add(it) } }
@@ -228,8 +283,8 @@ class DojoAppTest {
     }
     @Test fun offlineInboxAndContinuationCannotInvokeReviewActions() {
         val time = "2026-10-05T12:00:00Z"
-        val dashboard = DashboardOut(time, DashboardInstagramOut("unknown"), null, null,
-            listOf(DashboardActionOut(time, 2, "active", null, "empty_package", null)),
+        val dashboard = DashboardOut(time, DashboardInstagramOut("unknown"), true, null, null, null,
+            listOf(DashboardActionOut(time, 2, "active", null, null, "empty_package", null)),
             PlanOut(null, null, false, "Europe/Istanbul"), DashboardWorkerOut(null, "unknown"))
         val state = AppUiState(phase = Phase.READY, networkConnected = false, authoritative = true,
             review = ReviewState(target = ReviewTarget(occurrenceId = 2, packageFolder = "active", action = ReviewAction.UPLOAD), readRequired = false))

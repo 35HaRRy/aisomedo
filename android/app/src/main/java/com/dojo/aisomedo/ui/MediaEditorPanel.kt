@@ -102,8 +102,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
             delay(16)
         }
     }
-    Column(Modifier.widthIn(max = 640.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SectionHeading(R.string.media_management)
+    CollapsiblePanel(stringResource(R.string.media_management), Modifier.widthIn(max = 640.dp)) {
         OutlinedButton(onClick = onRefresh, enabled = !busy) { Text(stringResource(R.string.refresh)) }
         editor.persistenceIssue?.let { issue ->
             Text(stringResource(if (issue == DraftIssue.STORAGE) R.string.draft_storage_failed else R.string.draft_corrupt),
@@ -248,21 +247,22 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
 }
 
 @Composable private fun MediaPreview(media: EditorMediaOut, load: suspend (String, File) -> Unit) {
+    RemoteMediaPreview(requireNotNull(media.previewUrl), media.isVideo, stringResource(R.string.image_preview, media.filename), load)
+}
+
+@Composable internal fun RemoteMediaPreview(previewUrl: String, isVideo: Boolean, label: String, load: suspend (String, File) -> Unit) {
     val context = LocalContext.current
     val loader by rememberUpdatedState(load)
-    val previewUrl = requireNotNull(media.previewUrl)
-    val isVideo = media.isVideo
     var attempt by remember { mutableIntStateOf(0) }
     var image by remember(attempt) { mutableStateOf<Bitmap?>(null) }
     var video by remember(attempt) { mutableStateOf<File?>(null) }
     var loading by remember(attempt) { mutableStateOf(true) }
     var failed by remember(attempt) { mutableStateOf(false) }
-    val label = stringResource(R.string.image_preview, media.filename)
     DisposableEffect(image) {
         val bitmap = image
         onDispose { bitmap?.recycle() }
     }
-    LaunchedEffect(media.mediaId, previewUrl, attempt) {
+    LaunchedEffect(previewUrl, attempt) {
         var file: File? = null
         try {
             val temporary = withContext(Dispatchers.IO) {

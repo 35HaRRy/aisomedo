@@ -6,6 +6,7 @@ from typing import Literal
 from dojo import (
     Client,
     DojoPublishing,
+    ManualPublishConflict,
     MediaNotFound,
     PublicationInProgress,
     PublicationNotReady,
@@ -58,7 +59,7 @@ def recover_publication(
             body.action, confirmed=body.confirmed, new_due_at=body.new_due_at,
             requester=str(client.id),
         )}
-    except (PublicationInProgress, PublicationNotReady) as exc:
+    except (PublicationInProgress, PublicationNotReady, ManualPublishConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (RescheduleTimeInvalid, SkipRequiresConfirmation) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

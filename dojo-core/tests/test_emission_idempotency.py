@@ -48,6 +48,7 @@ def test_regular_identity_preserves_oneoffs(pg_store, memory):
     first = store.create(occ)
     assert store.create(occ).id == first.id
     oneoff = store.create(replace(occ, kind="oneoff"))
+    store.update(replace(oneoff, status="resolved"))
     assert store.create(replace(occ, kind="oneoff")).id != oneoff.id
     assert len(store.list_all()) == 3
 
@@ -104,27 +105,18 @@ def test_later_tick_during_blocked_render(pg_store, other, tmp_path):
     assert len([e for e in pg_store.list_recent() if e.action == "render.queued"]) == 1
 
 
-def test_review_race_records_one_creation(pg_store, other, tmp_path, monkeypatch):
+def test_review_race_records_one_creation(pg_store, other, tmp_path):
     first, second = seam(pg_store, tmp_path), seam(other, tmp_path)
     first.set_plan(SchedulePlan(
         anchor_date=date(2026, 8, 3), anchor_time=time(10), enabled=True,
     ))
     package = first.get_or_create_active_package()
     pg_store.create(YayinZamani(id=0, kind="regular", due_at=FIXED_AT,
-                               status="pending", created_at=FIXED_AT))
+                               status="due", created_at=FIXED_AT))
     barrier = Barrier(2)
-    # Force both legacy check-then-insert callers to observe absence.
-    for store in (pg_store, other):
-        original = store.get_by_occurrence_revision
-
-        def checked(*args, lookup=original):
-            result = lookup(*args)
-            barrier.wait(timeout=10)
-            return result
-
-        monkeypatch.setattr(store, "get_by_occurrence_revision", checked)
 
     def create(publishing, store):
+        barrier.wait(timeout=10)
         with store.emission_transaction():
             publishing._create_review_if_due(package, "d")
             store.append(audit("turn.completed"))
@@ -208,6 +200,7 @@ def test_review_insert_contract_and_revision_identity(pg_store, memory):
     first, created = store.create_review_once(review, audit=audit("review.created"))
     assert created
     assert store.create_review_once(review, audit=audit()) == (first, False)
+    store.update(replace(first, status="skipped"))
     different, created = store.create_review_once(replace(review, revision_digest="d2"))
     assert created and different.id != first.id
     assert len(store.list_recent()) == 1

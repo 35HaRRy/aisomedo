@@ -1,9 +1,10 @@
 import { api } from "../api/client";
 import { tr } from "../i18n";
 import { useLiveData } from "../useLiveData";
-import { ReloadDraft, useDraft, useFormSave } from "./forms";
+import { ReloadDraft, StepActions, useDraft, useFormSave } from "./forms";
 
 export function PlanStep({ onSaved }: { onSaved: () => void }) {
+  const formId = useId();
   const snapshot = useLiveData(api.plan, true, ["settings"]);
   const form = useFormSave(onSaved);
   const state = useDraft(snapshot.data ? { anchor_date: snapshot.data.anchor_date ?? "", anchor_time: snapshot.data.anchor_time?.slice(0, 5) ?? "", enabled: snapshot.data.enabled } : null,
@@ -17,13 +18,14 @@ export function PlanStep({ onSaved }: { onSaved: () => void }) {
   }
   return <div className="onboarding-form"><p>Her iki haftada bir Pazartesi yayın. Saat dilimi: Europe/Istanbul.</p>
     {snapshot.data?.anchor_date && <p>{snapshot.data.enabled ? "Plan etkin" : "Plan tanımlı, yayın kapalı"}</p>}
-    {snapshot.error && <div role="alert">{tr.loadError}<button onClick={snapshot.retry}>{tr.retry}</button></div>}
+    {snapshot.error && <div role="alert">{tr.loadError}<StepActions><button onClick={snapshot.retry}>{tr.retry}</button></StepActions></div>}
     <ReloadDraft changed={state.changed} reload={state.reload} />
-    <form onSubmit={event => { event.preventDefault(); submit(); }}>
+    <form id={formId} onSubmit={event => { event.preventDefault(); submit(); }}>
       <label htmlFor="plan-date">İlk yayın tarihi</label><input id="plan-date" type="date" required value={draft.anchor_date} onChange={event => edit({ ...draft, anchor_date: event.target.value })} disabled={form.busy} />
       <label htmlFor="plan-time">Yayın saati</label><input id="plan-time" type="time" required value={draft.anchor_time} onChange={event => edit({ ...draft, anchor_time: event.target.value })} disabled={form.busy} />
       <label className="checkbox-label"><input type="checkbox" checked={draft.enabled} onChange={event => edit({ ...draft, enabled: event.target.checked })} disabled={form.busy} />Düzenli yayını etkinleştir</label>
-      <button className="primary" disabled={form.busy || !snapshot.data || snapshot.error}>{form.busy ? "Kaydediliyor…" : "Planı kaydet"}</button>
+      <StepActions><button form={formId} className="primary" disabled={form.busy || !snapshot.data || snapshot.error}>{form.busy ? "Kaydediliyor…" : "Planı kaydet"}</button></StepActions>
     </form>{form.error && <p role="alert">{form.error}</p>}
   </div>;
 }
+import { useId } from "react";

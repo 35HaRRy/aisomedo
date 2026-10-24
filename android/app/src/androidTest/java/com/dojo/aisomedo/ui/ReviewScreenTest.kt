@@ -21,6 +21,8 @@ import com.dojo.aisomedo.AppUiState
 import com.dojo.aisomedo.Phase
 import com.dojo.aisomedo.api.*
 import com.dojo.aisomedo.reviews.*
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -28,8 +30,27 @@ import org.junit.Test
 class ReviewScreenTest {
     @get:Rule val compose = createComposeRule()
     private val detail = ReviewDetailOut("2099-10-19T10:00:00+03:00", "/api/packages/active/render/preview", true,
-        ReviewOut("Exact caption\n#dojo", "2026-10-11T10:00:00+03:00", 7, 2, "active", "exact", "pending", 3))
+        ReviewOut("Exact caption\n#dojo", "2026-10-11T10:00:00+03:00", 7, null, 2, "active", "exact", "pending", 3))
     private val initial = ReviewState(target = ReviewTarget(reviewId = 7), detail = detail, readRequired = false)
+
+    @Test fun headerIconsActAndCollapseWithoutPublishing() {
+        var edits = 0
+        var refreshes = 0
+        var approvals = 0
+        compose.setContent { DojoTheme { Column(Modifier.verticalScroll(rememberScrollState())) {
+            ReviewScreen(initial.copy(previewReady = true), true, {}, { approvals++ }, {}, { _, _ -> },
+                { refreshes++ }, {}, {}, onEdit = { edits++ })
+        } } }
+        compose.onNodeWithContentDescription("İncelemeyi yenile").performClick()
+        compose.onNodeWithContentDescription("Paketi düzenle").performClick()
+        compose.onNodeWithContentDescription("active panelini kapat").performClick()
+        compose.onNodeWithTag("review-approve").assertDoesNotExist()
+        compose.onNodeWithContentDescription("active panelini aç").performClick()
+        compose.onNodeWithTag("review-approve").assertIsEnabled()
+        assertEquals(1, refreshes)
+        assertEquals(1, edits)
+        assertEquals(0, approvals)
+    }
 
     @Test fun exactCaptionAndSkipConfirmationAreVisibleWithoutImplicitMutation() {
         var skips = 0
@@ -46,6 +67,19 @@ class ReviewScreenTest {
         compose.onNodeWithText("Bu Yayın Zamanı atlanacak; Dojo Yayın Planı değişmez.").assertIsDisplayed()
         compose.onNodeWithTag("review-confirm-skip").performClick()
         assertEquals(1, skips)
+    }
+
+    @Test fun failedPublicationShowsErrorWithoutDisablingDecisions() {
+        val state = initial.copy(previewReady = true, publication = buildJsonObject {
+            put("status", "failed"); put("error", "bad video")
+        })
+        compose.setContent { DojoTheme { Column(Modifier.verticalScroll(rememberScrollState())) {
+            ReviewScreen(state, true, {}, {}, {}, { _, _ -> }, {}, {}, {})
+        } } }
+        compose.onNodeWithText("Paylaşım başarısız").assertExists()
+        compose.onNodeWithTag("review-approve").assertIsEnabled()
+        compose.onNodeWithTag("review-skip").assertIsEnabled()
+        compose.onNodeWithTag("review-reschedule").assertIsEnabled()
     }
 
     @Test fun staleHandledAndLoadingReviewsCannotApprove() {
@@ -119,7 +153,7 @@ class ReviewScreenTest {
         compose.setContent { DojoTheme { ApprovalInbox(dashboard.value, false, {}, { _, _ -> }) } }
         compose.onNodeWithText("Bilgiler henüz alınamadı. Tekrar deneyin.").assertExists()
         compose.onNodeWithText("Bekleyen işlem yok").assertDoesNotExist()
-        compose.runOnIdle { dashboard.value = DashboardOut("2026-10-11T10:00:00+03:00", DashboardInstagramOut("unknown"), null,
+        compose.runOnIdle { dashboard.value = DashboardOut("2026-10-11T10:00:00+03:00", DashboardInstagramOut("unknown"), true, null, null,
             null, emptyList(), PlanOut(null, null, false, "Europe/Istanbul"), DashboardWorkerOut(null, "unknown")) }
         compose.onNodeWithText("Bekleyen işlem yok").assertExists()
     }

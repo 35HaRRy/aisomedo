@@ -293,6 +293,7 @@ class InMemoryStore:
                     for existing in self._occurrences:
                         if existing.kind == "regular" and existing.due_at == obj.due_at:
                             return existing
+                self._check_schedule_uniqueness(obj)
                 created_occ = replace(obj, id=self._next_occ_id)
                 self._next_occ_id += 1
                 self._occurrences.append(created_occ)
@@ -345,6 +346,7 @@ class InMemoryStore:
             )
             if existing is not None:
                 return existing, False
+            self._check_schedule_uniqueness(review)
             created = replace(review, id=self._next_review_id)
             if audit is not None:
                 self.append(replace(audit, details={**audit.details, "review_id": created.id}))
@@ -357,6 +359,21 @@ class InMemoryStore:
             if package.status == "active":
                 return package
         return None
+
+    def _check_schedule_uniqueness(self, obj: YayinZamani | YayinIncelemesi) -> None:
+        if isinstance(obj, YayinZamani):
+            if obj.status != "pending":
+                return
+            kinds = ("regular",) if obj.kind == "regular" else ("manual", "oneoff")
+            conflict = any(o.id != obj.id and o.kind in kinds and o.status == "pending"
+                           for o in self._occurrences)
+        else:
+            actionable = ("pending", "failed", "uncertain", "publishing")
+            conflict = obj.status in actionable and any(
+                r.id != obj.id and r.status in actionable for r in self._reviews
+            )
+        if conflict:
+            raise IntegrityError("schedule uniqueness", {}, Exception("pending record exists"))
 
     def list_completed(self) -> list[Package]:
         return [p for p in self._packages if p.status == "completed"]
@@ -402,12 +419,14 @@ class InMemoryStore:
                     return obj
             raise ValueError(f"job {obj.id} not found")
         if isinstance(obj, YayinZamani):
+            self._check_schedule_uniqueness(obj)
             for i, existing_occ in enumerate(self._occurrences):
                 if existing_occ.id == obj.id:
                     self._occurrences[i] = obj
                     return obj
             raise ValueError(f"occurrence {obj.id} not found")
         if isinstance(obj, YayinIncelemesi):
+            self._check_schedule_uniqueness(obj)
             for i, existing_review in enumerate(self._reviews):
                 if existing_review.id == obj.id:
                     self._reviews[i] = obj
@@ -628,13 +647,14 @@ class InMemoryStore:
     def has_regular_at(self, due_at: datetime) -> bool:
         return any(o.kind == "regular" and o.due_at == due_at for o in self._occurrences)
 
-    def has_pending_manual(self) -> bool:
-        return any(o.kind == "manual" and o.status == "pending" for o in self._occurrences)
+    def has_pending_exception(self) -> bool:
+        return any(o.kind in ("manual", "oneoff") and o.status == "pending"
+                   for o in self._occurrences)
 
     def list_due(self, now: datetime) -> list[YayinZamani]:
         return [
             o for o in self._occurrences
-            if o.status == "pending" and o.due_at <= now
+            if o.status in ("pending", "due") and o.due_at <= now
         ]
 
     def list_all(self) -> list[YayinZamani]:
@@ -664,7 +684,8 @@ class InMemoryStore:
         return any(r.occurrence_id == occurrence_id for r in self._reviews)
 
     def list_pending(self) -> list[YayinIncelemesi]:
-        return [r for r in self._reviews if r.status == "pending"]
+        return [r for r in self._reviews
+                if r.status in ("pending", "failed", "uncertain", "publishing")]
 
     def resolve_if_pending(
         self,
@@ -675,7 +696,10 @@ class InMemoryStore:
         resolved_by: str | None,
     ) -> YayinIncelemesi | None:
         for i, review in enumerate(self._reviews):
-            if review.id == review_id and review.status == "pending" and review.version == version:
+            allowed: tuple[str, ...] = ("pending", "failed", "uncertain")
+            if status == "approved":
+                allowed += ("publishing",)
+            if review.id == review_id and review.status in allowed and review.version == version:
                 updated = replace(
                     review,
                     status=status,

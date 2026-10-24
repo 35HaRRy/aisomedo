@@ -15,7 +15,10 @@ import org.junit.Test
 import org.junit.Assert.*
 import kotlinx.serialization.json.*
 import android.graphics.Bitmap
+import android.provider.DocumentsContract
+import androidx.test.platform.app.InstrumentationRegistry
 import com.dojo.aisomedo.api.ResolveConflictIn
+import java.io.File
 
 class UploadPanelTest {
     @get:Rule val compose = createComposeRule()
@@ -24,6 +27,18 @@ class UploadPanelTest {
         intent = if (phase == UploadPhase.PAUSED) UploadIntent.PAUSED else UploadIntent.ACTIVE, phase = phase)
     private fun show(phase: UploadPhase) = compose.setContent {
         DojoTheme { Column(Modifier.width(320.dp)) { UploadPanel(listOf(row(phase)), null, {}, {}, { _, _ -> }, { _, _ -> }, {}) } }
+    }
+    @Test fun rowShowsLocalPreviewBeforeAndDuringUpload() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val image = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        try { File(context.cacheDir, "upload-test-preview").outputStream().use { image.compress(Bitmap.CompressFormat.JPEG, 90, it) } }
+        finally { image.recycle() }
+        val uri = DocumentsContract.buildDocumentUri("com.dojo.aisomedo.test.documents", "preview")
+        val row = row(UploadPhase.PREPARING).copy(uri = uri.toString(), filename = "preview.jpg", contentType = "image/jpeg")
+        compose.setContent { DojoTheme { Column(Modifier.width(320.dp)) { UploadPanel(listOf(row), null, {}, {}, { _, _ -> }, { _, _ -> }, {}) } } }
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithContentDescription("preview.jpg önizlemesi").fetchSemanticsNodes().isNotEmpty()
+        }
     }
     @Test fun pausedShowsResumeAndAccessibleProgress() {
         show(UploadPhase.PAUSED)

@@ -30,7 +30,7 @@ def test_create_assigns_id_and_stores() -> None:
 
 def test_max_regular_due_at() -> None:
     store = InMemoryStore()
-    make_occ(store, kind="regular", due=FIXED_AT)
+    make_occ(store, kind="regular", due=FIXED_AT, status="due")
     make_occ(store, kind="regular", due=FIXED_AT + timedelta(days=14))
     make_occ(store, kind="manual", due=FIXED_AT + timedelta(days=99))
     assert store.max_regular_due_at() == FIXED_AT + timedelta(days=14)
@@ -47,16 +47,16 @@ def test_has_regular_at() -> None:
     assert store.has_regular_at(FIXED_AT + timedelta(days=14)) is False
 
 
-def test_has_pending_manual() -> None:
+def test_has_pending_exception() -> None:
     store = InMemoryStore()
-    assert store.has_pending_manual() is False
+    assert store.has_pending_exception() is False
     make_occ(store, kind="manual", due=FIXED_AT)
-    assert store.has_pending_manual() is True
+    assert store.has_pending_exception() is True
 
 
 def test_list_due() -> None:
     store = InMemoryStore()
-    past = make_occ(store, kind="regular", due=FIXED_AT - timedelta(days=1))
+    past = make_occ(store, kind="regular", due=FIXED_AT - timedelta(days=1), status="due")
     future = make_occ(store, kind="regular", due=FIXED_AT + timedelta(days=14))
     assert [o.id for o in store.list_due(FIXED_AT)] == [past.id]
     assert all(o.id != future.id for o in store.list_due(FIXED_AT))

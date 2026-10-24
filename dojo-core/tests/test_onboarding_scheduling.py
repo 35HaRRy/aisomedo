@@ -24,7 +24,10 @@ def test_scheduler_requires_ready_setup_and_enabled_plan(tmp_path: Path) -> None
         anchor_date=date(2026, 10, 5), anchor_time=time(10), enabled=True,
     ))
     publishing.evaluate_due_work()
-    assert store.list_all() == []
+    assert len(store.list_all()) == 1
+    assert store.list_all()[0].kind == "regular"
+    assert store.list_all()[0].status == "pending"
+    assert publishing.list_due_occurrences() == []
     setup.accept_current_policy(client=client, version=2)
     publishing.ensure_schedule_upto()
     assert len(store.list_all()) > 0

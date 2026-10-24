@@ -33,6 +33,7 @@ it("picker stays disabled until limits load and shows confirmed progress", async
   expect(await screen.findByLabelText("Fotoğraf ve video seç")).toBeDisabled();
   await act(async () => limits.resolve({ max_file_bytes: 100, max_package_bytes: 1000 }));
   select();
+  expect(await screen.findByRole("img", { name: "dojo.jpg önizlemesi" })).toHaveAttribute("src", expect.stringMatching(/^blob:/));
   await screen.findByText("İşlem sırasına alındı");
   const progress = screen.getByRole("progressbar", { name: "dojo.jpg" });
   expect(progress).toHaveAttribute("value", "3");
@@ -180,8 +181,7 @@ it("bulk checkbox sends compatible apply-to-all and disables duplicate submissio
   render(<SessionProvider><Gate /></SessionProvider>);
   await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
   select();
-  await screen.findByRole("img");
-  fireEvent.click(screen.getByRole("checkbox", { name: "Aynı adlı mevcut çakışmaların tümüne uygula" }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Aynı adlı mevcut çakışmaların tümüne uygula" }));
   fireEvent.click(screen.getByRole("radio", { name: "Mevcut dosyayı koru (yüklemeyi atla)" }));
   fireEvent.click(screen.getByRole("button", { name: "Kararı uygula" }));
   expect(screen.getByRole("button", { name: "Kararı uygula" })).toBeDisabled();

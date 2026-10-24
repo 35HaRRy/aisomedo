@@ -142,7 +142,8 @@ def kotlin_models(schema: dict, roots: list[str]) -> str:
                 "max_file_bytes", "max_package_bytes", "declared_size_bytes",
                 "received_bytes", "received_ranges",
             }
-            wide = wide or key == "size_bytes"
+            wide = wide or key in {"size_bytes", "content_revision", "view_revision",
+                                   "base_content_revision"}
             kind = convert(value, wide)
             default = ""
             if key not in required:
@@ -206,7 +207,9 @@ def main() -> None:
         "UploadLimitsOut", "UploadInitIn", "UploadOut", "ResolveConflictIn",
         "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "MontageOut",
         "ClearPackageIn", "ClearPackageOut", "RenderIn", "RenderOut",
-        "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn",
+        "PackageEditIn", "EditConflictOut",
+        "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn", "OneoffDateIn",
+        "OneoffDecisionIn", "OneoffDecisionOut",
         "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut",
     ]))
     WEB_TARGET.parent.mkdir(parents=True, exist_ok=True)
@@ -239,9 +242,11 @@ def main() -> None:
         "AttemptOut", "SelectIn",
         "ReminderPolicyIn", "ReminderPolicyOut",
         "UploadLimitsOut", "UploadInitIn", "UploadOut",
-        "ActiveEditorOut", "SelectionIn", "OrderIn", "ResolveConflictIn", "ActivityPageOut",
+        "ActiveEditorOut", "CompletedPackageOut", "SelectionIn", "OrderIn", "ResolveConflictIn", "ActivityPageOut",
         "ReviewDetailOut", "ApproveIn", "SkipIn", "RescheduleIn", "RenderIn", "RenderOut",
-        "PushTokenIn", "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut",
+        "PushTokenIn", "EmptySkipIn", "EmptyRescheduleIn", "OccurrenceDecisionOut", "OneoffDateIn",
+        "OneoffDecisionIn", "OneoffDecisionOut",
+        "PackageEditIn", "EditConflictOut",
     ]))
     ANDROID_TARGET.parent.mkdir(parents=True, exist_ok=True)
     ANDROID_TARGET.write_text("\n".join(kt_lines), encoding="utf-8")

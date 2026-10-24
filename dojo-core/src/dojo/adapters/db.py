@@ -300,6 +300,10 @@ class YayinZamaniRow(Base):
         Index("ix_yayin_zamani_status_due", "status", "due_at"),
         Index("uq_yayin_zamani_regular_due", "due_at", unique=True,
               postgresql_where=text("kind = 'regular'")),
+        Index("uq_yayin_zamani_pending_regular", "kind", unique=True,
+              postgresql_where=text("kind = 'regular' AND status = 'pending'")),
+        Index("uq_yayin_zamani_pending_exception", "status", unique=True,
+              postgresql_where=text("kind IN ('manual', 'oneoff') AND status = 'pending'")),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -317,6 +321,8 @@ class YayinIncelemesiRow(Base):
             "occurrence_id", "revision_digest", name="uq_yayin_incelemesi_occ_rev"
         ),
         Index("ix_yayin_incelemesi_status", "status"),
+        Index("uq_yayin_incelemesi_actionable", text("(1)"), unique=True,
+              postgresql_where=text("status IN ('pending', 'failed', 'uncertain', 'publishing')")),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -324,6 +330,7 @@ class YayinIncelemesiRow(Base):
     package_folder: Mapped[str] = mapped_column(Text, nullable=False)
     revision_digest: Mapped[str] = mapped_column(Text, nullable=False)
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instagram_fail_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
@@ -885,6 +892,7 @@ class PostgresStore:
                     .where(YayinIncelemesiRow.id == review.id)
                     .values(
                         status=review.status,
+                        instagram_fail_message=review.instagram_fail_message,
                         version=review.version,
                         resolved_at=review.resolved_at,
                         resolved_by=review.resolved_by,
@@ -1364,9 +1372,7 @@ class PostgresStore:
         values.pop("id")
         stmt = pg_insert(YayinZamaniRow).values(**values)
         if occ.kind == "regular":
-            stmt = stmt.on_conflict_do_nothing(
-                index_elements=[YayinZamaniRow.due_at], index_where=text("kind = 'regular'"),
-            )
+            stmt = stmt.on_conflict_do_nothing()
         with self._session() as session:
             while True:
                 row = session.scalar(stmt.returning(YayinZamaniRow))
@@ -1377,6 +1383,12 @@ class PostgresStore:
                 if row is not None:
                     session.commit()
                     return self._occ_from_row(row)
+                if session.scalar(select(YayinZamaniRow.id).where(
+                    YayinZamaniRow.kind == "regular", YayinZamaniRow.status == "pending",
+                )) is not None:
+                    raise IntegrityError(
+                        "schedule uniqueness", {}, Exception("pending regular exists"),
+                    )
 
     def max_regular_due_at(self) -> datetime | None:
         with self._session() as session:
@@ -1406,11 +1418,12 @@ class PostgresStore:
                 .limit(1)
             ) is not None
 
-    def has_pending_manual(self) -> bool:
+    def has_pending_exception(self) -> bool:
         with self._session() as session:
             return session.scalar(
                 select(YayinZamaniRow.id)
-                .where(YayinZamaniRow.kind == "manual", YayinZamaniRow.status == "pending")
+                .where(YayinZamaniRow.kind.in_(("manual", "oneoff")),
+                       YayinZamaniRow.status == "pending")
                 .limit(1)
             ) is not None
 
@@ -1418,7 +1431,7 @@ class PostgresStore:
         with self._session() as session:
             rows = session.scalars(
                 select(YayinZamaniRow)
-                .where(YayinZamaniRow.status == "pending", YayinZamaniRow.due_at <= now)
+                .where(YayinZamaniRow.status.in_(("pending", "due")), YayinZamaniRow.due_at <= now)
                 .order_by(YayinZamaniRow.id)
             ).all()
             return [self._occ_from_row(r) for r in rows]
@@ -1461,6 +1474,7 @@ class PostgresStore:
                 resolved_by=review.resolved_by,
                 oneoff_occurrence_id=review.oneoff_occurrence_id,
                 last_reminded_at=review.last_reminded_at,
+                instagram_fail_message=review.instagram_fail_message,
             )
             session.add(row)
             session.commit()
@@ -1474,9 +1488,7 @@ class PostgresStore:
         """Insert once per occurrence/revision; add review_id to a new row's audit."""
         values = asdict(review)
         values.pop("id")
-        stmt = pg_insert(YayinIncelemesiRow).values(**values).on_conflict_do_nothing(
-            constraint="uq_yayin_incelemesi_occ_rev",
-        )
+        stmt = pg_insert(YayinIncelemesiRow).values(**values).on_conflict_do_nothing()
         with self._session() as session:
             while True:
                 row = session.scalar(stmt.returning(YayinIncelemesiRow))
@@ -1493,6 +1505,12 @@ class PostgresStore:
                         ))
                     session.commit()
                     return self._review_from_row(row), created
+                if session.scalar(select(YayinIncelemesiRow.id).where(
+                    YayinIncelemesiRow.status.in_(("pending", "failed", "uncertain", "publishing")),
+                )) is not None:
+                    raise IntegrityError(
+                        "review uniqueness", {}, Exception("actionable review exists"),
+                    )
 
     def get_by_occurrence_revision(
         self, occurrence_id: int, revision_digest: str
@@ -1512,7 +1530,9 @@ class PostgresStore:
         with self._session() as session:
             rows = session.scalars(
                 select(YayinIncelemesiRow)
-                .where(YayinIncelemesiRow.status == "pending")
+                .where(YayinIncelemesiRow.status.in_(
+                    ("pending", "failed", "uncertain", "publishing")
+                ))
                 .order_by(YayinIncelemesiRow.id)
             ).all()
             return [self._review_from_row(r) for r in rows]
@@ -1532,7 +1552,10 @@ class PostgresStore:
                     update(YayinIncelemesiRow)
                     .where(
                         YayinIncelemesiRow.id == review_id,
-                        YayinIncelemesiRow.status == "pending",
+                        YayinIncelemesiRow.status.in_(
+                            ("pending", "failed", "uncertain", "publishing")
+                            if status == "approved" else ("pending", "failed", "uncertain")
+                        ),
                         YayinIncelemesiRow.version == version,
                     )
                     .values(
@@ -1565,6 +1588,7 @@ class PostgresStore:
             resolved_by=row.resolved_by,
             oneoff_occurrence_id=row.oneoff_occurrence_id,
             last_reminded_at=row.last_reminded_at,
+            instagram_fail_message=row.instagram_fail_message,
         )
 
     def register_token(self, client_id: int, token: str, at: datetime) -> PushRegistration:

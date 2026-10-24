@@ -54,7 +54,7 @@ it("opens onboarding directly without dashboard data and reopens from settings",
   window.location.hash = "#/onboarding"; dashboardStatus = 500;
   render(<App />);
   await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
-  expect(screen.getAllByRole("navigation")[0].querySelectorAll("a")).toHaveLength(4);
+   expect(screen.getAllByRole("navigation")[0].querySelectorAll("a")).toHaveLength(5);
 });
 
 it("shows initial setup error without inventing completion or redirect", async () => {
@@ -100,18 +100,37 @@ it("does not show routine sync notices in the shell when returning to the tab", 
   await waitFor(() => expect(screen.getByRole("group", { name: tr.liveWorkspace })).not.toBeDisabled());
 });
 
-it("shows four areas and all five dashboard categories", async () => {
+it("shows completed packages in navigation and hides empty pending actions", async () => {
   render(<App />);
   await screen.findByText("03-08-2026 10-00");
   const nav = screen.getByRole("navigation");
-  for (const name of ["Kontrol Paneli", "Güncel Paket", "Etkinlik", "Ayarlar"])
+  for (const name of ["Kontrol Paneli", "Güncel Paket", "Tamamlanmış paketler", "Etkinlik", "Ayarlar"])
     expect(within(nav).getByRole("link", { name })).toBeInTheDocument();
-  for (const name of ["Dojo Paylaşım Paketi", "Sonraki Yayın Zamanı", "Bekleyen işlem", "Instagram", "Worker"])
+  for (const name of ["Dojo Paylaşım Paketi", "Sonraki Yayın Zamanı", "Instagram", "Worker"])
     expect(screen.getByText(name)).toBeInTheDocument();
   expect(screen.getByText(/17 Ağustos 2026.*10:00/)).toBeInTheDocument();
   expect(screen.queryByText(tr.live)).not.toBeInTheDocument();
   expect(screen.queryByText(/Son güncelleme:/)).not.toBeInTheDocument();
   expect(screen.getByRole("main").firstElementChild).toBe(screen.getByRole("heading", { name: tr.dashboard }).closest("header"));
+  expect(screen.queryByRole("heading", { name: "Bekleyen işlem" })).not.toBeInTheDocument();
+  fireEvent.click(within(nav).getByRole("link", { name: "Tamamlanmış paketler" }));
+  await screen.findByText("Henüz tamamlanmış paket yok.");
+  expect(window.location.hash).toBe("#/completed");
+  expect(screen.getByRole("heading", { level: 1, name: "Tamamlanmış paketler" })).toBeInTheDocument();
+});
+
+it("package panels collapse independently", async () => {
+  window.location.hash = "#/package";
+  snapshot.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 1, state: "review_ready", package_folder: snapshot.package!.folder_name, due_at: snapshot.generated_at }];
+  render(<App />);
+  await screen.findByRole("heading", { name: "Aktif paket medyası" });
+  expect(screen.queryByRole("button", { name: "Tamamlanmış paketler" })).not.toBeInTheDocument();
+  const panel = screen.getByRole("region", { name: "Aktif paket medyası" });
+  fireEvent.click(within(panel).getByRole("button", { name: "Aktif paket medyası panelini kapat" }));
+  expect(within(panel).queryByRole("button", { name: "Paketi temizle" })).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Bekleyen işlem" })).toBeVisible();
+  fireEvent.click(within(panel).getByRole("button", { name: "Aktif paket medyası panelini aç" }));
+  expect(within(panel).getByRole("button", { name: "Paketi temizle" })).toBeVisible();
 });
 
 it("reads dashboard and editor only on the pages that consume them", async () => {
@@ -164,7 +183,7 @@ it("pairs a browser and explains invalid and throttled codes", async () => {
 it("refreshes review arrivals and other-device resolution without reload", async () => {
   vi.useFakeTimers();
   await act(async () => { render(<App />); });
-  expect(screen.getByText("Bekleyen işlem yok")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Bekleyen işlem" })).not.toBeInTheDocument();
   snapshot.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 1, due_at: snapshot.generated_at, package_folder: "03-08-2026 10-00", state: "review_ready" }];
   await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   const link = screen.getByRole("link", { name: "İnceleme özeti" });

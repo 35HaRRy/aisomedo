@@ -364,6 +364,7 @@ class YayinIncelemesi:
     resolved_by: str | None = None
     oneoff_occurrence_id: int | None = None
     last_reminded_at: datetime | None = None
+    instagram_fail_message: str | None = None
 
 
 @dataclass(frozen=True)

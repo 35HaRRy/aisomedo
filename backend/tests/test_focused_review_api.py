@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import timedelta
+from dataclasses import replace
+from datetime import date, time, timedelta
 
 import pytest
-from dojo.adapters.stubs import StubReelRenderer
+from dojo import SchedulePlan
+from dojo.adapters.stubs import StubMetaPublisher, StubReelRenderer
+from dojo.exceptions import MetaPublishFailed, MetaPublishUncertain
 from dojo.testing import FIXED_AT
 from test_package_editor_api import app
 
@@ -48,7 +51,38 @@ def ready_review(tmp_path):
     publishing.render_preview()
     publishing.process_job(publishing.claim_next_job().job_id)
     review = publishing.list_pending_reviews()[0]
-    return client, publishing, pairing, cid, occurrence, review
+    return client, publishing, pairing, cid, replace(occurrence, status="due"), review
+
+
+@pytest.mark.parametrize("days", [0, 1])
+def test_reschedule_api_rejects_next_regular_or_later_without_resolving_review(tmp_path, days):
+    client, publishing, _, _, occurrence, review = ready_review(tmp_path)
+    publishing.set_plan(SchedulePlan(date(2026, 8, 3), time(10), enabled=True))
+    regular = publishing._schedule.next_regular_after(FIXED_AT)
+    response = client.post(f"/api/reviews/{review.id}/reschedule", json={
+        "version": review.version,
+        "new_due_at": (regular.due_at + timedelta(days=days)).isoformat(),
+    })
+    assert response.status_code == 400
+    assert publishing.list_pending_reviews() == [review]
+    assert next(o for o in publishing._schedule.list_all() if o.id == occurrence.id) == occurrence
+
+
+def test_reschedule_api_lists_oneoff_and_blocks_manual_request(tmp_path):
+    client, publishing, _, _, _, review = ready_review(tmp_path)
+    publishing.set_plan(SchedulePlan(date(2026, 8, 3), time(10), enabled=True))
+    due = FIXED_AT + timedelta(days=1)
+    response = client.post(f"/api/reviews/{review.id}/reschedule", json={
+        "version": review.version, "new_due_at": due.isoformat(),
+    })
+    assert response.status_code == 200
+    dashboard = client.get("/api/dashboard").json()
+    assert dashboard["next_slot"] == {
+        "kind": "oneoff", "due_at": due.isoformat(), "occurrence_id": None,
+    }
+    assert dashboard["pending_actions"] == []
+    assert dashboard["manual_review_allowed"] is False
+    assert client.post("/api/settings/manual-publish").status_code == 409
 
 
 def test_review_detail_binds_caption_and_authenticated_render_to_revision(tmp_path):
@@ -89,6 +123,38 @@ def test_approval_rejects_invalidated_render_without_resolving_review(tmp_path):
     response = client.post(f"/api/reviews/{review.id}/approve", json={"version": review.version})
     assert response.status_code == 409
     assert publishing.list_pending_reviews()[0].status == "pending"
+
+
+@pytest.mark.parametrize("action", ["approve", "skip", "reschedule"])
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_failed_upload_leaves_exact_review_and_all_decisions_available(tmp_path, action, uncertain):
+    client, publishing, _, _, occurrence, review = ready_review(tmp_path)
+    publishing._meta = StubMetaPublisher()
+    error_type = MetaPublishUncertain if uncertain else MetaPublishFailed
+    publishing._meta.fail_create = error_type("bad video")
+    before = client.get(f"/api/reviews/{review.id}").json()
+    response = client.post(f"/api/reviews/{review.id}/approve", json={"version": review.version})
+    assert response.status_code == 200
+    expected = "uncertain" if uncertain else "failed"
+    assert response.json()["publication"]["status"] == expected
+    message = response.json()["review"]["instagram_fail_message"]
+    assert "bad video" in message
+    before["review"].update(status=expected, instagram_fail_message=message)
+    assert response.json()["review"].items() >= before["review"].items()
+    assert client.get(f"/api/reviews/{review.id}").json() == before
+    assert next(o for o in publishing._schedule.list_all() if o.id == occurrence.id) == occurrence
+    pending = client.get("/api/dashboard").json()["pending_actions"]
+    assert pending[0]["review_id"] == review.id
+    assert pending[0]["state"] == "review_ready"
+    publishing._meta.fail_create = None
+    response = client.post(f"/api/reviews/{review.id}/{action}", json={
+        "version": review.version, "confirmed": True,
+        "new_due_at": (FIXED_AT + timedelta(days=1)).isoformat(),
+    })
+    assert response.status_code == 200
+    assert response.json()["review"]["status"] == {
+        "approve": "approved", "skip": "skipped", "reschedule": "rescheduled",
+    }[action]
 
 
 @pytest.mark.parametrize("action", ["approve", "skip", "reschedule"])

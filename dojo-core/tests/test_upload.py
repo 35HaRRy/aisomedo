@@ -313,6 +313,26 @@ def test_process_job_validation_failure_marks_failed_and_cleans(tmp_path):
     assert not (tmp_path / seam.get_active_package().folder_name / "media").exists()
 
 
+def test_process_job_unexpected_processor_error_marks_failed(tmp_path):
+    store, seam = make_seam(tmp_path)
+    status = complete(tmp_path, seam)
+    claimed = seam.claim_next_job()
+    assert claimed is not None
+
+    class ExplodingProcessor:
+        def process(self, *args, **kwargs):
+            raise FileNotFoundError("ffprobe")
+
+    seam._media = ExplodingProcessor()
+
+    seam.process_job(claimed.job_id)
+
+    assert seam.get_upload_status(status.upload_id).status == "failed"
+    assert "media processing failed" in seam.get_upload_status(status.upload_id).error_reason
+    assert store.get_by_upload(store.get(status.upload_id).id).status == "failed"
+    assert not (tmp_path / "tmp" / status.upload_id).exists()
+
+
 def test_claim_next_job_returns_one_job(tmp_path):
     store, seam = make_seam(tmp_path)
     complete(tmp_path, seam)

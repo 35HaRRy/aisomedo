@@ -265,6 +265,8 @@
           "intro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -298,6 +300,8 @@
           "outro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -432,6 +436,8 @@
           "intro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -465,6 +471,8 @@
           "outro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -868,6 +876,17 @@
             ],
             "title": "Review Id"
           },
+          "review_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Status"
+          },
           "state": {
             "enum": [
               "review_ready",
@@ -934,6 +953,11 @@
           "instagram": {
             "$ref": "#/components/schemas/DashboardInstagramOut"
           },
+          "manual_review_allowed": {
+            "default": true,
+            "title": "Manual Review Allowed",
+            "type": "boolean"
+          },
           "next_slot": {
             "anyOf": [
               {
@@ -943,6 +967,20 @@
                 "type": "null"
               }
             ]
+          },
+          "next_slots": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DashboardSlotOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Slots"
           },
           "package": {
             "anyOf": [
@@ -990,6 +1028,17 @@
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "occurrence_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurrence Id"
           }
         },
         "required": [
@@ -1537,6 +1586,90 @@
           "status"
         ],
         "title": "OccurrenceOut",
+        "type": "object"
+      },
+      "OneoffDateIn": {
+        "properties": {
+          "expected_due_at": {
+            "format": "date-time",
+            "title": "Expected Due At",
+            "type": "string"
+          },
+          "new_due_at": {
+            "format": "date-time",
+            "title": "New Due At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_due_at",
+          "new_due_at"
+        ],
+        "title": "OneoffDateIn",
+        "type": "object"
+      },
+      "OneoffDecisionIn": {
+        "properties": {
+          "action": {
+            "enum": [
+              "review",
+              "skip"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "expected_due_at": {
+            "format": "date-time",
+            "title": "Expected Due At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_due_at",
+          "action"
+        ],
+        "title": "OneoffDecisionIn",
+        "type": "object"
+      },
+      "OneoffDecisionOut": {
+        "properties": {
+          "due_at": {
+            "format": "date-time",
+            "title": "Due At",
+            "type": "string"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          },
+          "package_folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Folder"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "occurrence_id",
+          "due_at",
+          "status",
+          "package_folder"
+        ],
+        "title": "OneoffDecisionOut",
         "type": "object"
       },
       "OrderIn": {
@@ -2135,6 +2268,17 @@
           "id": {
             "title": "Id",
             "type": "integer"
+          },
+          "instagram_fail_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instagram Fail Message"
           },
           "occurrence_id": {
             "title": "Occurrence Id",
@@ -2774,6 +2918,110 @@
           }
         },
         "summary": "Dashboard",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
+    "/api/dashboard/occurrences/{occurrence_id}": {
+      "patch": {
+        "operationId": "change_oneoff_date_api_dashboard_occurrences__occurrence_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OneoffDateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardSlotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Oneoff Date",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
+    "/api/dashboard/occurrences/{occurrence_id}/decision": {
+      "post": {
+        "operationId": "decide_oneoff_api_dashboard_occurrences__occurrence_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OneoffDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OneoffDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Oneoff",
         "tags": [
           "dashboard"
         ]

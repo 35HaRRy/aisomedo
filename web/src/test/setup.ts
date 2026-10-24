@@ -6,6 +6,12 @@ import { resetResourceVersions } from "../api/client";
 import { readyLive } from "./live";
 import { draftMemory } from "./drafts";
 
+if (typeof URL.createObjectURL !== "function") {
+  let sequence = 0;
+  Object.defineProperty(URL, "createObjectURL", { value: () => `blob:preview-${++sequence}` });
+}
+if (typeof URL.revokeObjectURL !== "function") Object.defineProperty(URL, "revokeObjectURL", { value: () => {} });
+
 vi.mock("../packages/drafts", async () => {
   const actual = await vi.importActual<typeof import("../packages/drafts")>("../packages/drafts");
   const { draftMemory } = await import("./drafts");

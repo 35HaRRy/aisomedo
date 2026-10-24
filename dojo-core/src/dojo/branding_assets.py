@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import math
 import re
+import subprocess
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
@@ -14,7 +17,7 @@ from dojo.exceptions import BrandingAssetInvalid, BrandingAssetNotFound, Brandin
 
 MAX_BRANDING_BYTES = 10 * 1024**2
 MAX_BRANDING_SIDE = 4096
-_ASSET_ID = re.compile(r"[0-9a-f]{32}\.(png|jpg)")
+_ASSET_ID = re.compile(r"[0-9a-f]{32}\.(png|jpg|mp4|mov|webm|mkv|avi)")
 
 
 def _validate_png_container(data: bytes) -> None:
@@ -45,11 +48,67 @@ class BrandingAsset:
 
 
 class BrandingAssets:
-    """Independent immutable branding images, never package-media uploads."""
+    """Independent immutable branding media, never package-media uploads."""
 
     def __init__(self, media_root: Path) -> None:
         self._media_root = media_root.resolve()
         self._directory = self._media_root / "branding" / "assets"
+
+    def save_media(self, data: bytes) -> BrandingAsset:
+        """Accept images or validated, self-contained video containers for cards."""
+        if len(data) > MAX_BRANDING_BYTES:
+            raise BrandingAssetTooLarge("branding media exceeds 10 MiB")
+        if data.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8")):
+            return self.save_image(data)
+        self._directory.mkdir(parents=True, exist_ok=True)
+        if self._directory.resolve() != self._directory:
+            raise BrandingAssetInvalid("branding directory must not contain symlinks")
+        identifier = uuid4().hex
+        temporary = self._directory / f".{identifier}.tmp"
+        restrictions = [
+            "-protocol_whitelist", "file,pipe", "-format_whitelist", "mov,matroska,webm,avi",
+        ]
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(data)
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", *restrictions, "-show_streams", "-show_format",
+                 "-of", "json", str(temporary)],
+                capture_output=True, check=True, timeout=30,
+            )
+            info = json.loads(probe.stdout)
+            container = info["format"]["format_name"].split(",")
+            if "mov" in container:
+                brand = info["format"].get("tags", {}).get("major_brand", "qt").strip()
+                extension = "mov" if brand == "qt" else "mp4"
+            elif "matroska" in container or "webm" in container:
+                extension = "webm" if b"webm" in data[:64] else "mkv"
+            elif "avi" in container:
+                extension = "avi"
+            else:
+                raise BrandingAssetInvalid("unsupported video container")
+            video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
+            duration = float(info["format"].get("duration", video.get("duration", 0)))
+            if (not math.isfinite(duration) or duration <= 0
+                    or not 0 < video["width"] <= MAX_BRANDING_SIDE
+                    or not 0 < video["height"] <= MAX_BRANDING_SIDE):
+                raise BrandingAssetInvalid("video duration or dimensions invalid")
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-xerror", *restrictions, "-i", str(temporary),
+                 "-map", "0:v:0", "-map", "0:a?", "-f", "null", "-"],
+                capture_output=True, check=True, timeout=30,
+            )
+            asset_id = f"{identifier}.{extension}"
+            temporary.replace(self._directory / asset_id)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, StopIteration) as exc:
+            raise BrandingAssetInvalid(
+                "a valid MP4, MOV, WebM, MKV or AVI video is required"
+            ) from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+        content_type = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm",
+                        "mkv": "video/x-matroska", "avi": "video/x-msvideo"}[extension]
+        return BrandingAsset(asset_id, f"branding/assets/{asset_id}", content_type)
 
     def save_image(self, data: bytes) -> BrandingAsset:
         if len(data) > MAX_BRANDING_BYTES:

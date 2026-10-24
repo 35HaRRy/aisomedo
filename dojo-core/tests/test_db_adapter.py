@@ -120,10 +120,11 @@ def test_review_different_revision_allowed(pg_store: PostgresStore) -> None:
     occ = pg_store.create(
         YayinZamani(id=0, kind="regular", due_at=FIXED_AT, status="pending", created_at=FIXED_AT)
     )
-    _review(pg_store, occ.id, "digest-a")
+    first = _review(pg_store, occ.id, "digest-a")
+    pg_store.resolve_if_pending(first.id, first.version, "skipped", FIXED_AT, "worker")
     _review(pg_store, occ.id, "digest-b")
     assert pg_store.list_pending()[0].occurrence_id == occ.id
-    assert len(pg_store.list_pending()) == 2
+    assert len(pg_store.list_pending()) == 1
 
 
 def test_resolve_if_pending_cas_win_then_lose(pg_store: PostgresStore) -> None:
@@ -164,7 +165,7 @@ def test_review_update_persists_oneoff_occurrence_id(pg_store: PostgresStore) ->
 
 def test_next_regular_after_skips_non_regular(pg_store: PostgresStore) -> None:
     pg_store.create(
-        YayinZamani(id=0, kind="manual", due_at=FIXED_AT, status="pending", created_at=FIXED_AT)
+        YayinZamani(id=0, kind="manual", due_at=FIXED_AT, status="resolved", created_at=FIXED_AT)
     )
     pg_store.create(
         YayinZamani(id=0, kind="oneoff", due_at=FIXED_AT, status="pending", created_at=FIXED_AT)

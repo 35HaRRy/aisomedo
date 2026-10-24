@@ -1,7 +1,10 @@
 import json
 from dataclasses import replace
+from datetime import date, time, timedelta
 from time import monotonic
 
+from dojo import SchedulePlan, YayinZamani
+from dojo.testing import FIXED_AT
 from dojo.worker_health import current_boot_id
 from test_api import make_app
 
@@ -31,6 +34,19 @@ def test_dashboard_cookie_auth_and_revocation(tmp_path):
     assert publishing.get_active_package() is None
     pairing.revoke_client(client_id=client_id, requester="cli")
     assert client.get("/api/dashboard").status_code == 401
+
+
+def test_dashboard_returns_pending_regular_and_oneoff_together(tmp_path):
+    client, publishing, _, _ = paired(tmp_path)
+    publishing.set_plan(SchedulePlan(date(2026, 8, 3), time(10), enabled=True))
+    due = FIXED_AT + timedelta(days=1)
+    oneoff = publishing._schedule.create(YayinZamani(0, "oneoff", due, "pending", FIXED_AT))
+    body = client.get("/api/dashboard").json()
+    assert body.get("next_slots") == [
+        {"kind": "oneoff", "due_at": due.isoformat(), "occurrence_id": oneoff.id},
+        {"kind": "regular", "due_at": "2026-08-17T10:00:00+03:00",
+         "occurrence_id": publishing._schedule.next_regular_after(FIXED_AT).id},
+    ]
 
 
 def test_optional_failure_does_not_erase_publishing_package(tmp_path):

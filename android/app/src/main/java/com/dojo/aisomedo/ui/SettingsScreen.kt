@@ -81,7 +81,7 @@ import java.util.Locale
         TimePickerDialog(context, { _, hour, minute ->
             if (model.state.value.canConfigure("reminders")) model.setDraft(key, String.format(Locale.ROOT, "%02d:%02d", hour, minute), "reminders")
         }, initial.hour, initial.minute, true).show()
-    }, enabled = state.canConfigure("reminders"), modifier = Modifier.testTag(key)) {
+    }, enabled = state.canConfigure("reminders"), modifier = Modifier.fillMaxWidth().testTag(key)) {
         Text(stringResource(label, value.ifBlank { stringResource(R.string.choose) }))
     }
 }

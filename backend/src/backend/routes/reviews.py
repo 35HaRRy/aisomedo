@@ -8,6 +8,7 @@ from dojo import (
     Client,
     DojoPublishing,
     LogoNotConfigured,
+    ManualPublishConflict,
     OccurrenceChanged,
     OccurrenceNotFound,
     PublicationInProgress,
@@ -102,7 +103,7 @@ def reschedule_empty_occurrence(
         )
     except OccurrenceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (OccurrenceChanged, PublicationInProgress) as exc:
+    except (OccurrenceChanged, PublicationInProgress, ManualPublishConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RescheduleTimeInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -117,6 +118,7 @@ class ReviewOut(BaseModel):
     status: str
     created_at: datetime
     version: int
+    instagram_fail_message: str | None = None
 
 
 class ReviewDetailOut(BaseModel):
@@ -211,7 +213,7 @@ def reschedule_review(
         )
     except ReviewNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (ReviewStale, ReviewAlreadyHandled, PublicationInProgress) as exc:
+    except (ReviewStale, ReviewAlreadyHandled, PublicationInProgress, ManualPublishConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RescheduleTimeInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

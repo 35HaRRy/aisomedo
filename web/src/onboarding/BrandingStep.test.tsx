@@ -29,6 +29,7 @@ it("uploads and installs only logo with authenticated preview", async () => {
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
   expect(document.body.textContent).not.toContain("legacy/logo.png");
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["image"], "logo.png", { type: "image/png" })] } });
+  expect(screen.getByRole("img", { name: "Seçilen logo önizlemesi" })).toHaveAttribute("src", expect.stringMatching(/^blob:/));
   fireEvent.click(screen.getByRole("button", { name: "Logoyu kaydet" }));
   await waitFor(() => expect(sent).toHaveBeenCalledWith({ logo_asset: "branding/assets/new.png" }));
 });
@@ -59,7 +60,7 @@ it("keeps old defaults after backend dimension rejection", async () => {
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["image"], "logo.png", { type: "image/png" })] } });
   fireEvent.click(screen.getByRole("button", { name: "Logoyu kaydet" }));
   await screen.findByRole("alert"); expect(sent).not.toHaveBeenCalled(); expect(saved).not.toHaveBeenCalled();
-  expect(screen.getByText(/Logo tanımlı/)).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Seçilen logo önizlemesi" })).toBeInTheDocument();
 });
 it("late upload cannot install after leaving step", async () => {
   const { leave, sent } = mount("logo");

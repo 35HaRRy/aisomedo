@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { AttemptOut, StatusOut } from "../api/openapi";
 import { tr } from "../i18n";
 import { startLiveRefresh } from "../live";
 import { useLiveData } from "../useLiveData";
 import { useOnboarding } from "./useOnboarding";
+import { StepActions } from "./forms";
 
 export function InstagramStep({ onSaved }: { onSaved: () => void }) {
+  const formId = useId();
   const { save } = useOnboarding();
   const snapshot = useLiveData(api.instagram, true, ["settings", "setup"]);
   const [verified, setVerified] = useState<StatusOut | null>(null);
@@ -93,17 +95,17 @@ export function InstagramStep({ onSaved }: { onSaved: () => void }) {
     {status?.ig_username && <p>@{status.ig_username} · {status.health === "healthy" ? "Bağlantı doğrulandı" : "Yeniden bağlantı gerekli"}</p>}
     {status && !status.ig_username && <p>{tr.noAccount}</p>}
     {!status && !snapshot.error && <p role="status">{tr.loading}</p>}
-    {snapshot.error && <div role="alert">{tr.instagramUnavailable}<button onClick={snapshot.retry}>{tr.retry}</button></div>}
+    {snapshot.error && <div role="alert">{tr.instagramUnavailable}<StepActions><button onClick={snapshot.retry}>{tr.retry}</button></StepActions></div>}
     {error && <p role="alert">{error}</p>}
-    <form onSubmit={event => { event.preventDefault(); void connect(); }}>
+    <form id={formId} onSubmit={event => { event.preventDefault(); void connect(); }}>
       <label htmlFor="instagram-token">Instagram erişim tokenı</label>
       <input id="instagram-token" type="password" autoComplete="off" spellCheck={false} value={token} maxLength={16384} disabled={busy} onChange={event => setToken(event.target.value)} />
       <small>Token yalnızca doğrulama için sunucuya gönderilir; tarayıcıda saklanmaz.</small>
-      <button className="primary" disabled={busy || !token.trim()}>{busy ? "Bağlantı doğrulanıyor…" : "Token ile bağlan"}</button>
+      <StepActions><button form={formId} className="primary" disabled={busy || !token.trim()}>{busy ? "Bağlantı doğrulanıyor…" : "Token ile bağlan"}</button></StepActions>
     </form>
-    <button disabled={busy} onClick={() => void start()}>Instagram ile yetkilendir</button>
-    {authUrl && <a href={authUrl} target="_blank" rel="noopener noreferrer">Yetkilendirme sayfasını aç</a>}
+    <StepActions><button disabled={busy} onClick={() => void start()}>Instagram ile yetkilendir</button>
+    {authUrl && <a href={authUrl} target="_blank" rel="noopener noreferrer">Yetkilendirme sayfasını aç</a>}</StepActions>
     {attempt && <p role="status">Yeni pencerede yetkilendirmeyi tamamlayın. Bu sayfa sonucu kontrol ediyor.</p>}
-    {candidates.map(candidate => <button key={candidate.ig_user_id} disabled={busy} onClick={() => void select(candidate.ig_user_id)}>@{candidate.ig_username} hesabını seç</button>)}
+    <StepActions>{candidates.map(candidate => <button key={candidate.ig_user_id} disabled={busy} onClick={() => void select(candidate.ig_user_id)}>@{candidate.ig_username} hesabını seç</button>)}</StepActions>
   </div>;
 }

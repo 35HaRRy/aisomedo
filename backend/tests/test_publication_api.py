@@ -161,8 +161,7 @@ def test_retry_blocked_while_publishing_409(tmp_path: Path):
     assert resp.status_code == 409
 
 
-def test_reconcile_poll_error_keeps_publishing_via_api(tmp_path: Path):
-    # Issue #19: reconcile polling errors keep -publishing via the endpoint.
+def test_reconcile_poll_error_opens_uncertain_review_via_api(tmp_path: Path):
     from dojo.adapters.stubs import StubMetaPublisher
 
     client, publishing, pairing, _ = make_app(tmp_path)
@@ -196,8 +195,9 @@ def test_reconcile_poll_error_keeps_publishing_via_api(tmp_path: Path):
     assert resp.status_code == 200
     body = resp.json()["publication"]
     assert body["status"] == "uncertain"
-    assert body["allowed_actions"] == ["reconcile"]
-    assert publishing._packages.get_publishing() is not None
+    assert body["allowed_actions"] == ["retry", "review", "skip", "reschedule"]
+    assert publishing._packages.get_publishing() is None
+    assert publishing.list_pending_reviews()[0].status == "uncertain"
     assert publishing._packages.list_completed() == []
 
 

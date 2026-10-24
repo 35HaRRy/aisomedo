@@ -73,7 +73,7 @@ def test_ensure_schedule_upto_backfills_and_one_future_row(tmp_path) -> None:
     seam.ensure_schedule_upto(now)
 
     reg = [o for o in store.list_all() if o.kind == "regular"]
-    due = [o.due_at for o in store.list_due(now)]
+    due = sorted(o.due_at for o in store.list_due(now))
     # Mondays at +0, +14, +21(+14 would be the future row) up to now
     assert due == [anchor, anchor + timedelta(days=14)]
     # exactly one future row: the next Monday after now

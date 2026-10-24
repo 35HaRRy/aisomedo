@@ -6,6 +6,7 @@ import { useUploads } from "../uploads/UploadProvider";
 import { usePackageEditorContext } from "./PackageEditorProvider";
 import { VideoSectionEditor } from "./VideoSectionEditor";
 import { MediaActionIcon } from "./MediaActionIcon";
+import { CollapsiblePanel } from "../components/CollapsiblePanel";
 
 export function ActivePackagePanel() {
   const editor = usePackageEditorContext(), copy = tr.packageManagement;
@@ -60,9 +61,9 @@ export function ActivePackagePanel() {
   const canDrop = (event: DragEvent<HTMLLIElement>) => !!dragging.current && !blocked && !(event.target instanceof Element && event.target.closest(".video-section-editor"));
   const excess = snapshot && editor.proposedTotal !== null ? editor.proposedTotal - snapshot.montage.max_duration_seconds : null;
   return <>
-    <section className="summary-sheet package-editor" aria-labelledby="active-media-title">
-      <div className="package-section-heading"><h2 id="active-media-title">{copy.activeMedia}</h2><div className="upload-actions"><button disabled={editor.busy || editor.offline} onClick={() => void editor.refresh()}>{copy.refresh}</button>
-        <button className="danger" disabled={editor.busy || editor.offline || !editor.pendingClear && (!snapshot || editor.loading || editor.stale)} onClick={() => void clearPackage()}>{editor.pendingClear ? copy.retryClear : copy.clear}</button></div></div>
+    <CollapsiblePanel className="summary-sheet package-editor" title={copy.activeMedia} actions={<>
+      <button disabled={editor.busy || editor.offline} onClick={() => void editor.refresh()}>{copy.refresh}</button>
+      <button className="danger" disabled={editor.busy || editor.offline || !editor.pendingClear && (!snapshot || editor.loading || editor.stale)} onClick={() => void clearPackage()}>{editor.pendingClear ? copy.retryClear : copy.clear}</button></>}>
       {editor.loading && !snapshot && <p role="status">{tr.loading}</p>}
       {editor.error && <p role="alert" className="notice">{copy.errors[editor.error]}</p>}
       {editor.offline && <p role="status" className="notice">{copy.offline}</p>}
@@ -86,13 +87,13 @@ export function ActivePackagePanel() {
         <div className="upload-actions package-save-actions"><button className="primary" disabled={!editor.canSave} aria-describedby="package-save-reason" onClick={() => void editor.save()}>{editor.busy ? copy.saving : copy.save}</button>
           <button title={copy.discardHelp} disabled={!editor.dirty || editor.busy || editor.offline} onClick={() => editor.discard()}>{copy.discard}</button></div>
         <p id="package-save-reason" className="muted" role="status">{editor.saveBlockedReason ? copy.saveReasons[editor.saveBlockedReason] : ""}</p>
-        <section className="saved-reel-preview" aria-labelledby="saved-reel-title">
-          <h3 id="saved-reel-title">{copy.savedPreview}</h3><p className="muted">{copy.renderHelp}</p>
+        <CollapsiblePanel className="saved-reel-preview" title={copy.savedPreview} level={3}>
+          <p className="muted">{copy.renderHelp}</p>
           <p role="status">{copy.renderStates[snapshot.render_status ?? "missing"]}</p>
           {snapshot.render_status === "ready" && snapshot.render_preview_url && <video key={snapshot.render_preview_url} src={snapshot.render_preview_url} controls playsInline preload="metadata" aria-label={copy.savedPreview} onError={() => setPreviewFailed(true)} />}
           {previewFailed && <p role="alert" className="notice">{tr.editor.previewFailed}</p>}
           <button disabled={blocked || !ordered.length || snapshot.montage.over_limit || !snapshot.montage.duration_complete || snapshot.render_status === "queued" || snapshot.render_status === "processing"} onClick={() => void editor.renderPreview()}>{copy.render}</button>
-        </section>
+        </CollapsiblePanel>
         {!ordered.length && <p>{copy.noMedia}</p>}
         <ol aria-label={copy.order} className="package-media-list package-media-grid">{ordered.map((media, index) => <li key={media.media_id} data-editor-open={opened === media.media_id || undefined} data-selected={selected === media.media_id || undefined} data-dragging={dragged === media.media_id || undefined} data-drop-position={dropTarget?.id === media.media_id ? dropTarget.position : undefined}
           onDragOver={event => {
@@ -129,9 +130,9 @@ export function ActivePackagePanel() {
           {opened === media.media_id && media.is_video && <VideoSectionEditor key={media.media_id} media={media} ranges={editor.draft[media.media_id] ?? []} inputs={editor.draftInputs[media.media_id] ?? []} validationError={editor.validationErrors[media.media_id] ?? null} disabled={blocked}
             onChange={ranges => editor.setRanges(media.media_id, ranges)} onInputChange={(i, bound, value) => editor.setInput(media.media_id, i, bound, value)} />}
         </li>)}</ol>
-        {!!removed.length && <section className="removed-media" aria-labelledby="removed-media-title"><h3 id="removed-media-title">{copy.removed}</h3><p className="muted">{copy.removedHelp}</p><ul className="package-media-list">{removed.map(media => <li key={media.media_id} className="package-media-heading"><h3>{media.filename}</h3>
-          <button className="media-icon-button" disabled={blocked} aria-label={`${media.filename} ${copy.restoreLabel}`} title={`${media.filename} ${copy.restoreLabel}`} onClick={() => void editor.restore(media.media_id)}><MediaActionIcon action="restore" /></button></li>)}</ul></section>}
+        {!!removed.length && <CollapsiblePanel className="removed-media" title={copy.removed} level={3}><p className="muted">{copy.removedHelp}</p><ul className="package-media-list">{removed.map(media => <li key={media.media_id} className="package-media-heading"><h3>{media.filename}</h3>
+          <button className="media-icon-button" disabled={blocked} aria-label={`${media.filename} ${copy.restoreLabel}`} title={`${media.filename} ${copy.restoreLabel}`} onClick={() => void editor.restore(media.media_id)}><MediaActionIcon action="restore" /></button></li>)}</ul></CollapsiblePanel>}
       </>}
-    </section><fieldset className="package-upload-controls" disabled={editor.busy || editor.offline || !!editor.pendingClear} aria-label={tr.upload.title}><UploadPanel /></fieldset>
+    </CollapsiblePanel><fieldset className="package-upload-controls" disabled={editor.busy || editor.offline || !!editor.pendingClear} aria-label={tr.upload.title}><UploadPanel /></fieldset>
   </>;
 }

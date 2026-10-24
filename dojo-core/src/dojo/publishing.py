@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from dojo.adapters.clock import ISTANBUL, SystemClock
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
-from dojo.dashboard import PendingAction, PublishingDashboard, next_slot
+from dojo.dashboard import NextSlot, PendingAction, PublishingDashboard, next_slot
 from dojo.exceptions import (
     ActivePackageExists,
     BrandingInvalid,
@@ -145,6 +145,20 @@ def _package_edit[**P, T](method: Callable[P, T]) -> Callable[P, T]:
         with seam._packages.package_lock(), seam._packages.command_transaction():
             return method(*args, **kwargs)
     return edit
+
+
+def _review_decision[**P, T](method: Callable[P, T]) -> Callable[P, T]:
+    """Reject concurrent decisions rather than queue them behind publication."""
+    @wraps(method)
+    def decide(*args: P.args, **kwargs: P.kwargs) -> T:
+        seam = cast("DojoPublishing", args[0])
+        with seam._packages.package_lock(wait=False) as acquired:
+            if not acquired:
+                raise PublicationInProgress(
+                    "review publication or package operation is in progress"
+                )
+            return method(*args, **kwargs)
+    return decide
 
 REMINDER_INTERVAL_KEY = "reminders.interval_minutes"
 REMINDER_START_KEY = "reminders.delivery_start"
@@ -434,16 +448,23 @@ class DojoPublishing:
                 and digest is not None and review.revision_digest == digest
                 and manifest.get("render_revision") == digest
             )
+            if not ready:
+                continue
+            try:
+                resolve_artifact(self.media_root / review.package_folder, manifest, "render/reel.mp4")
+            except MediaNotFound:
+                continue
             actions.append(PendingAction(
                 occurrence_id=review.occurrence_id, review_id=review.id,
                 version=review.version,
                 due_at=occurrence.due_at if occurrence else review.created_at,
                 package_folder=review.package_folder,
-                state="review_ready" if ready else "preparing" if has_media else "empty_package",
+                state="review_ready",
+                review_status=review.status if review.status != "pending" else None,
             ))
         reviewed = {r.occurrence_id for r in reviews}
         for occurrence in occurrences:
-            if (occurrence.status == "pending" and occurrence.due_at <= now
+            if (occurrence.status in ("pending", "due") and occurrence.due_at <= now
                     and occurrence.id not in reviewed):
                 actions.append(PendingAction(
                     occurrence_id=occurrence.id, review_id=None, version=None,
@@ -457,6 +478,10 @@ class DojoPublishing:
                 actions, key=lambda action: (action.due_at, action.occurrence_id),
             ),
             plan=plan,
+            manual_review_allowed=not reviews and not actions and not self._schedule.has_pending_exception(),
+            next_slots=[NextSlot(o.kind, o.due_at, o.id) for o in sorted(
+                occurrences, key=lambda o: (o.due_at, o.id),
+            ) if o.status == "pending"],
         )
 
     # --- multi-open-folder recovery (issue #20) ---
@@ -1095,6 +1120,9 @@ class DojoPublishing:
         except MediaValidationError as exc:
             self._fail_job(job, str(exc))
             return
+        except Exception as exc:  # noqa: BLE001 - a crashed processor must not strand the upload
+            self._fail_job(job, f"media processing failed: {exc}")
+            return
         self.finalize_media(job.job_id, processed)
 
     @_package_edit
@@ -1315,9 +1343,11 @@ class DojoPublishing:
         with self._packages.package_lock(wait=False) as acquired:
             if not acquired or self._setup is not None and not self._setup.is_ready():
                 return
-            self.ensure_schedule_upto()
-            self._ensure_reviews_for_due()
+            with self._packages.command_transaction():
+                self.ensure_schedule_upto()
+                self._ensure_reviews_for_due()
 
+    @_package_edit
     def _ensure_reviews_for_due(self) -> None:
         """Create at most one durable review per due occurrence for the active revision.
 
@@ -1326,6 +1356,7 @@ class DojoPublishing:
         review) or, when the render is already current, create it directly. An empty
         active package creates no review and leaves the occurrence pending.
         """
+        self._select_due_occurrence()
         package = self._packages.get_active()
         if package is None:
             return
@@ -1343,66 +1374,109 @@ class DojoPublishing:
         else:
             self._enqueue_render(package, digest)
 
+    @_package_edit
     def _create_review_if_due(self, package: Package, digest: str) -> None:
-        """Create a durable review for each due pending occurrence lacking one.
+        """Create one durable review for the latest due occurrence and revision.
 
         Idempotent: a review already recorded for ``(occurrence_id, revision_digest)``
         is never duplicated, so scheduler re-runs and restarts add nothing.
         """
         if self._setup is not None and not self._setup.is_ready():
             return
-        plan = self.get_plan()
-        regular_enabled = (
-            plan.enabled and plan.anchor_date is not None
-            and plan.anchor_date.weekday() == 0 and plan.anchor_time is not None
-        )
-        due = self._schedule.list_due(self._clock.now())
-        if not due:
+        occurrence = self._select_due_occurrence()
+        if occurrence is None:
+            return
+        existing = self._reviews.get_by_occurrence_revision(occurrence.id, digest)
+        if existing is not None and (
+            existing.status != "skipped" or existing.resolved_by != "worker"
+        ):
+            return
+        self._skip_superseded_reviews(occurrence.id, digest=digest)
+        if existing is not None:
+            # Only revision supersession leaves the same occurrence due. User decisions
+            # resolve it, so they can never reach this path or be reopened by a render.
+            reopened = self._reviews.update(replace(
+                existing, status="pending", version=existing.version + 1,
+                resolved_at=None, resolved_by=None, last_reminded_at=None,
+            ))
+            self._audit.append(AuditEvent(
+                action="review.reopened", actor="worker", occurred_at=self._clock.now(),
+                details={"review_id": reopened.id, "occurrence_id": occurrence.id,
+                         "revision_digest": digest, "version": reopened.version},
+            ))
             return
         manifest = self._load_manifest(package)
         caption = manifest.get("caption")
         now = self._clock.now()
-        for occurrence in due:
-            if occurrence.kind == "regular" and not regular_enabled:
+        self._reviews.create_review_once(
+            YayinIncelemesi(
+                id=0,
+                occurrence_id=occurrence.id,
+                package_folder=package.folder_name,
+                revision_digest=digest,
+                caption=caption,
+                status="pending",
+                created_at=now,
+            ),
+            audit=AuditEvent(
+                action="review.created",
+                actor="worker",
+                occurred_at=now,
+                details={
+                    "occurrence_id": occurrence.id,
+                    "package": package.folder_name,
+                    "revision_digest": digest,
+                },
+            ),
+        )
+
+    def _select_due_occurrence(self) -> YayinZamani | None:
+        """Only the latest due occurrence owns the pending review, including render waits."""
+        if any(r.status == "publishing" for r in self._reviews.list_pending()):
+            return None  # Never supersede an Instagram request still being reconciled.
+        plan = self.get_plan()
+        due = [o for o in self._schedule.list_due(self._clock.now())
+               if o.kind != "regular" or plan.enabled]
+        occurrence = max(due, key=lambda o: (o.due_at, o.id), default=None)
+        if occurrence is None:
+            return None
+        self._skip_superseded_reviews(occurrence.id)
+        for older in due:
+            if older.id != occurrence.id:
+                self._resolve_occurrence(older.id, self._clock.now())
+        if occurrence.status == "pending":
+            occurrence = self._schedule.update(replace(occurrence, status="due"))
+        return occurrence
+
+    def _skip_superseded_reviews(self, occurrence_id: int, *, digest: str | None = None) -> None:
+        now = self._clock.now()
+        for review in self._reviews.list_pending():
+            if (review.occurrence_id == occurrence_id
+                    and (digest is None or review.revision_digest == digest)):
                 continue
-            if (
-                self._reviews.get_by_occurrence_revision(occurrence.id, digest)
-                is not None
-            ):
-                continue
-            self._reviews.create_review_once(
-                YayinIncelemesi(
-                    id=0,
-                    occurrence_id=occurrence.id,
-                    package_folder=package.folder_name,
-                    revision_digest=digest,
-                    caption=caption,
-                    status="pending",
-                    created_at=now,
-                ),
-                audit=AuditEvent(
-                    action="review.created",
-                    actor="worker",
-                    occurred_at=now,
-                    details={
-                        "occurrence_id": occurrence.id,
-                        "package": package.folder_name,
-                        "revision_digest": digest,
-                    },
-                )
+            skipped = self._reviews.resolve_if_pending(
+                review.id, review.version, "skipped", now, "worker",
             )
+            if skipped is None:
+                continue
+            if review.occurrence_id != occurrence_id:
+                self._resolve_occurrence(review.occurrence_id, now)
+            self._audit.append(AuditEvent(
+                action="review.skipped", actor="worker", occurred_at=now,
+                details={"review_id": review.id, "occurrence_id": review.occurrence_id,
+                         "status": "skipped", "superseded_by_occurrence_id": occurrence_id},
+            ))
 
     def list_pending_reviews(self) -> list[YayinIncelemesi]:
         return self._reviews.list_pending()
 
-    @_package_operation
     def get_review_detail(self, review_id: int) -> dict:
         """Observe one review; never substitute another package or render revision."""
         review = self._reviews.get(review_id)
         if review is None:
             raise ReviewNotFound(f"review {review_id} not found")
         ready = False
-        if review.status == "pending":
+        if review.status in ("pending", "failed", "uncertain"):
             try:
                 self.get_render_preview(expected_folder_name=review.package_folder,
                                         expected_revision=review.revision_digest)
@@ -1551,6 +1625,8 @@ class DojoPublishing:
         eligible: list[YayinIncelemesi] = []
         interval = timedelta(minutes=policy.interval_minutes)
         for review in pending:
+            if review.status == "publishing":
+                continue
             if review.last_reminded_at is None:
                 eligible.append(review)
             elif now - review.last_reminded_at >= interval:
@@ -2116,6 +2192,7 @@ class DojoPublishing:
             enabled=bool(enabled) if enabled is not None else False,
         )
 
+    @_package_edit
     def set_plan(
         self, plan: SchedulePlan, requester: str | None = None
     ) -> SchedulePlan:
@@ -2135,11 +2212,13 @@ class DojoPublishing:
                 details=plan.to_dict(),
             )
         )
+        self._ensure_next_regular(now)
         return self.get_plan()
 
+    @_package_edit
     def manual_publish(self, requester: str | None = None) -> YayinZamani:
-        if self._schedule.has_pending_manual():
-            raise ManualPublishConflict("a manual publish slot is already pending")
+        if self._reviews.list_pending() or self._schedule.has_pending_exception():
+            raise ManualPublishConflict("a review or manual/oneoff publish slot is already pending")
         now = self._clock.now().astimezone(ISTANBUL)
         occurrence = self._schedule.create(
             YayinZamani(
@@ -2159,40 +2238,48 @@ class DojoPublishing:
         )
         return occurrence
 
+    def _ensure_next_regular(self, now: datetime) -> None:
+        plan = self.get_plan()
+        for occurrence in self._schedule.list_all():
+            if (occurrence.kind == "regular" and occurrence.status == "pending"
+                    and occurrence.due_at <= now):
+                self._schedule.update(replace(occurrence, status="due"))
+        if not plan.enabled:
+            self._schedule.prune_regular_future(now)
+            return
+        slot = next_slot(plan, [], now)
+        if slot is None:
+            return
+        if self._schedule.max_regular_due_at() != slot.due_at:
+            self._schedule.prune_regular_future(now)
+        if not self._schedule.has_regular_at(slot.due_at):
+            self._schedule.create(YayinZamani(
+                id=0, kind="regular", due_at=slot.due_at, status="pending", created_at=now,
+            ))
+
+    @_package_edit
     def ensure_schedule_upto(self, now: datetime | None = None) -> None:
+        now = (now or self._clock.now()).astimezone(ISTANBUL)
+        self._ensure_next_regular(now)
         if self._setup is not None and not self._setup.is_ready():
             return
         plan = self.get_plan()
         if not plan.enabled or plan.anchor_date is None or plan.anchor_time is None:
             return
-        now = (now or self._clock.now()).astimezone(ISTANBUL)
         created_now = self._clock.now().astimezone(ISTANBUL)
         anchor_dt = datetime.combine(
             plan.anchor_date, plan.anchor_time, tzinfo=ISTANBUL
         )
-        next_dt = anchor_dt
-        while next_dt <= now:
-            next_dt += timedelta(days=14)
-        # Keep the existing next slot: recreating it emits a change on every worker tick.
-        if self._schedule.max_regular_due_at() != next_dt:
-            self._schedule.prune_regular_future(now)
         occ_dt = anchor_dt
         while occ_dt <= now:
             if not self._schedule.has_regular_at(occ_dt):
                 self._schedule.create(
                     YayinZamani(
                         id=0, kind="regular", due_at=occ_dt,
-                        status="pending", created_at=created_now,
+                        status="due", created_at=created_now,
                     )
                 )
             occ_dt += timedelta(days=14)
-        if not self._schedule.has_regular_at(next_dt):
-            self._schedule.create(
-                YayinZamani(
-                    id=0, kind="regular", due_at=next_dt,
-                    status="pending", created_at=created_now,
-                )
-            )
 
     def list_due_occurrences(self, now: datetime | None = None) -> list[YayinZamani]:
         now = (now or self._clock.now()).astimezone(ISTANBUL)
@@ -2568,6 +2655,70 @@ class DojoPublishing:
     def create_review(self, *args: object, **kwargs: object) -> None:
         raise NotImplementedError
 
+    def _require_future_oneoff(self, occurrence_id: int, expected_due_at: datetime) -> YayinZamani:
+        occurrence = next((o for o in self._schedule.list_all() if o.id == occurrence_id), None)
+        if occurrence is None:
+            raise OccurrenceNotFound(f"occurrence {occurrence_id} not found")
+        if (occurrence.kind != "oneoff" or occurrence.status != "pending"
+                or occurrence.due_at <= self._clock.now() or occurrence.due_at != expected_due_at
+                or self._reviews.has_for_occurrence(occurrence_id)):
+            raise OccurrenceChanged("oneoff changed; refresh before deciding")
+        return occurrence
+
+    @_package_operation
+    def decide_oneoff(
+        self, occurrence_id: int, expected_due_at: datetime, action: str, *,
+        confirmed: bool = False, requester: str | None = None,
+    ) -> dict[str, object]:
+        if action not in ("review", "skip"):
+            raise ValueError("invalid oneoff decision")
+        if action == "skip" and not confirmed:
+            raise SkipRequiresConfirmation("skip requires explicit confirmation")
+        with self._schedule.emission_transaction():
+            occurrence = self._require_future_oneoff(occurrence_id, expected_due_at)
+            now = self._clock.now()
+            updated = self._schedule.update(replace(
+                occurrence, due_at=now if action == "review" else occurrence.due_at,
+                status="pending" if action == "review" else "skipped",
+                resolved_at=None if action == "review" else now,
+            ))
+            package = self.get_active_package()
+            result = {"occurrence_id": updated.id, "due_at": updated.due_at,
+                      "status": updated.status,
+                      "package_folder": package.folder_name if package else None}
+            self._audit.append(AuditEvent(
+                action=("occurrence.review_requested" if action == "review"
+                        else "occurrence.skipped"),
+                actor=requester or "system", occurred_at=now,
+                details={**result, "due_at": updated.due_at.isoformat(),
+                         "old_due_at": occurrence.due_at.isoformat()},
+            ))
+            return result
+
+    @_package_operation
+    def change_oneoff_date(
+        self, occurrence_id: int, expected_due_at: datetime, new_due_at: datetime, *,
+        requester: str | None = None,
+    ) -> YayinZamani:
+        with self._schedule.emission_transaction():
+            occurrence = self._require_future_oneoff(occurrence_id, expected_due_at)
+            now = self._clock.now()
+            if new_due_at.tzinfo is None:
+                new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
+            regular = self._schedule.next_regular_after(now)
+            if new_due_at <= now or (regular is not None and new_due_at >= regular.due_at):
+                raise RescheduleTimeInvalid(
+                    "date must be future and before the next regular publish"
+                )
+            updated = self._schedule.update(replace(occurrence, due_at=new_due_at))
+            self._audit.append(AuditEvent(
+                action="occurrence.date_changed", actor=requester or "system", occurred_at=now,
+                details={"occurrence_id": occurrence_id,
+                         "old_due_at": occurrence.due_at.isoformat(),
+                         "new_due_at": new_due_at.isoformat()},
+            ))
+            return updated
+
     def _require_empty_occurrence(
         self, occurrence_id: int, expected_folder_name: str,
     ) -> YayinZamani:
@@ -2577,7 +2728,7 @@ class DojoPublishing:
         if occurrence is None:
             raise OccurrenceNotFound(f"occurrence {occurrence_id} not found")
         package = self._packages.get_active()
-        if (occurrence.status != "pending" or occurrence.due_at > self._clock.now()
+        if (occurrence.status not in ("pending", "due") or occurrence.due_at > self._clock.now()
                 or package is None or package.folder_name != expected_folder_name
                 or self._reviews.has_for_occurrence(occurrence_id)
                 or self._finalized_in_order(self._load_manifest(package))):
@@ -2603,17 +2754,19 @@ class DojoPublishing:
         self, occurrence_id: int, expected_folder_name: str, new_due_at: datetime, *,
         requester: str | None = None,
     ) -> dict[str, object]:
-        if new_due_at.tzinfo is None:
-            new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
-        if new_due_at <= self._clock.now():
-            raise RescheduleTimeInvalid("reschedule time must be in the future")
         with self._schedule.emission_transaction():
+            new_due_at = self._validate_reschedule_time(new_due_at)
             occurrence = self._require_empty_occurrence(occurrence_id, expected_folder_name)
             now = self._clock.now()
             if occurrence.kind == "oneoff":
-                oneoff = self._schedule.update(replace(occurrence, due_at=new_due_at))
+                if occurrence.status != "pending":
+                    self._require_no_pending_exception()
+                oneoff = self._schedule.update(replace(
+                    occurrence, due_at=new_due_at, status="pending",
+                ))
             else:
                 self._resolve_occurrence(occurrence.id, now)
+                self._require_no_pending_exception()
                 oneoff = self._schedule.create(YayinZamani(
                     id=0, kind="oneoff", due_at=new_due_at, status="pending", created_at=now,
                 ))
@@ -2642,25 +2795,22 @@ class DojoPublishing:
         ))
         return result
 
-    @_package_operation
+    @_review_decision
     def approve(
         self,
         review_id: int,
         version: int,
         requester: str | None = None,
     ) -> YayinIncelemesi:
-        if self._get_publishing_package() is not None:
-            raise PublicationInProgress("publication must be reconciled first")
-        resolved = self._resolve_review(
-            review_id,
-            version,
-            to_status="approved",
-            requester=requester,
+        # Publication is external and can fail. Only resolve the review once
+        # Instagram confirms; otherwise the user keeps every decision open.
+        review = self._require_review_for_decision(
+            review_id, version, to_status="approved",
         )
-        self._start_publication_for_review(resolved, requester=requester)
-        return resolved
+        self._start_publication_for_review(review, requester=requester)
+        return self._reviews.get(review_id) or review
 
-    @_package_operation
+    @_review_decision
     def skip(
         self,
         review_id: int,
@@ -2683,7 +2833,7 @@ class DojoPublishing:
             next_regular_at=next_regular.due_at if next_regular is not None else None,
         )
 
-    @_package_operation
+    @_review_decision
     def reschedule(
         self,
         review_id: int,
@@ -2691,6 +2841,19 @@ class DojoPublishing:
         new_due_at: datetime,
         requester: str | None = None,
     ) -> YayinIncelemesi:
+        with self._packages.command_transaction():
+            new_due_at = self._validate_reschedule_time(new_due_at)
+            review = self._resolve_review(
+                review_id,
+                version,
+                to_status="rescheduled",
+                requester=requester,
+                finalize_resolution=False,
+                audit=False,
+            )
+            return self._apply_reschedule_oneoff(review, new_due_at, requester=requester)
+
+    def _validate_reschedule_time(self, new_due_at: datetime) -> datetime:
         now = self._clock.now().astimezone(ISTANBUL)
         if new_due_at.tzinfo is None:
             new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
@@ -2698,35 +2861,23 @@ class DojoPublishing:
             raise RescheduleTimeInvalid(
                 f"reschedule time {new_due_at} must be in the future"
             )
-        review = self._resolve_review(
-            review_id,
-            version,
-            to_status="rescheduled",
-            requester=requester,
-            finalize_resolution=False,
-            audit=False,
-        )
-        return self._apply_reschedule_oneoff(
-            review, new_due_at, requester=requester
-        )
+        regular = next_slot(self.get_plan(), [], now)
+        if regular is not None and new_due_at >= regular.due_at:
+            raise RescheduleTimeInvalid("reschedule time must be before the next regular publish")
+        return new_due_at
 
-    def _resolve_review(
-        self,
-        review_id: int,
-        version: int,
-        *,
-        to_status: str,
-        requester: str | None,
-        finalize_resolution: bool = True,
-        audit: bool = True,
+    def _require_review_for_decision(
+        self, review_id: int, version: int, *, to_status: str,
     ) -> YayinIncelemesi:
-        """Resolve one review with atomic CAS; reject stale or already-handled."""
+        """Load and validate one pending review without mutating it."""
         if self._get_publishing_package() is not None:
             raise PublicationInProgress("publication must be reconciled first")
         review = self._reviews.get(review_id)
         if review is None:
             raise ReviewNotFound(f"review {review_id} not found")
-        if review.status != "pending" or review.version != version:
+        if review.status == "publishing":
+            raise PublicationInProgress("review publication is in progress")
+        if review.status not in ("pending", "failed", "uncertain") or review.version != version:
             raise ReviewAlreadyHandled(
                 f"review {review_id} was already handled by another device", review=review,
             )
@@ -2746,6 +2897,20 @@ class DojoPublishing:
             raise ReviewStale(
                 f"review {review_id} is stale; content changed since it was created"
             )
+        return review
+
+    def _resolve_review(
+        self,
+        review_id: int,
+        version: int,
+        *,
+        to_status: str,
+        requester: str | None,
+        finalize_resolution: bool = True,
+        audit: bool = True,
+    ) -> YayinIncelemesi:
+        """Resolve one review with atomic CAS; reject stale or already-handled."""
+        self._require_review_for_decision(review_id, version, to_status=to_status)
         now = self._clock.now()
         resolved = self._reviews.resolve_if_pending(
             review_id, version, to_status, now, requester
@@ -2796,48 +2961,14 @@ class DojoPublishing:
         *,
         requester: str | None,
     ) -> YayinIncelemesi:
-        """Create a pending oneoff occurrence; replace any prior one for this review.
-
-        Returns the review with ``oneoff_occurrence_id`` set.
-        """
+        """Give every reschedule a fresh occurrence/revision identity."""
         now = self._clock.now()
-        prior = next(
-            (
-                o
-                for o in self._schedule.list_all()
-                if (
-                    (
-                        review.oneoff_occurrence_id is not None
-                        and o.id == review.oneoff_occurrence_id
-                    )
-                    or (o.id == review.occurrence_id and o.kind == "oneoff")
-                )
-            ),
-            None,
-        )
-        if prior is not None and prior.status == "pending":
-            updated = self._schedule.update(
-                replace(prior, due_at=new_due_at)
-            )
-            resolved_review = self._reviews.update(
-                replace(review, oneoff_occurrence_id=updated.id)
-            )
-        else:
-            if review.oneoff_occurrence_id is None:
-                self._resolve_occurrence(review.occurrence_id, now)
-            created = self._schedule.create(
-                YayinZamani(
-                    id=0,
-                    kind="oneoff",
-                    due_at=new_due_at,
-                    status="pending",
-                    created_at=now,
-                )
-            )
-            resolved_review = self._reviews.update(
-                replace(review, oneoff_occurrence_id=created.id)
-            )
-            updated = created
+        self._resolve_occurrence(review.occurrence_id, now)
+        self._require_no_pending_exception()
+        updated = self._schedule.create(YayinZamani(
+            id=0, kind="oneoff", due_at=new_due_at, status="pending", created_at=now,
+        ))
+        resolved_review = self._reviews.update(replace(review, oneoff_occurrence_id=updated.id))
         self._audit.append(
             AuditEvent(
                 action="review.rescheduled",
@@ -2855,6 +2986,10 @@ class DojoPublishing:
             )
         )
         return resolved_review
+
+    def _require_no_pending_exception(self) -> None:
+        if self._schedule.has_pending_exception():
+            raise ManualPublishConflict("a manual/oneoff publish slot is already pending")
 
     @_package_operation
     def render_preview(
@@ -3122,6 +3257,7 @@ class DojoPublishing:
             "publish_started": False,
             "revision": review.revision_digest,
             "review_id": review.id,
+            "review_version": review.version,
             "caption": review.caption,
             "container_id": None,
             "media_id": None,
@@ -3136,6 +3272,7 @@ class DojoPublishing:
         claimed = self._packages.update(
             replace(package, status="publishing", folder_name=publishing_folder)
         )
+        self._reviews.update(replace(review, status="publishing", instagram_fail_message=None))
         self._audit.append(
             AuditEvent(
                 action="publication.claimed",
@@ -3154,8 +3291,8 @@ class DojoPublishing:
     def _attempt_publication(self, package: Package, *, requester: str | None) -> None:
         """Run one publication attempt for a ``-publishing`` package.
 
-        Definite failures restore the package to active for retry. Uncertain
-        outcomes (timeouts) retain ``-publishing`` and block fresh publishes.
+        Failed and uncertain outcomes restore the active package for a manual
+        decision. Confirmed ingestion still in progress stays locked for polling.
         """
         record = self._publication_record(package) or {}
         if record.get("publish_started", True):
@@ -3175,7 +3312,11 @@ class DojoPublishing:
         if not signed_url and not container_id:
             # Fresh attempt: expose the approved render for ingestion. Resumes
             # reuse the saved container id and never mint a second container.
-            signed_url = self._signed_urls.create(artifact)
+            try:
+                signed_url = self._signed_urls.create(artifact)
+            except Exception as exc:  # No request to Instagram has been made yet.
+                self._restore_to_active(package, str(exc), requester=requester)
+                return
             record["signed_url"] = signed_url
             record["updated_at"] = self._clock.now().isoformat()
             self._save_publication_record(package, record)
@@ -3220,10 +3361,7 @@ class DojoPublishing:
                                  requester=requester)
             return
         except Exception as exc:
-            # Issue #19: once a container id is persisted, the external
-            # outcome is unknown on polling errors (timeout/network/auth).
-            # Restoring to active here would allow a fresh publish with a
-            # new container -> duplicate Reel. Keep -publishing uncertain.
+            # A saved container does not prove delivery; require a manual check.
             self._mark_uncertain(package, f"container status check failed: {exc}",
                                  requester=requester)
             return
@@ -3235,6 +3373,8 @@ class DojoPublishing:
             return
         if status != "FINISHED":
             # IN_PROGRESS or unknown: ingestion not confirmed; keep polling.
+            if status == "IN_PROGRESS":
+                return
             self._mark_uncertain(
                 package, f"container {container_id} reported {status}",
                 requester=requester,
@@ -3277,10 +3417,8 @@ class DojoPublishing:
                                  requester=requester)
             return
         except Exception as exc:
-            # Issue #19: the container was already accepted (FINISHED), so a
-            # publish failure may still have created the Reel remotely.
-            # Keep -publishing uncertain and retry with the SAME container
-            # id on reconcile instead of minting a fresh container.
+            # Instagram may have published despite the lost response. The
+            # uncertain review warns the user before an explicit fresh attempt.
             record = self._publication_record(package) or record
             record["updated_at"] = self._clock.now().isoformat()
             self._save_publication_record(package, record)
@@ -3332,22 +3470,10 @@ class DojoPublishing:
 
     def _mark_uncertain(self, package: Package, error: str, *,
                         requester: str | None) -> None:
-        record = self._publication_record(package) or {}
-        record["status"] = "uncertain"
-        record["error"] = error
-        record["updated_at"] = self._clock.now().isoformat()
-        self._save_publication_record(package, record)
-        self._audit.append(
-            AuditEvent(
-                action="publication.uncertain",
-                actor=requester or "system",
-                occurred_at=self._clock.now(),
-                details={"package": package.folder_name, "error": error},
-            )
-        )
+        self._restore_to_active(package, error, requester=requester, status="uncertain")
 
     def _restore_to_active(self, package: Package, error: str, *,
-                           requester: str | None) -> Package:
+                            requester: str | None, status: str = "failed") -> Package:
         record = self._publication_record(package) or {}
         try:
             signed_url = record.get("signed_url")
@@ -3362,9 +3488,10 @@ class DojoPublishing:
             replace(package, status="active", folder_name=active_folder)
         )
         failed = {
-            "status": "failed",
+            "status": status,
             "revision": record.get("revision"),
             "review_id": record.get("review_id"),
+            "review_version": record.get("review_version"),
             "caption": record.get("caption"),
             "container_id": record.get("container_id"),
             "media_id": None,
@@ -3374,9 +3501,21 @@ class DojoPublishing:
             "updated_at": self._clock.now().isoformat(),
         }
         self._save_publication_record(restored, failed)
+        review = self._reviews.get(int(record.get("review_id") or 0))
+        if review is not None and review.status == "publishing":
+            review = self._reviews.update(replace(
+                review, status=status, instagram_fail_message=error,
+            ))
+            self._audit.append(AuditEvent(
+                action=f"review.{status}", actor=requester or "system",
+                occurred_at=self._clock.now(),
+                details=json.loads(json.dumps(
+                    asdict(review), default=lambda value: value.isoformat(),
+                )),
+            ))
         self._audit.append(
             AuditEvent(
-                action="publication.failed",
+                action=f"publication.{status}",
                 actor=requester or "system",
                 occurred_at=self._clock.now(),
                 details={"package": active_folder, "error": error},
@@ -3384,6 +3523,36 @@ class DojoPublishing:
         )
         self._notify_publication_outcome(succeeded=False, package_folder=active_folder)
         return restored
+
+    def _resolve_publication_review(
+        self, record: dict, *, requester: str | None,
+    ) -> None:
+        """Close the review only after Instagram confirmed the publication."""
+        review_id = record.get("review_id")
+        version = record.get("review_version")
+        if not isinstance(review_id, int) or not isinstance(version, int):
+            return
+        now = self._clock.now()
+        resolved = self._reviews.resolve_if_pending(
+            review_id, version, "approved", now, requester,
+        )
+        if resolved is None:
+            return
+        self._resolve_occurrence(resolved.occurrence_id, now)
+        self._audit.append(
+            AuditEvent(
+                action="review.approved",
+                actor=requester or "system",
+                occurred_at=now,
+                details={
+                    "review_id": resolved.id,
+                    "occurrence_id": resolved.occurrence_id,
+                    "package": resolved.package_folder,
+                    "revision_digest": resolved.revision_digest,
+                    "status": resolved.status,
+                },
+            )
+        )
 
     def _complete_publication(self, package: Package, container_id: str,
                               media_id: str | None, *, requester: str | None) -> Package:
@@ -3410,6 +3579,7 @@ class DojoPublishing:
                 },
             )
         )
+        self._resolve_publication_review(record, requester=requester)
         base = package.folder_name
         stem = base[:-len("-publishing")] if base.endswith("-publishing") else base
         completed_folder = f"{stem}-completed"
@@ -3463,17 +3633,17 @@ class DojoPublishing:
         )
         return path
 
-    @_package_operation
+    @_package_edit
     def recover_publication(
         self, action: str, *, confirmed: bool = False,
         new_due_at: datetime | None = None, requester: str | None = None,
     ) -> dict:
-        """Resolve a definite failure without treating its old approval as pending."""
+        """Recover a definite failure, reusing its still-pending review when available."""
         if self._get_publishing_package() is not None:
             raise PublicationInProgress("publication must be reconciled first")
         package = self._packages.get_active()
         record = self._publication_record(package) if package else None
-        if package is None or record is None or record.get("status") != "failed":
+        if package is None or record is None or record.get("status") not in ("failed", "uncertain"):
             raise PublicationNotReady("no failed publication to recover")
         if action not in ("review", "skip", "reschedule"):
             raise PublicationNotReady("unsupported recovery action")
@@ -3481,11 +3651,18 @@ class DojoPublishing:
             raise SkipRequiresConfirmation("skip requires explicit confirmation")
         now = self._clock.now()
         if action == "reschedule":
-            if new_due_at is not None and new_due_at.tzinfo is None:
-                new_due_at = new_due_at.replace(tzinfo=ISTANBUL)
-            if new_due_at is None or new_due_at <= now:
+            if new_due_at is None:
                 raise RescheduleTimeInvalid("reschedule time must be in the future")
-        if action in ("review", "reschedule"):
+            new_due_at = self._validate_reschedule_time(new_due_at)
+        review = self._reviews.get(int(record.get("review_id") or 0))
+        if review is not None and review.status in ("pending", "failed", "uncertain"):
+            if action == "skip":
+                self.skip(review.id, review.version, confirmed=confirmed, requester=requester)
+            elif action == "reschedule":
+                assert new_due_at is not None
+                self.reschedule(review.id, review.version, new_due_at, requester=requester)
+        elif action in ("review", "reschedule"):
+            self._require_no_pending_exception()
             due_at = new_due_at if action == "reschedule" and new_due_at else now
             occurrence = self._schedule.create(
                 YayinZamani(
@@ -3508,16 +3685,10 @@ class DojoPublishing:
 
     @staticmethod
     def _recovery_actions(status: object) -> list[str]:
-        """Allowed recovery actions for a publication record (issue #19).
-
-        Definite failure on an editable active package exposes Retry,
-        Review, Skip and Reschedule. Uncertain or in-progress publishing
-        exposes only reconcile; a fresh publish is prohibited until the
-        saved Meta identifiers are reconciled.
-        """
-        if status == "failed":
+        """Failed/uncertain reviews allow manual decisions; publishing only polls."""
+        if status in ("failed", "uncertain"):
             return ["retry", "review", "skip", "reschedule"]
-        if status in ("publishing", "uncertain"):
+        if status == "publishing":
             return ["reconcile"]
         return []
 
@@ -3549,7 +3720,7 @@ class DojoPublishing:
         if package is None:
             raise PublicationNotReady("no active package to publish")
         record = self._publication_record(package)
-        if record is None or record.get("status") not in ("failed",):
+        if record is None or record.get("status") not in ("failed", "uncertain"):
             # approve() already publishes; explicit retry needs a failed attempt.
             raise PublicationNotReady(
                 "no failed publication to retry; approve a review first"
@@ -3558,8 +3729,12 @@ class DojoPublishing:
         if manifest.get("render_revision") != record.get("revision"):
             raise PublicationNotReady("package changed since the failed attempt")
         review = self._reviews.get(int(record.get("review_id") or 0))
-        if review is None or review.status != "approved":
-            raise PublicationNotReady("approved review for retry is unavailable")
+        recorded_version = record.get("review_version")
+        if (
+            review is None or review.status not in ("pending", "failed", "uncertain", "approved")
+            or isinstance(recorded_version, int) and review.version != recorded_version
+        ):
+            raise PublicationNotReady("pending review for retry is unavailable")
         claimed = self._claim_for_publication(package, review, requester=requester)
         self._attempt_publication(claimed, requester=requester)
         status = self.get_publication_status()
@@ -3596,8 +3771,7 @@ class DojoPublishing:
                                  requester=requester)
             return self.get_publication_status()
         except Exception as exc:
-            # Issue #19: reconcile only polls saved identifiers; a polling
-            # error never restores to active (fresh publish stays prohibited).
+            # An unreadable result becomes a manual, uncertain review.
             self._mark_uncertain(package, f"container status check failed: {exc}",
                                  requester=requester)
             return self.get_publication_status()
@@ -3619,6 +3793,7 @@ class DojoPublishing:
             # Resume ingestion only when no publish command was sent.
             self._attempt_publication(package, requester=requester)
             return self.get_publication_status()
-        self._mark_uncertain(package, f"container {container_id} reported {status}",
-                             requester=requester)
+        if status != "IN_PROGRESS":
+            self._mark_uncertain(package, f"container {container_id} reported {status}",
+                                 requester=requester)
         return self.get_publication_status()

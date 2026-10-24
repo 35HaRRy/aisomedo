@@ -111,6 +111,152 @@ class AppViewModelTest {
         override fun close() { owner.clear(); server.shutdown(); dir.deleteRecursively() }
     }
 
+    @Test fun completedDestinationReadsHistoryAndDetailWithoutMutatingActivePackage() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            assertFalse(f.seen.any { it == "GET /api/packages" })
+            f.bodies["/api/packages"] = """[{"id":2,"folder_name":"finished","created_at":"2026-10-01T10:00:00Z","status":"completed"}]"""
+            f.bodies["/api/packages/finished"] = """{"folder_name":"finished","caption":"Published caption","artifacts":[],"media":[],"order":[],"render_revision":null}"""
+            f.model.navigate(Destination.entries.single { it.name == "COMPLETED" })
+            f.await { !it.busy && f.seen.contains("GET /api/packages/finished") }
+            assertEquals("COMPLETED", f.model.state.value.destination.name)
+            assertEquals("COMPLETED", f.saved.get<String>("destination"))
+            assertEquals("active", f.model.state.value.editor.snapshot?.`package`?.folderName)
+            assertFalse(f.seen.any { it.startsWith("POST ") || it.startsWith("PUT ") || it.startsWith("DELETE ") })
+        }
+    }
+
+    @Test fun futureOneoffReviewWaitsForExactOccurrenceThenOpensApprovalWithoutPublishing() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            val slot = com.dojo.aisomedo.api.DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 2)
+            f.bodies["/api/dashboard/occurrences/2/decision"] = """{"occurrence_id":2,"due_at":"2026-10-05T12:00:00Z","status":"pending","package_folder":"active"}"""
+            f.pendingDashboard(state = "preparing")
+            f.model.decideOneoff(slot, skip = false)
+            f.model.decideOneoff(slot, skip = false)
+            f.await { !it.busy && it.oneoffDecision != null }
+            assertNull(f.model.state.value.review.target)
+            f.pendingDashboard(state = "review_ready", review = 8)
+            val unrelated = kotlinx.serialization.json.Json.parseToJsonElement(f.bodies.getValue("/api/dashboard").replace("\"occurrence_id\":2", "\"occurrence_id\":9")).jsonObject["pending_actions"]!!.jsonArray.single()
+            f.pendingDashboard(state = "preparing")
+            val waiting = kotlinx.serialization.json.Json.parseToJsonElement(f.bodies.getValue("/api/dashboard")).jsonObject
+            f.bodies["/api/dashboard"] = kotlinx.serialization.json.JsonObject(waiting + ("pending_actions" to kotlinx.serialization.json.JsonArray(waiting["pending_actions"]!!.jsonArray + unrelated))).toString()
+            f.model.refresh()
+            f.await { !it.busy }
+            assertNull(f.model.state.value.review.target)
+            f.bodies["/api/reviews/7"] = reviewJson()
+            f.pendingDashboard(state = "review_ready", review = 7)
+            f.model.refresh()
+            f.await { it.review.detail?.review?.id == 7 && !it.review.busy }
+            assertFalse(f.model.state.value.review.canApprove) // Preview still needs to load.
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val writes = requests.filter { it.method == "POST" }
+            assertEquals(1, writes.size)
+            assertEquals("/api/dashboard/occurrences/2/decision", writes.single().path)
+            val body = kotlinx.serialization.json.Json.parseToJsonElement(writes.single().body.readUtf8()).jsonObject
+            assertEquals("review", (body["action"] as kotlinx.serialization.json.JsonPrimitive).content)
+            assertEquals(slot.dueAt, (body["expected_due_at"] as kotlinx.serialization.json.JsonPrimitive).content)
+        }
+    }
+
+    @Test fun futureOneoffReviewDoesNotOpenForAReplacedPackage() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            val slot = com.dojo.aisomedo.api.DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 2)
+            f.bodies["/api/dashboard/occurrences/2/decision"] = """{"occurrence_id":2,"due_at":"2026-10-05T12:00:00Z","status":"pending","package_folder":"active"}"""
+            f.pendingDashboard(state = "preparing")
+            f.model.decideOneoff(slot, skip = false)
+            f.await { !it.busy && it.oneoffDecision != null }
+            f.pendingDashboard(state = "review_ready", review = 7, folder = "replacement")
+            f.model.refresh()
+            f.await { !it.busy && it.oneoffDecision == null }
+            assertNull(f.model.state.value.review.target)
+            assertFalse(f.seen.contains("GET /api/reviews/7"))
+        }
+    }
+
+    @Test fun futureOneoffReviewStopsWaitingWhenWorkerResolvesOccurrence() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            val slot = com.dojo.aisomedo.api.DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 2)
+            f.pendingDashboard(state = "preparing")
+            f.bodies["/api/dashboard/occurrences/2/decision"] = """{"occurrence_id":2,"due_at":"2026-10-05T12:00:00Z","status":"pending","package_folder":"active"}"""
+            f.model.decideOneoff(slot, skip = false)
+            f.await { !it.busy && it.oneoffDecision != null }
+            f.pendingDashboard(includeOriginal = false)
+            f.model.refresh()
+            f.await { !it.busy }
+            assertNull(f.model.state.value.oneoffDecision)
+            assertEquals(ReviewIssue.ALREADY_HANDLED, f.model.state.value.oneoffDecisionIssue)
+            assertNull(f.model.state.value.review.target)
+        }
+    }
+
+    @Test fun navigationCancelsDelayedOneoffReviewContinuation() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            val slot = com.dojo.aisomedo.api.DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 2)
+            f.pendingDashboard(state = "preparing")
+            f.bodies["/api/dashboard/occurrences/2/decision"] = """{"occurrence_id":2,"due_at":"2026-10-05T12:00:00Z","status":"pending","package_folder":"active"}"""
+            f.delayPath = "/api/dashboard/occurrences/2/decision"
+            f.model.decideOneoff(slot, skip = false)
+            f.await { f.seen.contains("POST /api/dashboard/occurrences/2/decision") }
+            f.model.navigate(Destination.PACKAGE)
+            f.model.navigate(Destination.DASHBOARD)
+            f.await { !it.busy }
+            assertNull(f.model.state.value.oneoffDecision)
+            assertNull(f.model.state.value.review.target)
+        }
+    }
+
+    @Test fun futureOneoffUncertainWriteCannotRepeatUntilExplicitRefresh() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            val slot = com.dojo.aisomedo.api.DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 2)
+            f.codes["/api/dashboard/occurrences/2/decision"] = 502
+            f.model.decideOneoff(slot, skip = false)
+            f.await { !it.busy && it.issue != null }
+            f.model.decideOneoff(slot, skip = false)
+            main.scheduler.runCurrent()
+            assertEquals(1, f.seen.count { it == "POST /api/dashboard/occurrences/2/decision" })
+            assertNull(f.model.state.value.review.target)
+        }
+    }
+
+    @Test fun futureOneoffSkipSendsConfirmationAndCannotRepeat() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            val slot = com.dojo.aisomedo.api.DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 2)
+            f.bodies["/api/dashboard/occurrences/2/decision"] = """{"occurrence_id":2,"due_at":"2099-08-04T10:00:00+03:00","status":"skipped","package_folder":"active"}"""
+            f.model.decideOneoff(slot, skip = true)
+            f.await { !it.busy && it.oneoffDecision?.status == "skipped" }
+            f.model.decideOneoff(slot, skip = true)
+            main.scheduler.runCurrent()
+            val writes = (0 until f.server.requestCount).map { f.server.takeRequest() }.filter { it.method == "POST" }
+            assertEquals(1, writes.size)
+            val body = kotlinx.serialization.json.Json.parseToJsonElement(writes.single().body.readUtf8()).jsonObject
+            assertEquals("skip", (body["action"] as kotlinx.serialization.json.JsonPrimitive).content)
+            assertEquals(true, (body["confirmed"] as kotlinx.serialization.json.JsonPrimitive).content.toBoolean())
+            assertNull(f.model.state.value.review.target)
+        }
+    }
+
+    @Test fun futureOneoffDateUsesPatchAndExpectedDateWithoutRegularLimit() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canMutate }
+            val slot = com.dojo.aisomedo.api.DashboardSlotOut("2099-08-04T10:00:00+03:00", "oneoff", 8)
+            f.bodies["/api/dashboard/occurrences/8"] = """{"kind":"oneoff","due_at":"2099-08-05T12:30:00+03:00","occurrence_id":8}"""
+            f.model.changeOneoffDate(slot, java.time.LocalDate.of(2099, 8, 5), java.time.LocalTime.of(12, 30))
+            f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val patch = requests.single { it.method == "PATCH" }
+            assertEquals("/api/dashboard/occurrences/8", patch.path)
+            val body = kotlinx.serialization.json.Json.parseToJsonElement(patch.body.readUtf8()).jsonObject
+            assertEquals("2099-08-04T10:00:00+03:00", body["expected_due_at"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).content })
+            assertEquals("2099-08-05T12:30+03:00", body["new_due_at"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).content })
+        }
+    }
+
     @Test fun cachedAuthorityCannotAdmitWithoutLiveSynchronization() {
         assertFalse(AppUiState(phase = Phase.READY, networkConnected = true, authoritative = true).canMutate)
     }
@@ -310,14 +456,71 @@ class AppViewModelTest {
     @Test fun explicitApprovePostsOnceWithDisplayedVersionAndReadsBackOutcome() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.openPreparedReview()
-            f.bodies["/api/reviews/7/approve"] = """{"publication":{"state":"confirmed"}}"""
+            f.bodies["/api/reviews/7/approve"] = """{"publication":{"status":"completed"}}"""
             f.bodies["/api/reviews/7"] = reviewJson(status = "approved", version = 4)
             f.model.approveReview(); f.model.approveReview()
             f.await { !it.review.busy }
             assertEquals(1, f.seen.count { it == "POST /api/reviews/7/approve" })
             assertEquals("approved", f.model.state.value.review.detail!!.review.status)
-            assertEquals("confirmed", f.model.state.value.review.publication!!["state"]!!.toString().trim('"'))
+            assertEquals("completed", f.model.state.value.review.publication!!["status"]!!.toString().trim('"'))
             assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun failedPublicationKeepsReviewAndEveryDecisionAvailable() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openPreparedReview()
+            val before = f.model.state.value.review.detail
+            f.bodies["/api/reviews/7/approve"] = """{"publication":{"status":"failed","error":"bad video"}}"""
+            f.model.approveReview(); f.await { !it.review.busy }
+            assertEquals(before, f.model.state.value.review.detail)
+            assertTrue(f.model.state.value.review.canApprove)
+            assertTrue(f.model.state.value.review.canDecide)
+            assertEquals(1, f.seen.count { it.startsWith("POST /api/reviews/") })
+            f.model.requestReviewAction(ReviewAction.SKIP)
+            assertEquals(ReviewAction.SKIP, f.model.state.value.review.target!!.action)
+            f.model.requestReviewAction(ReviewAction.RESCHEDULE)
+            assertEquals(ReviewAction.RESCHEDULE, f.model.state.value.review.target!!.action)
+        }
+    }
+
+    @Test fun cardUploadAllowsDefaultDurationButRejectsFractionalDraft() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("cards")
+            f.await { it.canConfigure("cards") }
+            f.bodies["/api/settings/branding/assets"] = """{"asset":"branding/assets/card.mp4","preview_url":"/api/settings/branding/assets/card.mp4"}"""
+            f.model.setDraft("intro_duration", "1.5", "cards")
+            f.model.uploadAsset("intro_asset", byteArrayOf(1))
+            assertEquals(UiIssue.INVALID_INPUT, f.model.state.value.issue)
+            assertTrue(f.seen.none { it == "POST /api/settings/branding/assets" })
+            f.model.setDraft("intro_duration", "", "cards")
+            f.model.uploadAsset("intro_asset", byteArrayOf(1))
+            f.await { !it.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/settings/branding/assets" })
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            assertEquals("""{"intro_asset":"branding/assets/card.mp4","intro_duration":null}""",
+                requests.single { it.method == "PATCH" }.body.readUtf8())
+        }
+    }
+
+    @Test fun clearingFailedCardSelectionDiscardsPendingInstallWithoutAWrite() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.selectStep("cards")
+            f.await { it.canConfigure("cards") }
+            f.bodies["/api/settings/branding/assets"] = """{"asset":"branding/assets/card.mp4","preview_url":"/api/settings/branding/assets/card.mp4"}"""
+            f.codes["/api/settings/branding"] = 422
+            f.model.uploadAsset("intro_asset", byteArrayOf(1))
+            f.await { !it.busy }
+            assertTrue("intro_asset" in f.model.state.value.pendingAssets)
+            val writes = f.seen.count { it.startsWith("PATCH ") }
+            f.model.clearCard("intro_asset")
+            assertFalse("intro_asset" in f.model.state.value.pendingAssets)
+            assertNull(f.saved.get<String>("pending_intro_asset"))
+            f.model.retryAsset("intro_asset")
+            main.scheduler.runCurrent()
+            assertEquals(writes, f.seen.count { it.startsWith("PATCH ") })
         }
     }
 
@@ -1327,7 +1530,8 @@ class AppViewModelTest {
             f.bodies["/api/setup/cards/skip"] = """{"checklist":[],"ready":true}"""
             f.await { it.phase == Phase.READY && !it.busy }
             val before = f.server.requestCount
-            listOf(Double.NaN, 0.0, Double.POSITIVE_INFINITY).forEach { f.model.saveCards("branding/assets/a.png", it, null, null) }
+            assertEquals("1", f.model.state.value.drafts["intro_duration"])
+            listOf(Double.NaN, 0.0, -1.0, 1.5, Double.POSITIVE_INFINITY).forEach { f.model.saveCards("branding/assets/a.png", it, null, null) }
             assertEquals(before, f.server.requestCount)
             f.model.saveCards(null, null, null, null); f.await { !it.busy }
             f.model.skipCards(); f.await { !it.busy }
@@ -1480,7 +1684,7 @@ class AppViewModelTest {
             f.bodies["/api/settings/branding"] = f.bodies["/api/settings/branding"]!!.replace("\"outro_duration\":2.0", "\"outro_duration\":7.0")
             f.model.refresh(); f.await { !it.busy }
             assertEquals("5", f.model.state.value.drafts["intro_duration"])
-            assertEquals("7.0", f.model.state.value.drafts["outro_duration"])
+            assertEquals("7", f.model.state.value.drafts["outro_duration"])
             f.model.saveCards("branding/assets/intro.png", 5.0, "branding/assets/outro.png", f.model.state.value.drafts["outro_duration"]!!.toDouble())
             f.await { !it.busy }
             val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }

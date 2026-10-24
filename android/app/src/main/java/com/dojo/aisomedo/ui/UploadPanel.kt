@@ -89,7 +89,7 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
             else pickerIssue = UploadIssue.PACKAGE_CHANGED
         }
     }
-    Column(Modifier.widthIn(max = 640.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    CollapsiblePanel(stringResource(R.string.upload_title), Modifier.widthIn(max = 640.dp)) {
         Button(enabled = canMutate && resolvingId == null && selectionEnabled && pendingUris.isEmpty() && !permissionPending, onClick = {
             pickerPackageId = selectionPackageId
             pickerContext = selectionContext
@@ -113,6 +113,8 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
             Column(Modifier.fillMaxWidth().testTag("upload-row-${row.id}"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 HorizontalDivider()
                 Text(row.filename, style = MaterialTheme.typography.titleMedium)
+                MediaThumbnail(Uri.parse(row.uri), row.contentType, stringResource(R.string.image_preview, row.filename),
+                    modifier = Modifier.testTag("upload-preview-${row.id}"))
                 Text(stringResource(phaseLabel(row.phase)), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 val size = row.size ?: 0
                 val received = row.status?.receivedBytes ?: 0
