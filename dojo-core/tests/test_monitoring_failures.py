@@ -131,8 +131,8 @@ def test_repeated_updates_of_one_failure_do_not_duplicate_the_alert(tmp_path):
 def test_an_unexpected_error_without_a_terminal_state_fabricates_nothing(tmp_path):
     """An exception that never persisted a transition alerts nothing.
 
-    The worker logs it as an execution error and the job stays claimable for
-    retry. Inventing a synthetic failure here would page an operator for work
+    The worker logs it as an execution error and the job stays processing.
+    Inventing a synthetic failure here would page an operator for work
     the system may still complete.
     """
 
@@ -143,12 +143,15 @@ def test_an_unexpected_error_without_a_terminal_state_fabricates_nothing(tmp_pat
     complete_upload(seam, tmp_path)
     claimed = seam.claim_next_job()
     assert claimed is not None
-    seam._media = StubMediaProcessor()  # noqa: SLF001
+
+    seam._media = StubMediaProcessor()  # noqa: SLF001 - reach the finalization boundary
 
     def _explode(*_args, **_kwargs):
-        raise Boom("render backend unreachable at http://internal:9000?t=abc")
+        raise Boom("finalization unavailable at http://internal:9000?t=abc")
 
-    seam._media.process = _explode  # type: ignore[method-assign]  # noqa: SLF001
+    # Processor failures intentionally persist a failed job. An error beyond
+    # that guarded boundary must not fabricate a terminal transition or alert.
+    seam.finalize_media = _explode  # type: ignore[method-assign]
 
     with pytest.raises(Boom):
         seam.process_job(claimed.job_id)
