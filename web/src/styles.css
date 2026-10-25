@@ -72,6 +72,7 @@
 .media-image-button .package-photo-preview { width: 100%; height: 100%; max-height: 112px; object-fit: contain; }
 .media-fullscreen { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border: 0; margin: 0; padding: 20px; color: inherit; background: var(--surface); }
 .media-fullscreen::backdrop { background: rgb(0 0 0 / 80%); }
+.dialog-focus-guard { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .media-fullscreen header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .media-fullscreen h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-fullscreen video, .media-fullscreen img { display: block; width: 100%; height: calc(100% - 80px); object-fit: contain; margin-top: 16px; }

@@ -71,6 +71,7 @@ export const tr = {
     saveReasons: { unchanged: "Kaydedilecek değişiklik yok.", busy: "İşlemin tamamlanmasını bekleyin.", offline: "Kaydetmek için internet bağlantısı gerekli.", refresh: "Kaydetmeden önce paketi yenileyin.", invalid: "Geçersiz bölüm veya fotoğraf süresi alanlarını düzeltin.", duration: "Medya süreleri doğrulanamadı.", limit: "Kaydetmeden önce toplam süreyi sınırın altına indirin.", storage: "Depolama hatası nedeniyle kaydetme kapalı." },
     persistenceErrors: { unavailable: "Taslak bu cihaza kaydedilemedi. Tarayıcı depolamasını kontrol edin; kapatmadan önce yeniden deneyin.", corrupt: "Bu cihazdaki taslak okunamadı. Kurtarma için tarayıcı depolamasını kontrol edin; taslak sunucuya gönderilmez.", conflict: "Taslak başka bir sekmede değişti. Bu sekmedeki değişiklikler korunuyor; diğer sekmeyi kapatıp yeniden deneyin." },
     retryDraft: "Taslak kaydını yeniden dene",
+    cardDraft: "Taslak",
     conflictTitle: "Çakışan taslak", conflictHelp: "Bu bölüm sunucuda değişti. Kaydetmeden önce bir sürüm seçin.", conflictSuffix: "çakışması",
     useLocal: "Benim değişikliğimi kullan", useServer: "Sunucudaki değişikliği kullan",
     total: "Önerilen toplam süre", unknownTotal: "Süre hesaplanamıyor", unknownDuration: "Süre bilinmiyor", limitHelp: "Sınırı aşan süreyi azaltın:",

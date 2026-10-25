@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { packageSnapshot } from "../src/packages/testFixtures";
 import { client, dashboard, setupState } from "../src/test/fixtures";
-import { installLiveStream } from "./live-fixture";
+import { installLiveStream, invalidateLive } from "./live-fixture";
 
 const bytes = readFileSync(fileURLToPath(new URL("./fixtures/timeline.mp4", import.meta.url)));
 const card = (page: Page, filename: string) => page.getByRole("list", { name: "Montaj sırası" }).locator(":scope > li").filter({ has: page.getByRole("heading", { name: filename, exact: true }) });
@@ -47,11 +47,22 @@ async function fixture(page: Page, photo = false) {
         return json({ stale: true, render_revision: "saved" });
       }
       if (path.endsWith("/edits")) {
-        if (body.base_content_revision !== snapshot.content_revision) return json({}, 409);
+        if (body.base_content_revision > snapshot.content_revision) return json({}, 409);
+        for (const change of body.changes) {
+          const id = change.key.slice(change.key.indexOf(":") + 1);
+          const current = change.key.startsWith("video:") ? { ranges: snapshot.montage.selections[id] ?? [] }
+            : { seconds: snapshot.media.find(m => m.media_id === id)!.effective_duration };
+          if (JSON.stringify(current) !== JSON.stringify(change.base) && JSON.stringify(current) !== JSON.stringify(change.proposed)) return json({}, 409);
+        }
         // Grouped edits return the authoritative editor snapshot.
         for (const change of body.changes) {
           const id = change.key.slice(change.key.indexOf(":") + 1);
-          if (change.key.startsWith("video:")) snapshot.montage.selections[id] = change.proposed.ranges;
+          if (change.key.startsWith("video:")) {
+            snapshot.montage.selections[id] = change.proposed.ranges;
+            snapshot.media.find(m => m.media_id === id)!.section_preview = change.proposed.ranges.length
+              ? { status: "queued", generation: `saved-${snapshot.content_revision}`, url: null, duration: null }
+              : { status: "missing", generation: null, url: null, duration: null };
+          }
           else if (change.key.startsWith("photo:")) {
             const media = snapshot.media.find(m => m.media_id === id);
             if (media) media.effective_duration = change.proposed.seconds;
@@ -339,4 +350,32 @@ test("fractional terminal endpoints stay exact with reachable End and touch hand
   expect(box.x + box.width).toBeLessThanOrEqual((await card(page, "a.mp4").boundingBox())!.x + (await card(page, "a.mp4").boundingBox())!.width);
   await gesture(page, end, { x: box.x + box.width / 2, y: box.y + box.height / 2 }, { x: bounds.x + bounds.width + 15, y: box.y + box.height / 2 }, !!isMobile);
   await expect(end).toHaveAttribute("aria-valuenow", "6.1238");
+});
+
+test("SSE section completion keeps invalid sibling draft and empty save removes only saved preview", async ({ page }) => {
+  const server = await fixture(page);
+  await page.getByRole("button", { name: "b.mp4 bölümlerini düzenle" }).click();
+  await page.getByRole("button", { name: "Bölüm ekle", exact: true }).click();
+  await page.getByLabel("1. bölüm bitişi (saniye)").fill("");
+  await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
+  await page.getByRole("button", { name: "Bölüm ekle", exact: true }).click();
+  await card(page, "a.mp4").getByRole("button", { name: "Bölümleri kaydet" }).click();
+  await expect(page.getByText("Bölüm önizlemesi sırada.")).toBeVisible();
+  const revision = server.snapshot.content_revision;
+  server.snapshot.media[0].section_preview = { status: "ready", generation: "saved-1", url: "/api/packages/active/media/a/sections/preview?generation=saved-1", duration: 1 };
+  server.snapshot.view_revision++;
+  await invalidateLive(page, ["package:1"]);
+  const savedPreview = page.getByLabel("a.mp4 Kaydedilmiş bölüm önizlemesi", { exact: true });
+  await expect(savedPreview).toBeVisible();
+  expect(server.snapshot.content_revision).toBe(revision);
+  await page.getByRole("button", { name: "1. bölümü kaldır" }).click();
+  await expect(savedPreview).toBeVisible();
+  await expect(card(page, "a.mp4").getByText("Önizleme kaydedilmemiş değişiklikleri içermez.")).toBeVisible();
+  await card(page, "a.mp4").getByRole("button", { name: "Bölümleri kaydet" }).click();
+  await expect(savedPreview).toHaveCount(0);
+  await expect(page.getByLabel("a.mp4 video önizlemesi")).toHaveAttribute("src", /\/original\?/);
+  await page.getByRole("button", { name: "b.mp4 bölümlerini düzenle" }).click();
+  await expect(page.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("");
+  expect(server.writes).toHaveLength(2);
+  expect(server.errors).toEqual([]);
 });

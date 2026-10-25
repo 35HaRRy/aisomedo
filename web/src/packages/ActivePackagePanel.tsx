@@ -90,7 +90,7 @@ export function ActivePackagePanel() {
             if (canDrop(event)) { event.preventDefault(); move(dragging.current!, media.media_id, dropPosition(event)); }
             clearDrag();
           }}>
-          <div className="package-media-heading"><div><h3 title={media.filename}>{media.filename}</h3><p className="muted">{media.is_video ? copy.video : copy.photo} · {media.effective_duration === null ? copy.unknownDuration : `${media.effective_duration.toFixed(2)} s`}</p></div>
+          <div className="package-media-heading"><div><h3 title={media.filename}>{media.filename}</h3><p className="muted">{media.is_video ? copy.video : copy.photo} · {media.effective_duration === null ? copy.unknownDuration : `${media.effective_duration.toFixed(2)} s`}{editor.isDirty(media.media_id) && <> · <strong>{copy.cardDraft}</strong></>}</p></div>
             <div className="package-media-actions">
               {media.is_video && <button className="media-icon-button" aria-label={`${media.filename} ${copy.editLabel}`} title={`${media.filename} ${copy.editLabel}`} aria-expanded={opened === media.media_id} onClick={() => setOpened(opened === media.media_id ? null : media.media_id)}><MediaActionIcon action={opened === media.media_id ? "close" : "edit"} /></button>}
               {opened === media.media_id && <CardSaveActions id={media.media_id} />}

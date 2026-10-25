@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -117,8 +118,8 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         }
     }
     CollapsiblePanel(stringResource(R.string.media_management), actions = {
-        IconButton(onClick = onRefresh, enabled = !busy) { Icon(Icons.Default.Refresh, stringResource(R.string.refresh)) }
-        IconButton(onClick = { clearing = true }, enabled = !blocked) { Icon(Icons.Default.Delete, stringResource(R.string.media_clear)) }
+        MediaIconAction(stringResource(R.string.refresh), Icons.Default.Refresh, !busy, onClick = onRefresh)
+        MediaIconAction(stringResource(R.string.media_clear), Icons.Default.Delete, !blocked, onClick = { clearing = true })
     }) {
         editor.persistenceIssue?.let { issue ->
             Text(stringResource(if (issue == DraftIssue.STORAGE) R.string.draft_storage_failed else R.string.draft_corrupt),
@@ -200,7 +201,8 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                             Icon(Icons.Default.KeyboardArrowDown, contentDescription = stringResource(R.string.media_move_down, media.filename))
                         }
                     }
-                    Text(stringResource(R.string.media_clip_duration, media.effectiveDuration?.let(::seconds) ?: stringResource(R.string.media_unknown_duration)), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.media_clip_duration, media.effectiveDuration?.let(::seconds) ?: stringResource(R.string.media_unknown_duration)) +
+                        if (editor.isDirty(id)) " · ${stringResource(R.string.media_card_draft)}" else "", style = MaterialTheme.typography.bodySmall)
                     if (!previewEnabled) Text(stringResource(R.string.offline_media), style = MaterialTheme.typography.bodySmall)
                     else if (opened != id) {
                         Box(Modifier.fillMaxWidth().height(112.dp).testTag("media-preview-$id")
@@ -211,10 +213,10 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                         }
                     }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (media.isVideo) IconButton(onClick = { opened = if (opened == id) null else id }, enabled = !busy, modifier = Modifier.testTag("media-edit-$id")) { Icon(if (opened == id) Icons.Default.Close else Icons.Default.Edit, stringResource(R.string.media_edit_trim)) }
-                        IconButton(onClick = { onSave(id) }, enabled = !blocked && editor.canSave(id), modifier = Modifier.testTag("media-save-$id")) { Icon(Icons.Default.Check, stringResource(R.string.media_save)) }
-                        IconButton(onClick = { onDiscard(id) }, enabled = canResolve && !busy && editor.isDirty(id) && !(editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)), modifier = Modifier.testTag("media-discard-$id")) { Icon(Icons.Default.Refresh, stringResource(R.string.media_discard)) }
-                        IconButton(onClick = { if (editor.isDirty(id)) removing = id else onRemove(id, false) }, enabled = !blocked, modifier = Modifier.testTag("media-remove-$id")) { Icon(Icons.Default.Delete, stringResource(R.string.media_remove)) }
+                        if (media.isVideo) MediaIconAction(stringResource(R.string.media_edit_trim), if (opened == id) Icons.Default.Close else Icons.Default.Edit, !busy, Modifier.testTag("media-edit-$id")) { opened = if (opened == id) null else id }
+                        MediaIconAction(stringResource(R.string.media_save), Icons.Default.Check, !blocked && editor.canSave(id), Modifier.testTag("media-save-$id")) { onSave(id) }
+                        MediaIconAction(stringResource(R.string.media_discard), Icons.Default.Refresh, canResolve && !busy && editor.isDirty(id) && !(editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)), Modifier.testTag("media-discard-$id")) { onDiscard(id) }
+                        MediaIconAction(stringResource(R.string.media_remove), Icons.Default.Delete, !blocked, Modifier.testTag("media-remove-$id")) { if (editor.isDirty(id)) removing = id else onRemove(id, false) }
                     }
                     if (opened == id) {
                         if (previewEnabled && media.originalUrl != null) key(media.originalUrl) {
@@ -232,7 +234,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                             if (preview.status == "ready" && preview.url != null && previewEnabled) key(preview.generation) {
                                 RemoteMediaPreview(preview.url, true, stringResource(R.string.media_section_preview), onPreview)
                             }
-                            if (preview.status == "failed") TextButton(onClick = { onRetryPreview(id) }, enabled = !blocked) { Text(stringResource(R.string.retry)) }
+                            if (preview.status == "failed") MediaIconAction(stringResource(R.string.retry), Icons.Default.Refresh, !blocked) { onRetryPreview(id) }
                         }
                         val rows = editor.inputs[id].orEmpty()
                         val ranges = parseRanges(rows, media.sourceDuration)
@@ -288,19 +290,30 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         Text(stringResource(if (rows.isEmpty()) R.string.range_whole else R.string.range_selected))
         Text(stringResource(R.string.range_source, seconds(duration)), style = MaterialTheme.typography.bodySmall)
         rows.forEachIndexed { index, row ->
-            Text(stringResource(R.string.range_number, index + 1), style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.range_number, index + 1), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                MediaIconAction(stringResource(R.string.range_remove, index + 1), Icons.Default.Delete, !blocked) { onChange(rows.filterIndexed { i, _ -> i != index }) }
+            }
             OutlinedTextField(row.start, { value -> onChange(rows.mapIndexed { i, r -> if (i == index) r.copy(start = value) else r }) },
                 label = { Text(stringResource(R.string.range_start)) }, enabled = !blocked, isError = invalid, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth().testTag("range-start-${media.mediaId}-$index"))
             OutlinedTextField(row.end, { value -> onChange(rows.mapIndexed { i, r -> if (i == index) r.copy(end = value) else r }) },
                 label = { Text(stringResource(R.string.range_end)) }, enabled = !blocked, isError = invalid, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth().testTag("range-end-${media.mediaId}-$index"))
-            TextButton(onClick = { onChange(rows.filterIndexed { i, _ -> i != index }) }, enabled = !blocked) { Text(stringResource(R.string.range_remove, index + 1)) }
         }
         if (invalid) Text(stringResource(R.string.media_invalid), color = MaterialTheme.colorScheme.error,
             modifier = Modifier.testTag("range-error-${media.mediaId}").semantics { liveRegion = LiveRegionMode.Polite })
         OutlinedButton(onClick = { onChange(rows + RangeInput("", "")) }, enabled = !blocked, modifier = Modifier.testTag("range-add-${media.mediaId}")) { Text(stringResource(R.string.range_add)) }
         TextButton(onClick = { onChange(emptyList()) }, enabled = !blocked && rows.isNotEmpty()) { Text(stringResource(R.string.range_reset)) }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun MediaIconAction(label: String, image: ImageVector, enabled: Boolean,
+    modifier: Modifier = Modifier, onClick: () -> Unit) {
+    TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(label) } }, state = rememberTooltipState()) {
+        IconButton(onClick = onClick, enabled = enabled, modifier = modifier) { Icon(image, label) }
     }
 }
 

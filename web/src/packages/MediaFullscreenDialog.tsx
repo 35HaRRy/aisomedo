@@ -16,11 +16,13 @@ export function MediaFullscreenDialog({ media, onClose }: { media: EditorMediaOu
     };
   }, []);
   return <dialog ref={dialog} className="media-fullscreen" aria-label={media.filename} onCancel={event => { event.preventDefault(); onClose(); }}>
+    <span tabIndex={0} className="dialog-focus-guard" onFocus={() => (dialog.current?.querySelector("video") ?? close.current)?.focus()} />
     <header><h2 title={media.filename}>{media.filename}</h2><button ref={close} className="media-icon-button" aria-label={tr.editor.closeViewer} title={tr.editor.closeViewer} onClick={onClose}><MediaActionIcon action="close" /></button></header>
     {!source || failed ? <p role="alert">{tr.editor.originalFailed}</p> : <>
       {loading && <p role="status">{tr.loading}</p>}
       {media.is_video ? <video src={source} controls playsInline autoPlay onLoadedData={() => setLoading(false)} onError={() => setFailed(true)} aria-label={media.filename} />
         : <img src={source} alt={media.filename} onLoad={() => setLoading(false)} onError={() => setFailed(true)} />}
     </>}
+    <span tabIndex={0} className="dialog-focus-guard" onFocus={() => close.current?.focus()} />
   </dialog>;
 }

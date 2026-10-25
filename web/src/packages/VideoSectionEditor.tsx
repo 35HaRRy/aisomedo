@@ -27,7 +27,7 @@ export function VideoSectionEditor({ media, ranges, inputs, validationError, dis
         <p role="status">{tr.editor.sectionStates[preview.status ?? "missing"]}</p>
         {preview.status === "ready" && preview.url && <video key={preview.generation} src={preview.url} controls playsInline preload="metadata" aria-label={`${media.filename} ${tr.editor.sectionPreview}`} onError={() => setSectionFailed(true)} />}
         {sectionFailed && <p role="alert">{tr.editor.previewFailed}</p>}
-        {preview.status === "failed" && <button disabled={disabled} onClick={onRetryPreview}>{tr.editor.retrySections}</button>}
+        {preview.status === "failed" && <button className="media-icon-button" aria-label={tr.editor.retrySections} title={tr.editor.retrySections} disabled={disabled} onClick={onRetryPreview}><MediaActionIcon action="refresh" /></button>}
       </section>}
     </div>
     <div className="section-edit-controls"><p className="selection-semantics">{inputs.length ? tr.editor.selectedOnly : tr.editor.wholeVideo}</p>

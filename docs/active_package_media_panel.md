@@ -76,6 +76,18 @@ Written specification: `docs/superpowers/specs/2026-10-24-active-package-media-p
 
 Implementation plan: `docs/superpowers/plans/2026-10-24-active-package-media-panel.md`.
 
+## Implementation and acceptance status
+
+- [x] Implement server preview jobs, cancellation, private artifacts, and due-only Reel generation.
+- [x] Implement web and Android card-local editing, media viewers, timelines, and separate saved-Reel panels.
+- [x] Verify Python regression suites with PostgreSQL and real FFmpeg coverage.
+- [x] Verify web unit tests, production build, and desktop/mobile browser workflows.
+- [x] Verify Android unit tests, application build, lint, and instrumentation compilation.
+- [ ] Execute Android connected-device UI/playback/layout acceptance: no emulator or device is connected.
+- [ ] Finish independent whole-branch review and resolve blocking findings.
+
+Implementation is on `feature/active-package`. Full acceptance is not complete while connected-device checks remain blocked. No push or merge has been performed.
+
 ## Original requirements
 
 Android ve web uygulamasında "Güncel Paket" sayfasında "Aktif paket medyası" panelinde:

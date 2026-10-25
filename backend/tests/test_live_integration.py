@@ -11,7 +11,8 @@ from pathlib import Path
 import httpx
 from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.stubs import StubMediaProcessor
+from dojo.adapters.stubs import StubMediaProcessor, StubReelRenderer
+from dojo.model import YayinZamani
 from dojo.testing import FakeClock
 from sqlalchemy import text
 from test_live_events import live_store  # noqa: F401
@@ -51,13 +52,20 @@ def serve(url, root, pipe):
         uvicorn.Server(uvicorn.Config(app, log_level="error")).run(sockets=[listener])
 
 
-def worker(url, root, captions):
+def worker(url, root, captions, previews=False):
     store = PostgresStore(url)
     try:
         domain = publishing(store, root)
-        job = domain.claim_next_job()
-        if job is not None:
+        if previews:
+            domain._renderer = StubReelRenderer()
+            domain.evaluate_due_work()
+        for _ in range(10 if previews else 1):
+            job = domain.claim_next_job()
+            if job is None:
+                break
             domain.process_job(job.job_id)
+        if previews:
+            domain.evaluate_due_work()
         for caption in captions:
             domain.set_caption(caption, requester="integration-worker")
     finally:
@@ -104,6 +112,90 @@ def frame(lines):
         elif not line and event is not None:
             return event, data
     raise AssertionError("Stream closed without a frame")
+
+
+def test_saved_section_worker_updates_are_view_only_and_reels_wait_for_due_time(
+    live_store, tmp_path,  # noqa: F811
+):
+    store = live_store
+    url = store._engine.url.render_as_string(hide_password=False)
+    domain = publishing(store, tmp_path)
+    for name in ("a.mp4", "b.mp4"):
+        data = b"fixture" * 20
+        upload = domain.start_upload(name, "video/mp4", len(data))
+        domain.append_upload_range(
+            upload.upload_id, 0, len(data), hashlib.sha256(data).hexdigest(), data,
+        )
+        domain.complete_upload(upload.upload_id)
+        domain.process_job(domain.claim_next_job().job_id)
+    pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
+    code = pairing.create_pairing_code(requester="integration").raw_code
+    context = multiprocessing.get_context("spawn")
+    with api_process(context, url, tmp_path) as api:
+        paired = httpx.post(api[0] + "/api/pairing/validate", json={
+            "code": code, "kind": "device", "name": "Preview integration",
+        })
+        assert paired.status_code == 200
+        headers = {
+            "Authorization": f"Bearer {paired.json()['token']}", "X-Android-Version-Code": "1",
+        }
+        with (
+            httpx.Client(base_url=api[0], headers=headers, timeout=15) as client,
+            client.stream("GET", "/api/events") as events,
+        ):
+            stream = events.iter_lines()
+            assert frame(stream)[0] == "ready"
+            before = client.get("/api/packages/active/editor").json()
+            mid = before["montage"]["order"][0]
+            response = client.put("/api/packages/active/edits", json={
+                "expected_package_id": before["package"]["id"],
+                "expected_folder_name": before["package"]["folder_name"],
+                "base_content_revision": before["content_revision"],
+                "changes": [{"key": f"video:{mid}",
+                    "base": {"ranges": []}, "proposed": {"ranges": [{"start": 0, "end": 5}]}}],
+            })
+            assert response.status_code == 200
+            saved = response.json()
+            assert saved["media"][0]["section_preview"]["status"] == "queued"
+            package = domain.get_active_package()
+            key = f"package:{package.id}"
+            queued_version = store.get_resource_version(key)
+            process = context.Process(target=worker, args=(url, str(tmp_path), [], True))
+            process.start()
+            process.join(15)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+                raise AssertionError("Preview worker did not finish")
+            assert process.exitcode == 0
+            for _ in range(20):
+                event, changed = frame(stream)
+                if event == "change" and changed.get("versions", {}).get(key, 0) > queued_version:
+                    break
+            else:
+                raise AssertionError("No derived-state SSE invalidation")
+            ready = client.get("/api/packages/active/editor").json()
+            assert ready["content_revision"] == saved["content_revision"]
+            assert ready["view_revision"] > saved["view_revision"]
+            preview = ready["media"][0]["section_preview"]
+            assert preview["status"] == "ready" and preview["duration"] == 5.0
+            assert client.get(preview["url"]).content == b"fake-section-preview"
+            assert client.get(ready["media"][0]["original_url"]).content == data
+            assert not [job for job in store.package_work(package)[1] if job.kind == "render"]
+            now = domain._clock.now()
+            store.set("branding.logo_asset", "logo.png", updated_at=now)
+            store.create(YayinZamani(0, "oneoff", now, "pending", now))
+            process = context.Process(target=worker, args=(url, str(tmp_path), [], True))
+            process.start()
+            process.join(15)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+                raise AssertionError("Due Reel worker did not finish")
+            assert process.exitcode == 0
+            assert len([job for job in store.package_work(package)[1] if job.kind == "render"]) == 1
+            assert len(domain.list_pending_reviews()) == 1
+            assert domain._meta.created == []
 
 
 def test_two_api_processes_observe_worker_burst_reconnect_and_revocation(live_store, tmp_path):  # noqa: F811

@@ -3,6 +3,8 @@ import { packageSnapshot } from "../src/packages/testFixtures";
 import { client, dashboard, setupState } from "../src/test/fixtures";
 import { installLiveStream, invalidateLive } from "./live-fixture";
 
+const saveCard = (page: Page, id: string) => page.getByRole("list", { name: "Montaj sırası" }).locator(":scope > li").filter({ has: page.getByRole("heading", { name: `${id}.mp4`, exact: true }) }).getByRole("button", { name: "Bölümleri kaydet" });
+
 function server() {
   const snapshot = packageSnapshot(), reads: string[] = [], writes: unknown[] = [];
   async function attach(page: Page, ready = true) {
@@ -119,11 +121,11 @@ test("two profiles merge different videos and same-video conflict rejects the wh
     const a = await first.newPage(), b = await second.newPage();
     await state.attach(a); await state.attach(b);
     await edit(a, "a", "5"); await edit(b, "b", "6");
-    await a.getByRole("button", { name: "Bölümleri kaydet" }).click();
+    await saveCard(a, "a").click();
     await expect(a.getByText("Bölümler kaydedildi.")).toBeVisible();
     await invalidateLive(b);
-    await expect(b.getByRole("button", { name: "Bölümleri kaydet" })).toBeEnabled();
-    await b.getByRole("button", { name: "Bölümleri kaydet" }).click();
+    await expect(saveCard(b, "b")).toBeEnabled();
+    await saveCard(b, "b").click();
     await expect(b.getByText("Bölümler kaydedildi.")).toBeVisible();
     expect(state.snapshot.montage.selections).toEqual({ a: [{ start: 0, end: 5 }], b: [{ start: 0, end: 6 }] });
     const rejection = await b.evaluate(async () => {
@@ -142,10 +144,10 @@ test("two profiles merge different videos and same-video conflict rejects the wh
     await a.getByLabel("1. bölüm bitişi (saniye)").fill("7");
     await b.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
     await b.getByLabel("1. bölüm bitişi (saniye)").fill("8");
-    await a.getByRole("button", { name: "Bölümleri kaydet" }).click();
+    await saveCard(a, "a").click();
     await expect(a.getByText("Bölümler kaydedildi.")).toBeVisible(); await invalidateLive(b);
     await expect(b.getByRole("region", { name: "video:a çakışması" })).toBeVisible();
-    await expect(b.getByRole("button", { name: "Bölümleri kaydet" })).toBeDisabled();
+    await expect(saveCard(b, "a")).toBeDisabled();
     expect(state.writes).toHaveLength(4);
   } finally { await first.close(); await second.close(); }
 });
