@@ -102,11 +102,11 @@ import com.dojo.aisomedo.notifications.*
                                     Text(stringResource(R.string.cache_unavailable))
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
                                 } else MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
-                                    model::removeMedia, model::restoreMedia, model::editRanges, model::saveMediaTrims, model::discardMediaTrims,
+                                    model::removeMedia, model::restoreMedia, model::editRanges, model::saveMedia, model::discardMedia,
                                     canMutate = state.canEditMedia, onPreview = model::downloadMediaPreview,
                                     previewEnabled = state.networkConnected && state.authoritative,
                                     canResolve = state.canMutate, onResolveConflict = model::resolveMediaConflict,
-                                    onRetryPersistence = model::retryEditorPersistence)
+                                    onRetryPersistence = model::retryEditorPersistence, onPhotoDuration = model::editPhotoDuration)
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val runningSinceMillis by uploads.runningSinceMillis.collectAsStateWithLifecycle()

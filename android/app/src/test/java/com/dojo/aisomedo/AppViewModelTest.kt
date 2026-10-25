@@ -273,13 +273,122 @@ class AppViewModelTest {
         }
     }
 
+    @Test fun saveOneMediaIgnoresInvalidSiblingAndSendsExactlyOneGroup() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.model.editRanges("c", listOf(RangeInput("0", "")))
+            f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":0,\"end\":5}],\"c\":[{\"start\":1,\"end\":3},{\"start\":7,\"end\":9}]")
+            f.model.saveMedia("a"); f.await { !it.busy && !it.editor.isDirty("a") }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val body = kotlinx.serialization.json.Json.parseToJsonElement(requests.single { it.path == "/api/packages/active/edits" }.body.readUtf8()).jsonObject
+            assertEquals(listOf("\"video:a\""), body.getValue("changes").jsonArray.map { it.jsonObject.getValue("key").toString() })
+            assertEquals("", f.model.state.value.editor.inputs.getValue("c")[0].end)
+            f.model.discardMedia("a")
+            assertTrue(f.model.state.value.editor.isDirty("c"))
+        }
+    }
+
+    @Test fun failedConfirmedRemovalPreservesDraftAndSuccessDiscardsOnlyTarget() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.model.editRanges("c", listOf(RangeInput("0", "2")))
+            f.await { !it.editor.persisting }
+            val path = "/api/packages/active/media/a/remove?expected_folder_name=active"
+            f.codes[path] = 422
+            f.model.removeMedia("a", confirmedDiscard = true); f.await { !it.busy }
+            assertTrue(f.model.state.value.editor.isDirty("a")); assertTrue(f.model.state.value.editor.isDirty("c"))
+            f.codes[path] = 200
+            f.bodies["/api/packages/active/editor"] = editorJson(aStatus = "removed", order = "\"b\",\"c\"")
+            f.model.removeMedia("a", confirmedDiscard = true); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.isDirty("a")); assertTrue(f.model.state.value.editor.isDirty("c"))
+        }
+    }
+
+    @Test fun clearRequiresConfirmationAndNeverRetriesAgainstReplacementPackage() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            f.model.clearActivePackage(false); main.scheduler.runCurrent()
+            assertFalse(f.seen.any { it == "POST /api/packages/active/clear" })
+            f.codes["/api/packages/active/clear"] = 502
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.readRequired }
+            assertTrue(f.model.state.value.editor.isDirty("a"))
+            f.model.clearActivePackage(true); main.scheduler.runCurrent()
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/clear" })
+            f.bodies["/api/dashboard"] = f.bodies["/api/dashboard"]!!.replace("\"id\":1,\"folder_name\":\"active\"", "\"id\":2,\"folder_name\":\"replacement\"")
+            f.bodies["/api/packages/active/editor"] = editorJson(folder = "replacement", id = 2)
+            f.model.refresh(); f.await { !it.busy && it.editor.snapshot?.`package`?.id == 2 }
+            f.model.clearActivePackage(true); main.scheduler.runCurrent()
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/clear" })
+        }
+    }
+
+    @Test fun photoSaveUsesSecondsAndRetainsOtherDraftAfterRecreation() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "")))
+            f.model.editPhotoDuration("b", "4.5"); f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/editor"] = editorJson().replace("\"effective_duration\":3", "\"effective_duration\":4.5")
+            f.model.saveMedia("b"); f.await { !it.busy && !it.editor.isDirty("b") }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val changes = kotlinx.serialization.json.Json.parseToJsonElement(requests.single { it.path == "/api/packages/active/edits" }.body.readUtf8()).jsonObject.getValue("changes").jsonArray
+            assertEquals(1, changes.size)
+            assertEquals("\"photo:b\"", changes.single().jsonObject.getValue("key").toString())
+            assertEquals("4.5", changes.single().jsonObject.getValue("proposed").jsonObject.getValue("seconds").toString())
+            f.recreate(); f.await { it.canEditMedia }
+            assertEquals("", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            assertFalse(f.model.state.value.editor.isDirty("b"))
+        }
+    }
+
+    @Test fun renderAndRetrySendSavedIdentityNotDraftAndStaleRetryRefreshes() {
+        Fixture(paired = true).use { f ->
+            fun failedPreview() = editorJson().replaceFirst("\"preview_url\":null", "\"preview_url\":null,\"section_preview\":{\"status\":\"failed\",\"generation\":\"saved-generation\"}")
+            f.bodies["/api/packages/active/editor"] = failedPreview()
+            f.await { it.canEditMedia }; f.model.refreshEditor(); f.await { !it.busy }
+            f.model.editRanges("a", listOf(RangeInput("0", ""))); f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/render"] = """{"stale":true,"render_revision":"reel"}"""
+            f.model.renderActivePackage(); f.await { !it.busy }
+            f.bodies["/api/packages/active/media/a/sections/retry"] = failedPreview()
+            f.model.retrySectionPreview("a"); f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val retry = requests.single { it.path == "/api/packages/active/media/a/sections/retry" }
+            assertEquals("""{"expected_folder_name":"active","expected_generation":"saved-generation","expected_package_id":1}""",
+                kotlinx.serialization.json.Json.parseToJsonElement(retry.body.readUtf8()).toString())
+            assertFalse(requests.any { it.path == "/api/packages/active/edits" })
+            assertEquals("", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            f.codes["/api/packages/active/media/a/sections/retry"] = 409
+            f.model.retrySectionPreview("a"); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.readRequired)
+        }
+    }
+
+    @Test fun successfulClearUsesCapturedRevisionAndDiscardsAcknowledgedDrafts() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/clear"] = """{"folder_name":"active","upload_ids":[]}"""
+            f.codes["/api/packages/active/editor"] = 404
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.snapshot == null }
+            assertFalse(f.model.state.value.editor.dirty)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val clear = requests.single { it.path == "/api/packages/active/clear" }
+            assertEquals("\"1:1\"", clear.getHeader("If-Match"))
+            assertEquals("""{"confirmed":true,"expected_folder_name":"active","expected_package_id":1}""", clear.body.readUtf8())
+            assertNull(DraftStore(f.dir.resolve("drafts")).read(f.origin, f.model.currentBinding!!, 1))
+        }
+    }
+
     @Test fun lostGroupedSaveReconcilesOnReopenWithoutReplaying() {
         Fixture(paired = true).use { f ->
             f.await { it.canEditMedia }
             f.model.editRanges("a", listOf(RangeInput("0", "5")))
             f.await { it.editor.canSave }
             f.codes["/api/packages/active/edits"] = 502
-            f.model.saveMediaTrims()
+            f.model.saveMedia("a")
             f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
             f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":0,\"end\":5}]")
             f.recreate(); f.await { it.canEditMedia }
@@ -297,7 +406,7 @@ class AppViewModelTest {
             temporary.mkdirs(); temporary.resolve("locked").writeText("fixture")
             f.model.editRanges("a", listOf(RangeInput("0", "8")))
             f.await { it.editor.persistenceIssue == DraftIssue.STORAGE }
-            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); main.scheduler.runCurrent()
             assertEquals(0, f.seen.count { it.startsWith("PUT /api/packages") })
             assertEquals("8", f.model.state.value.editor.inputs.getValue("a")[0].end)
             val binding = f.model.currentBinding!!
@@ -322,7 +431,7 @@ class AppViewModelTest {
             f.model.refresh()
             f.await { it.editor.snapshot?.`package`?.id == 2 }
             assertEquals(1, f.model.state.value.editor.draftPackageId)
-            f.model.discardMediaTrims()
+            f.model.discardReplacedMediaDraft()
             f.await { it.canEditMedia && !it.editor.persisting }
             assertNull(drafts.read(f.origin, binding, 1))
             f.model.editRanges("a", listOf(RangeInput("1", "2")))
@@ -352,7 +461,7 @@ class AppViewModelTest {
             f.await { !it.canMutate }
             val writes = f.seen.count { it.startsWith("POST") || it.startsWith("PUT") }
             f.model.editRanges("a", listOf(RangeInput("0", "8")))
-            f.model.saveMediaTrims()
+            f.model.saveMedia("a")
             assertEquals(before, f.model.state.value.editor.inputs)
             assertEquals(writes, f.seen.count { it.startsWith("POST") || it.startsWith("PUT") })
         }
@@ -1150,11 +1259,11 @@ class AppViewModelTest {
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             val count = f.server.requestCount
             f.model.editRanges("a", listOf(RangeInput("", "3")))
-            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); main.scheduler.runCurrent()
             assertEquals(count, f.server.requestCount)
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
             f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":1,\"end\":3}],\"c\":[{\"start\":1,\"end\":3},{\"start\":7,\"end\":9}]")
-            f.model.saveMediaTrims(); f.await { !it.busy }
+            f.model.saveMedia("a"); f.await { !it.busy }
             assertFalse(f.model.state.value.editor.dirty)
             val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
             val put = requests.single { it.method == "PUT" }
@@ -1172,11 +1281,11 @@ class AppViewModelTest {
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
             f.codes["/api/packages/active/edits"] = 500
-            f.model.saveMediaTrims(); f.await { !it.busy }
+            f.model.saveMedia("a"); f.await { !it.busy }
             assertTrue(f.model.state.value.editor.readRequired)
             assertEquals("1", f.model.state.value.editor.inputs["a"]!!.first().start)
             val count = f.server.requestCount
-            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); main.scheduler.runCurrent()
             assertEquals(count, f.server.requestCount)
             f.model.refreshEditor(); f.await { !it.busy }
             assertFalse(f.model.state.value.editor.readRequired)
@@ -1233,13 +1342,13 @@ class AppViewModelTest {
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
             f.codes["/api/packages/active/editor"] = 503
-            f.model.saveMediaTrims(); f.await { !it.busy }
+            f.model.saveMedia("a"); f.await { !it.busy }
             assertTrue(f.model.state.value.editor.readRequired)
-            f.model.discardMediaTrims()
+            f.model.discardMedia("a")
             assertTrue("Unverified read-only editor must retain draft", f.model.state.value.editor.dirty)
             val count = f.server.requestCount
             f.model.editRanges("c", listOf(RangeInput("2", "3")))
-            f.model.saveMediaTrims(); f.model.removeMedia("a"); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); f.model.removeMedia("a"); main.scheduler.runCurrent()
             assertEquals("Discard must not authorize a write from unverified snapshot", count, f.server.requestCount)
             assertTrue(f.model.state.value.editor.readRequired)
             f.codes["/api/packages/active/editor"] = 200

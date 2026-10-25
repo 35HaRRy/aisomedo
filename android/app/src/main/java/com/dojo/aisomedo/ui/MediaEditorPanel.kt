@@ -51,14 +51,15 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
 @OptIn(ExperimentalLayoutApi::class)
 @Composable fun MediaEditorPanel(
     editor: MediaEditorState, busy: Boolean, scroll: ScrollState, viewport: Rect,
-    onRefresh: () -> Unit, onReorder: (List<String>) -> Unit, onRemove: (String) -> Unit, onRestore: (String) -> Unit,
-    onEditRanges: (String, List<RangeInput>) -> Unit, onSave: () -> Unit, onDiscard: () -> Unit,
+    onRefresh: () -> Unit, onReorder: (List<String>) -> Unit, onRemove: (String, Boolean) -> Unit, onRestore: (String) -> Unit,
+    onEditRanges: (String, List<RangeInput>) -> Unit, onSave: (String) -> Unit, onDiscard: (String) -> Unit,
     canMutate: Boolean = true,
     onPreview: suspend (String, File) -> Unit = { _, _ -> },
     previewEnabled: Boolean = true,
     canResolve: Boolean = canMutate,
     onResolveConflict: (String, Boolean) -> Unit = { _, _ -> },
     onRetryPersistence: () -> Unit = {},
+    onPhotoDuration: (String, String) -> Unit = { _, _ -> },
 ) {
     val snapshot = editor.snapshot
     val blocked = !canMutate || busy || editor.readRequired || editor.persistenceIssue != null || snapshot?.`package`?.status == "completed"
@@ -71,6 +72,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     var target by remember { mutableStateOf<DropTarget?>(null) }
     var opened by rememberSaveable(snapshot?.`package`?.folderName) { mutableStateOf<String?>(null) }
     var previewed by rememberSaveable(snapshot?.`package`?.folderName) { mutableStateOf<String?>(null) }
+    var removing by remember { mutableStateOf<String?>(null) }
     val currentViewport by rememberUpdatedState(viewport)
     val currentOrder by rememberUpdatedState(order)
     val currentReorder by rememberUpdatedState(onReorder)
@@ -144,10 +146,6 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                 stringResource(R.string.media_limit_help, seconds(total - snapshot.montage.maxDurationSeconds)), color = MaterialTheme.colorScheme.error)
             if (snapshot.renderStale) Text(stringResource(R.string.media_render_stale), style = MaterialTheme.typography.bodySmall)
             Text(stringResource(if (editor.dirty) R.string.media_unsaved else R.string.media_saved), style = MaterialTheme.typography.bodySmall)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onSave, enabled = !blocked && editor.canSave, modifier = Modifier.testTag("media-save")) { Text(stringResource(R.string.media_save)) }
-                TextButton(onClick = onDiscard, enabled = canResolve && !busy && editor.dirty && !(editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN))) { Text(stringResource(R.string.media_discard)) }
-            }
             Text(stringResource(R.string.media_drag_help), style = MaterialTheme.typography.bodySmall)
             ordered.forEachIndexed { index, media -> key(media.mediaId) {
                 val id = media.mediaId
@@ -202,9 +200,16 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                     }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (media.isVideo) OutlinedButton(onClick = { opened = if (opened == id) null else id }, enabled = !busy, modifier = Modifier.testTag("media-edit-$id")) { Text(stringResource(R.string.media_edit_trim)) }
-                        TextButton(onClick = { onRemove(id) }, enabled = !blocked, modifier = Modifier.testTag("media-remove-$id")) { Text(stringResource(R.string.media_remove)) }
+                        TextButton(onClick = { if (editor.isDirty(id)) removing = id else onRemove(id, false) }, enabled = !blocked, modifier = Modifier.testTag("media-remove-$id")) { Text(stringResource(R.string.media_remove)) }
                     }
                     if (opened == id) VideoRangeFields(media, editor.inputs[id].orEmpty(), blocked) { onEditRanges(id, it) }
+                    if (!media.isVideo) OutlinedTextField(editor.inputs[id]?.firstOrNull()?.end.orEmpty(), { onPhotoDuration(id, it) },
+                        label = { Text(stringResource(R.string.media_photo_duration)) }, singleLine = true, enabled = !blocked,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.testTag("photo-duration-$id"))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { onSave(id) }, enabled = !blocked && editor.canSave(id), modifier = Modifier.testTag("media-save-$id")) { Text(stringResource(R.string.media_save)) }
+                        TextButton(onClick = { onDiscard(id) }, enabled = canResolve && !busy && editor.isDirty(id) && !(editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)), modifier = Modifier.testTag("media-discard-$id")) { Text(stringResource(R.string.media_discard)) }
+                    }
                     if (after) HorizontalDivider(thickness = 3.dp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("media-insertion-$id-after"))
                 }
             } }
@@ -220,6 +225,10 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
             }
         }
     }
+    removing?.let { id -> AlertDialog(onDismissRequest = { removing = null },
+        title = { Text(stringResource(R.string.media_remove)) }, text = { Text(stringResource(R.string.media_remove_draft)) },
+        confirmButton = { TextButton(onClick = { removing = null; onRemove(id, true) }) { Text(stringResource(R.string.media_remove)) } },
+        dismissButton = { TextButton(onClick = { removing = null }) { Text(stringResource(R.string.cancel)) } }) }
 }
 
 @Composable private fun VideoRangeFields(media: EditorMediaOut, rows: List<RangeInput>, blocked: Boolean, onChange: (List<RangeInput>) -> Unit) {

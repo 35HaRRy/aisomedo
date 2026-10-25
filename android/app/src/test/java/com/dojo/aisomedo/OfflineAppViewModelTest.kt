@@ -128,7 +128,7 @@ class OfflineAppViewModelTest {
             f.model.startOAuth { fail("OAuth must not open offline") }; f.model.connectInstagramToken("blocked")
             f.model.uploadAsset("logo_asset", byteArrayOf(1)); f.model.reorderMedia(emptyList())
             f.model.removeMedia("media"); f.model.restoreMedia("media"); f.model.editRanges("media", listOf(RangeInput("1", "3")))
-            f.model.saveMediaTrims(); f.model.refresh(); f.settle()
+            f.model.saveMedia("a"); f.model.refresh(); f.settle()
             assertEquals(before, f.server.requestCount)
             assertEquals("Unsaved", f.model.state.value.drafts["caption"])
             assertFalse(f.model.state.value.canMutate)

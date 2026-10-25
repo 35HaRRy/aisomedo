@@ -1055,16 +1055,23 @@ class AppViewModel(
         if (state.value.editor.snapshot?.media?.none { it.mediaId == id && it.isVideo && it.status == "finalized" } != false) return
         persistEditor(state.value.editor.edit(id, ranges))
     }
-    fun discardMediaTrims() {
+    fun editPhotoDuration(id: String, value: String) {
+        if (!admit(media = true) || state.value.editor.persistenceIssue != null) return
+        if (state.value.editor.snapshot?.media?.none { it.mediaId == id && !it.isVideo && it.status == "finalized" } != false) return
+        persistEditor(state.value.editor.editPhotoDuration(id, value))
+    }
+    fun discardMedia(id: String) {
+        val editor = state.value.editor
+        if (!admit() || editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)) return
+        persistEditor(editor.discard(id))
+    }
+    fun discardReplacedMediaDraft() {
         val editor = state.value.editor
         if (!admit() || editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)) return
         val clean = editor.discard()
         val oldPackage = editor.draftPackageId
         val packageId = editor.snapshot?.`package`?.id
-        if (oldPackage == null || packageId == null || oldPackage == packageId) {
-            persistEditor(clean)
-            return
-        }
+        if (oldPackage == null || packageId == null || oldPackage == packageId) return
         val current = generation
         viewModelScope.launch {
             // Remove the replaced package's draft before binding this editor to the new package.
@@ -1075,7 +1082,8 @@ class AppViewModel(
             }
         }
     }
-    private fun mediaMutation(expected: ActiveEditorOut, savedTrims: Boolean = false, action: suspend (DojoApi, String) -> Unit) {
+    private fun mediaMutation(expected: ActiveEditorOut, savedTrims: Boolean = false, discardId: String? = null,
+        refreshOnConflict: Boolean = false, action: suspend (DojoApi, String) -> Any?) {
         val editor = state.value.editor
         if (!admit(media = true) || editor.snapshot == null || editor.persistenceIssue != null) return
         val epoch = network.value.epoch
@@ -1086,8 +1094,21 @@ class AppViewModel(
                 val draft = editor.storedDraft ?: StoredDraft(folderName = folder, baseContentRevision = editor.snapshot.contentRevision)
                 if (!persistEditor(state.value.editor.copy(storedDraft = draft.copy(uncertain = true), draftPackageId = editor.draftPackageId ?: editor.snapshot.`package`.id)).await()) return@launch
                 checkWrite(current, epoch, media = true)
-                action(api(), folder)
+                val response = action(api(), folder)
                 checkSession(current)
+                if (response is ClearPackageOut) {
+                    persistEditor(MediaEditorState(), editor.snapshot.`package`.id).await()
+                    saved.remove<Int>("clear_package_id"); saved.remove<String>("clear_package_folder"); saved.remove<Long>("clear_package_revision")
+                    val dashboard = api().dashboard(); checkRead(current, epoch)
+                    mutable.update { it.copy(dashboard = dashboard, dashboardFetchedAt = now()) }
+                    loadEditor(current, explicit = true)
+                    return@launch
+                }
+                if (discardId != null) persistEditor(state.value.editor.discard(discardId)).await()
+                if (response is ActiveEditorOut) {
+                    val accepted = state.value.editor.accept(response, expected = expected)
+                    persistEditor(accepted, editor.snapshot.`package`.id).await()
+                }
                 // A lost read must not let the next write reuse an unverified snapshot.
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = true)) }
                 loadEditor(current, explicit = true, expected = expected, savedTrims = savedTrims)
@@ -1106,6 +1127,7 @@ class AppViewModel(
                     val retained = state.value.editor.storedDraft
                     if (retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false))).await()
                 }
+                if (refreshOnConflict && e is ApiFailure && e.status == 409) loadEditor(current, explicit = true)
             }
         }
     }
@@ -1114,12 +1136,13 @@ class AppViewModel(
         if (order == snapshot.montage.order || order.size != order.toSet().size || order.toSet() != snapshot.montage.order.toSet()) return
         mediaMutation(snapshot.copy(montage = snapshot.montage.copy(order = order))) { api, folder -> api.orderMedia(folder, order, snapshot.packageRevision()) }
     }
-    fun removeMedia(id: String) {
+    fun removeMedia(id: String, confirmedDiscard: Boolean = false) {
         val snapshot = state.value.editor.snapshot ?: return
+        if (state.value.editor.isDirty(id) && !confirmedDiscard) return
         if (snapshot.media.none { it.mediaId == id && it.status == "finalized" }) return
         val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "removed") else it },
             montage = snapshot.montage.copy(order = snapshot.montage.order.filter { it != id }))
-        mediaMutation(expected) { api, folder -> api.removeMedia(folder, id, snapshot.packageRevision()) }
+        mediaMutation(expected, discardId = id) { api, folder -> api.removeMedia(folder, id, snapshot.packageRevision()) }
     }
     fun restoreMedia(id: String) {
         val snapshot = state.value.editor.snapshot ?: return
@@ -1128,18 +1151,42 @@ class AppViewModel(
         val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "finalized") else it }, montage = snapshot.montage.copy(order = order))
         mediaMutation(expected) { api, folder -> api.restoreMedia(folder, id, snapshot.packageRevision()) }
     }
-    fun saveMediaTrims() {
+    fun saveMedia(id: String) {
         val editor = state.value.editor
-        if (!editor.canSave) return
+        if (!editor.canSave(id)) return
         val snapshot = editor.snapshot ?: return
-        val selections = editor.selections ?: return
-        val removedSelections = snapshot.montage.selections.filterKeys { id -> snapshot.media.any { it.mediaId == id && it.status == "removed" } }
         val draft = editor.storedDraft ?: return
-        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(selections = removedSelections + selections)), savedTrims = true) { api, folder ->
+        val media = snapshot.media.find { it.mediaId == id } ?: return
+        val key = "${if (media.isVideo) "video" else "photo"}:$id"
+        val group = draft.groups[key] ?: return
+        mediaMutation(snapshot, savedTrims = true) { api, folder ->
             api.savePackageEdits(PackageEditIn(baseContentRevision = draft.baseContentRevision,
-                changes = draft.groups.map { (key, group) -> GroupEditIn(base = group.base, key = key, proposed = group.proposed) },
+                changes = listOf(GroupEditIn(base = group.base, key = key, proposed = group.proposed)),
                 expectedFolderName = folder, expectedPackageId = snapshot.`package`.id))
         }
+    }
+    fun retrySectionPreview(id: String) {
+        val snapshot = state.value.editor.snapshot ?: return
+        val preview = snapshot.media.find { it.mediaId == id && it.status == "finalized" }?.sectionPreview ?: return
+        if (preview.status != "failed" || preview.generation == null) return
+        mediaMutation(snapshot, refreshOnConflict = true) { api, folder -> api.retrySectionPreview(id,
+            SectionPreviewRetryIn(expectedFolderName = folder, expectedPackageId = snapshot.`package`.id, expectedGeneration = preview.generation)) }
+    }
+    fun renderActivePackage() {
+        val snapshot = state.value.editor.snapshot ?: return
+        if (snapshot.renderStatus in setOf("queued", "processing") || snapshot.montage.order.isEmpty() || snapshot.montage.overLimit || !snapshot.montage.durationComplete) return
+        mediaMutation(snapshot) { api, folder -> api.renderPackage(folder, snapshot.packageRevision(), retry = snapshot.renderStatus == "failed") }
+    }
+    fun clearActivePackage(confirmed: Boolean) {
+        if (!confirmed || !admit(media = true) || state.value.editor.persistenceIssue != null) return
+        val snapshot = state.value.editor.snapshot ?: return
+        val id = saved.get<Int>("clear_package_id") ?: snapshot.`package`.id
+        val folder = saved.get<String>("clear_package_folder") ?: snapshot.`package`.folderName
+        val revision = saved.get<Long>("clear_package_revision") ?: snapshot.contentRevision
+        if (id != snapshot.`package`.id || folder != snapshot.`package`.folderName) return
+        saved["clear_package_id"] = id; saved["clear_package_folder"] = folder; saved["clear_package_revision"] = revision
+        mediaMutation(snapshot) { api, _ -> api.clearPackage(ClearPackageIn(confirmed = true,
+            expectedFolderName = folder, expectedPackageId = id), PackageRevision(id, revision)) }
     }
     fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
     private fun clearNotificationSaved() { saved.keys().filter { it.startsWith("notification_") }.forEach { saved.remove<Any>(it) } }

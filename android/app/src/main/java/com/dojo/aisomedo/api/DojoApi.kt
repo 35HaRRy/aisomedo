@@ -280,6 +280,8 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun completedPackages(): List<PackageOut> = decode(request("GET", "/api/packages"))
     suspend fun completedPackage(folder: String): CompletedPackageOut = decode(request("GET", "/api/packages/${segment(folder)}"))
     suspend fun savePackageEdits(body: PackageEditIn): ActiveEditorOut = decode(request("PUT", "/api/packages/active/edits", json.encodeToJsonElement(body)))
+    suspend fun retrySectionPreview(id: String, body: SectionPreviewRetryIn): ActiveEditorOut = decode(request("POST", "/api/packages/active/media/${segment(id)}/sections/retry", json.encodeToJsonElement(body)))
+    suspend fun clearPackage(body: ClearPackageIn, expected: PackageRevision): ClearPackageOut = decode(request("POST", "/api/packages/active/clear", json.encodeToJsonElement(body), packageRevision = expected))
     suspend fun orderMedia(folder: String, order: List<String>, expected: PackageRevision) = request("PUT", "/api/packages/active/order",
         json.encodeToJsonElement(OrderIn(expectedFolderName = folder, order = order)), packageRevision = expected)
     suspend fun selectVideoRanges(folder: String, selections: Map<String, List<VideoRangeOut>>, expected: PackageRevision) = request("PUT", "/api/packages/active/selections",

@@ -42,8 +42,8 @@ class MediaEditorPanelTest {
             DojoTheme {
                 Column(Modifier.fillMaxSize().onGloballyPositioned { viewport = it.boundsInRoot() }
                     .verticalScroll(scroll).padding(16.dp)) {
-                    MediaEditorPanel(editor, busy, scroll, viewport, {}, { writes.add(it) }, {}, {},
-                        { id, rows -> editor = editor.edit(id, rows) }, {}, { editor = editor.discard() }, canMutate = canMutate)
+                    MediaEditorPanel(editor, busy, scroll, viewport, {}, { writes.add(it) }, { _, _ -> }, {},
+                        { id, rows -> editor = editor.edit(id, rows) }, {}, { id -> editor = editor.discard(id) }, canMutate = canMutate)
                 }
             }
         }
@@ -79,10 +79,10 @@ class MediaEditorPanelTest {
         compose.onNodeWithTag("range-add-a").performScrollTo().performClick()
         compose.onNodeWithTag("range-start-a-0").performScrollTo().performTextReplacement("9")
         compose.onNodeWithTag("range-end-a-0").performTextReplacement("2")
-        compose.onNodeWithTag("media-save").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("media-save-a").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithTag("range-error-a").assertExists()
         compose.onNodeWithTag("range-end-a-0").performScrollTo().performTextReplacement("10")
-        compose.onNodeWithTag("media-save").performScrollTo().assertIsEnabled()
+        compose.onNodeWithTag("media-save-a").performScrollTo().assertIsEnabled()
         compose.onNodeWithTag("media-duration").assertTextContains("21.00", substring = true)
     }
     @Test fun offlineEditorCannotChangeOrderRangesOrDiscard() {
@@ -91,8 +91,8 @@ class MediaEditorPanelTest {
         show()
         compose.onNodeWithTag("media-down-a").assertIsNotEnabled()
         compose.onNodeWithTag("media-remove-a").assertIsNotEnabled()
-        compose.onNodeWithTag("media-save").assertIsNotEnabled()
-        compose.onNodeWithText("Taslak değişikliklerden vazgeç").assertIsNotEnabled()
+        compose.onNodeWithTag("media-save-a").assertIsNotEnabled()
+        compose.onNodeWithTag("media-discard-a").assertIsNotEnabled()
         compose.onNodeWithTag("media-edit-a").performScrollTo().performClick()
         compose.onNodeWithTag("range-start-a-0").assertIsNotEnabled()
         compose.onNodeWithTag("range-end-a-0").assertIsNotEnabled()
@@ -104,7 +104,7 @@ class MediaEditorPanelTest {
         editor = editor.restore(1, draft)
         canMutate = false
         show()
-        compose.onNodeWithTag("media-save").assertIsNotEnabled()
+        compose.onNodeWithTag("media-save-a").assertIsNotEnabled()
         compose.onNodeWithTag("media-drag-a").assertIsNotEnabled()
         compose.onNodeWithTag("media-edit-a").performScrollTo().performClick()
         compose.onNodeWithTag("range-end-a-0").assertIsNotEnabled()
@@ -113,7 +113,7 @@ class MediaEditorPanelTest {
         editor = editor.edit("a", listOf(RangeInput("0", "5"))).copy(persistenceIssue = DraftIssue.STORAGE)
         show()
         compose.onNodeWithTag("draft-storage-warning").assertExists()
-        compose.onNodeWithTag("media-save").assertIsNotEnabled()
+        compose.onNodeWithTag("media-save-a").assertIsNotEnabled()
         compose.onNodeWithTag("draft-storage-retry").assertIsEnabled()
     }
     @Test fun stationaryEdgeDragScrollsAndCancellationLeavesOrderUntouched() {
