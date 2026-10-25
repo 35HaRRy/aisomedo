@@ -53,6 +53,7 @@ beforeEach(() => {
 });
 async function loadedPreview() {
   await screen.findByText(/Exact caption\s+#dojo/);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Bu zamanı atla" })).toBeEnabled());
   const video = screen.getByLabelText("İncelenen Reel");
   fireEvent.loadedData(video);
   await waitFor(() => expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled());
