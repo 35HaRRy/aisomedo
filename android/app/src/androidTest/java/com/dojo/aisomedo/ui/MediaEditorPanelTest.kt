@@ -21,6 +21,8 @@ import org.junit.Test
 class MediaEditorPanelTest {
     @get:Rule val compose = createComposeRule()
     private val writes = mutableListOf<List<String>>()
+    private val previews = mutableListOf<String>()
+    private val savedIds = mutableListOf<String>()
     private var editor by mutableStateOf(MediaEditorState().accept(snapshot()))
     private var busy by mutableStateOf(false)
     private var canMutate by mutableStateOf(true)
@@ -43,7 +45,9 @@ class MediaEditorPanelTest {
                 Column(Modifier.fillMaxSize().onGloballyPositioned { viewport = it.boundsInRoot() }
                     .verticalScroll(scroll).padding(16.dp)) {
                     MediaEditorPanel(editor, busy, scroll, viewport, {}, { writes.add(it) }, { _, _ -> }, {},
-                        { id, rows -> editor = editor.edit(id, rows) }, {}, { id -> editor = editor.discard(id) }, canMutate = canMutate)
+                        { id, rows -> editor = editor.edit(id, rows) }, { savedIds.add(it) }, { id -> editor = editor.discard(id) }, canMutate = canMutate,
+                        onPhotoDuration = { id, value -> editor = editor.editPhotoDuration(id, value) },
+                        onPreview = { path, _ -> previews.add(path); error("Fixture unavailable") })
                 }
             }
         }
@@ -108,6 +112,40 @@ class MediaEditorPanelTest {
         compose.onNodeWithTag("media-drag-a").assertIsNotEnabled()
         compose.onNodeWithTag("media-edit-a").performScrollTo().performClick()
         compose.onNodeWithTag("range-end-a-0").assertIsNotEnabled()
+    }
+    @Test fun collapsedPhotoAndVideoHeightsMatchAndListDownloadsOnlyImages() {
+        val current = snapshot()
+        editor = MediaEditorState().accept(current.copy(media = current.media.map { media ->
+            if (media.mediaId == "b") media.copy(isVideo = false, filename = "photo.jpg", sourceDuration = null, effectiveDuration = 3.0, previewUrl = "/photo.jpg")
+            else media.copy(thumbnailUrl = "/${media.mediaId}.jpg", originalUrl = "/${media.mediaId}.mov")
+        }))
+        show()
+        val videoBounds = compose.onNodeWithTag("media-row-a").getUnclippedBoundsInRoot()
+        val photoBounds = compose.onNodeWithTag("media-row-b").getUnclippedBoundsInRoot()
+        assertEquals(videoBounds.bottom - videoBounds.top, photoBounds.bottom - photoBounds.top)
+        compose.onNodeWithTag("photo-duration-b").performScrollTo().performTextReplacement("4.5")
+        compose.runOnIdle {
+            assertEquals("4.5", editor.inputs.getValue("b")[0].end)
+            assertFalse(previews.any { it.endsWith(".mov") })
+        }
+    }
+    @Test fun saveAndDiscardAreCardLocalWithInvalidSibling() {
+        editor = editor.edit("a", listOf(RangeInput("0", "5"))).edit("c", listOf(RangeInput("0", "")))
+        show()
+        compose.onNodeWithTag("media-save-a").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithTag("media-discard-a").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("a"), savedIds)
+            assertFalse(editor.isDirty("a")); assertTrue(editor.isDirty("c"))
+        }
+        compose.onNodeWithTag("media-edit-c").performScrollTo().performClick()
+        val expanded = compose.onNodeWithTag("media-row-c").getUnclippedBoundsInRoot()
+        val collapsed = compose.onNodeWithTag("media-row-a").getUnclippedBoundsInRoot()
+        assertEquals(collapsed.right - collapsed.left, expanded.right - expanded.left)
+        compose.onNodeWithTag("media-edit-c").performScrollTo().performClick()
+        compose.onNodeWithTag("media-edit-c").performClick()
+        compose.onNodeWithTag("range-end-c-0").assertTextContains("")
+        compose.runOnIdle { assertEquals("", editor.inputs.getValue("c")[0].end) }
     }
     @Test fun storageFailureWarnsAndKeepsSaveDisabled() {
         editor = editor.edit("a", listOf(RangeInput("0", "5"))).copy(persistenceIssue = DraftIssue.STORAGE)

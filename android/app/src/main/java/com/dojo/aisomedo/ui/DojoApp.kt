@@ -106,7 +106,9 @@ import com.dojo.aisomedo.notifications.*
                                     canMutate = state.canEditMedia, onPreview = model::downloadMediaPreview,
                                     previewEnabled = state.networkConnected && state.authoritative,
                                     canResolve = state.canMutate, onResolveConflict = model::resolveMediaConflict,
-                                    onRetryPersistence = model::retryEditorPersistence, onPhotoDuration = model::editPhotoDuration)
+                                    onRetryPersistence = model::retryEditorPersistence, onPhotoDuration = model::editPhotoDuration,
+                                    onRetryPreview = model::retrySectionPreview, onClear = model::clearActivePackage,
+                                    onDiscardReplaced = model::discardReplacedMediaDraft)
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val runningSinceMillis by uploads.runningSinceMillis.collectAsStateWithLifecycle()
@@ -128,7 +130,8 @@ import com.dojo.aisomedo.notifications.*
                                         })
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
-                                PendingPanel(state.dashboard, state.canMutate && !state.stale, onPending)
+                                 PendingPanel(state.dashboard, state.canMutate && !state.stale, onPending)
+                                 SavedReelPanel(state.editor, state.canEditMedia && state.networkConnected, model::renderActivePackage, model::downloadMediaPreview)
                             }
                             Destination.COMPLETED -> CompletedPackagesScreen(state, model::selectCompleted, model::refreshCompleted, model::downloadMediaPreview)
                             Destination.ACTIVITY -> {
