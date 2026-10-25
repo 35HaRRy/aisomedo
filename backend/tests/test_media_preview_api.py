@@ -115,3 +115,29 @@ def test_older_cached_editor_models_keep_optional_preview_defaults(tmp_path):
     assert restored.render_duration is None
     assert restored.media[0].original_url is None
     assert restored.media[0].section_preview is None
+
+
+def test_cleanup_retry_never_uses_old_revision_to_clear_replacement(tmp_path, monkeypatch):
+    import shutil
+
+    client, publishing, _, _, _ = app(tmp_path)
+    snapshot = client.get("/api/packages/active/editor").json()
+    package = snapshot["package"]
+    headers = {"If-Match": f'"{package["id"]}:{snapshot["content_revision"]}"'}
+    body = {"confirmed": True, "expected_package_id": package["id"],
+            "expected_folder_name": package["folder_name"]}
+    with monkeypatch.context() as patch:
+        def locked(*args, **kwargs):
+            raise OSError("cleanup directory locked")
+
+        patch.setattr(shutil, "rmtree", locked)
+        failed = client.post("/api/packages/active/clear", json=body, headers=headers)
+        assert failed.status_code == 503
+    replacement = publishing.ensure_active_package()
+    wrong = {**body, "expected_package_id": replacement.id,
+             "expected_folder_name": replacement.folder_name}
+    assert client.post("/api/packages/active/clear", json=wrong, headers=headers).status_code == 409
+    assert publishing.get_active_package() == replacement
+    assert client.post("/api/packages/active/clear", json=body, headers=headers).status_code == 200
+    assert publishing.get_active_package() == replacement
+    assert not list(tmp_path.glob(".clearing-*"))

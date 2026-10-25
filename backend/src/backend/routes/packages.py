@@ -331,6 +331,8 @@ def clear_package(
 ) -> dict:
     if not body.confirmed:
         raise HTTPException(status_code=409, detail="explicit confirmation required")
+    if revision[0] != body.expected_package_id:
+        raise HTTPException(status_code=409, detail="cleanup package identity changed")
     try:
         return publishing.clear_active_package(expected_folder_name=body.expected_folder_name,
                                                expected_package_id=body.expected_package_id)

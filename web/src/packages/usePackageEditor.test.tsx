@@ -201,6 +201,33 @@ it("confirmed removal discards only acknowledged target, never failed requests",
   expect(result.current.stale).toBe(false);
 });
 
+it("lost removal acknowledgement reconciles target after reopen without replay or sibling loss", async () => {
+  const { server, result, unmount } = await setup();
+  act(() => {
+    result.current.setRanges("a", [{ start: 0, end: 5 }]);
+    result.current.setRanges("b", [{ start: 0, end: 6 }]);
+    result.current.setInput("b", 0, "end", "");
+  });
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    const response = await server.fetcher(url, init);
+    if (url.includes("/media/a/remove")) throw new TypeError("removal response lost");
+    return response;
+  });
+  await act(async () => expect(await result.current.remove("a", true)).toBe(false));
+  unmount(); vi.stubGlobal("fetch", server.fetcher);
+  const reopened = renderHook(() => usePackageEditor(), { wrapper });
+  await waitFor(() => expect(reopened.result.current.snapshot).not.toBeNull());
+  await act(async () => { await reopened.result.current.refresh(); });
+  expect(reopened.result.current.isDirty("a")).toBe(false);
+  expect(reopened.result.current.draftInputs.b).toEqual([{ start: "0", end: "" }]);
+  expect(reopened.result.current.conflicts).toEqual({});
+  expect(reopened.result.current.stale).toBe(false);
+  expect(server.writes).toHaveLength(1);
+  server.snapshot.media[0].status = "finalized";
+  await act(async () => { await reopened.result.current.refresh(); });
+  expect(reopened.result.current.isDirty("a")).toBe(false);
+});
+
 it("photo save ignores another card's over-limit draft but checks persisted total", async () => {
   const { server, result } = await setup();
   server.snapshot.media[1] = { ...server.snapshot.media[1], is_video: false, source_duration: null, effective_duration: 3 };

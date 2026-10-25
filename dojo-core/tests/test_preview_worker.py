@@ -39,6 +39,57 @@ def test_worker_attaches_only_saved_sections_as_derived_state(tmp_path):
     assert not (tmp_path / "tmp" / f"section-preview-{job.job_id}").exists()
 
 
+def test_changed_sections_delete_retired_output_only_after_commit(tmp_path, monkeypatch):
+    store, seam, mid, _ = prepared(tmp_path)
+    seam.process_job(seam.claim_next_job().job_id)
+    package = seam.get_active_package()
+    record = state(store, seam).document["section_previews"][mid]
+    retired = tmp_path / package.folder_name / record["artifact_ref"]
+    original = seam.get_active_media_artifact(mid, "original", expected_package_id=package.id,
+                                              expected_folder_name=package.folder_name).path
+    review = tmp_path / package.folder_name / "reviews" / "immutable.mp4"
+    review.parent.mkdir()
+    review.write_bytes(b"immutable-review")
+    enqueue = store.create_job_once
+
+    def rejected(*args, **kwargs):
+        raise RuntimeError("queue write failed")
+
+    monkeypatch.setattr(store, "create_job_once", rejected)
+    with pytest.raises(RuntimeError, match="queue write failed"):
+        save_sections(seam, mid, [{"start": 10, "end": 15}])
+    assert retired.is_file()
+    monkeypatch.setattr(store, "create_job_once", enqueue)
+    save_sections(seam, mid, [{"start": 10, "end": 15}])
+    assert not retired.exists()
+    seam.process_job(seam.claim_next_job().job_id)
+    current = state(store, seam).document["section_previews"][mid]
+    assert (tmp_path / package.folder_name / current["artifact_ref"]).is_file()
+    assert original.is_file() and review.read_bytes() == b"immutable-review"
+
+
+def test_worker_maintenance_retries_retired_file_locked_during_save(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    store, seam, mid, _ = prepared(tmp_path)
+    seam.process_job(seam.claim_next_job().job_id)
+    record = state(store, seam).document["section_previews"][mid]
+    retired = tmp_path / seam.get_active_package().folder_name / record["artifact_ref"]
+    unlink = Path.unlink
+
+    def locked(path, *args, **kwargs):
+        if path == retired:
+            raise PermissionError("player has the file open")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", locked)
+        save_sections(seam, mid, [{"start": 10, "end": 15}])
+    assert retired.is_file()
+    seam.evaluate_due_work()
+    assert not retired.exists()
+
+
 @pytest.mark.parametrize("change", ["aba", "remove", "clear", "complete", "source"])
 def test_late_encoder_results_cannot_revive_obsolete_work(tmp_path, change):
     store, seam, mid, renderer = prepared(tmp_path)

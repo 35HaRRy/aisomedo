@@ -66,7 +66,7 @@ data class MediaEditorState(
         val groups = storedDraft?.groups.orEmpty() - "video:$id" - "photo:$id"
         val remaining = conflicts - "video:$id" - "photo:$id"
         val next = copy(inputs = inputs + (id to fresh), baseInputs = baseInputs + (id to fresh),
-            conflicts = remaining, storedDraft = storedDraft?.copy(groups = groups),
+            conflicts = remaining, storedDraft = storedDraft?.copy(groups = groups, pendingRemovals = storedDraft.pendingRemovals - id),
             readRequired = readRequired && (issue != EditorIssue.CONFLICT || remaining.isNotEmpty()),
             issue = if (issue == EditorIssue.CONFLICT && remaining.isEmpty()) null else issue)
         return next.copy(storedDraft = next.toDraft())
@@ -83,10 +83,11 @@ data class MediaEditorState(
             val base = groups[key]?.base ?: if (media.isVideo) rangesGroup(baseInputs[id].orEmpty()) else photoGroup(baseInputs[id]?.firstOrNull()?.end.orEmpty())
             groups[key] = DraftGroup(base, if (media.isVideo) rangesGroup(rows) else photoGroup(rows.firstOrNull()?.end.orEmpty())); edited[id] = rows
         }
-        if (groups.isEmpty() && storedDraft?.uncertain != true) return null
+        if (groups.isEmpty() && storedDraft?.uncertain != true && storedDraft?.pendingRemovals.isNullOrEmpty()) return null
         return StoredDraft(localRevision = storedDraft?.localRevision ?: 0, folderName = storedDraft?.folderName ?: current.`package`.folderName,
             baseContentRevision = storedDraft?.baseContentRevision ?: current.contentRevision,
-            groups = groups, inputs = edited, uncertain = storedDraft?.uncertain ?: false)
+            groups = groups, inputs = edited, uncertain = storedDraft?.uncertain ?: false,
+            pendingRemovals = storedDraft?.pendingRemovals.orEmpty())
     }
     fun restore(packageId: Int, draft: StoredDraft): MediaEditorState = copy(storedDraft = draft, draftPackageId = packageId,
         inputs = inputs + draft.inputs, baseInputs = baseInputs + draftBaselines(draft), baseFolder = draft.folderName,
@@ -94,7 +95,7 @@ data class MediaEditorState(
     fun discard(): MediaEditorState = snapshot?.let {
         MediaEditorState().accept(it).copy(readRequired = readRequired && this.issue == EditorIssue.UNCERTAIN,
             issue = if (this.issue == EditorIssue.UNCERTAIN) this.issue else null,
-            storedDraft = storedDraft?.takeIf { draft -> draft.uncertain }?.copy(groups = emptyMap(), inputs = emptyMap()))
+            storedDraft = storedDraft?.takeIf { draft -> draft.uncertain }?.copy(groups = emptyMap(), inputs = emptyMap(), pendingRemovals = emptySet()))
     } ?: MediaEditorState()
 
     fun accept(next: ActiveEditorOut, explicit: Boolean = false, expected: ActiveEditorOut? = null, savedTrims: Boolean = false): MediaEditorState {
@@ -105,13 +106,16 @@ data class MediaEditorState(
         val conflicts = mutableMapOf<String, JsonObject>()
         if (draft != null && !otherPackage) {
             val groups = draft.groups.toMutableMap(); val retained = draft.inputs.toMutableMap()
-            for ((key, group) in draft.groups) {
+            val removed = draft.pendingRemovals.filter { id -> next.media.any { it.mediaId == id && it.status == "removed" } }.toSet()
+            for (id in removed) { groups.remove("video:$id"); groups.remove("photo:$id"); retained.remove(id) }
+            for ((key, group) in groups.toMap()) {
                 val current = serverGroup(next, key)
                 if (current == group.proposed) { groups.remove(key); retained.remove(key.substringAfter(':')) }
                 else if (current != group.base) conflicts[key] = current
             }
             val uncertain = draft.uncertain && !explicit && expected == null && groups.isNotEmpty()
-            draft = if (groups.isNotEmpty() || uncertain) draft.copy(groups = groups, inputs = retained, uncertain = uncertain) else null
+            val pending = draft.pendingRemovals - removed
+            draft = if (groups.isNotEmpty() || uncertain || pending.isNotEmpty()) draft.copy(groups = groups, inputs = retained, uncertain = uncertain, pendingRemovals = pending) else null
         }
         val blocked = otherPackage || conflicts.isNotEmpty() || !explicit && expected == null && issue == EditorIssue.UNCERTAIN
         return copy(snapshot = next, storedDraft = draft, draftPackageId = if (draft != null) draftPackageId ?: snapshot?.`package`?.id ?: next.`package`.id else null,

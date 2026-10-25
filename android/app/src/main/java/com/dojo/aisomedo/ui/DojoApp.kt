@@ -108,7 +108,9 @@ import com.dojo.aisomedo.notifications.*
                                     canResolve = state.canMutate, onResolveConflict = model::resolveMediaConflict,
                                     onRetryPersistence = model::retryEditorPersistence, onPhotoDuration = model::editPhotoDuration,
                                     onRetryPreview = model::retrySectionPreview, onClear = model::clearActivePackage,
-                                    onDiscardReplaced = model::discardReplacedMediaDraft)
+                                    onDiscardReplaced = model::discardReplacedMediaDraft,
+                                    pendingClearFolder = state.pendingClearFolder,
+                                    canClear = state.canMutate && (state.canEditMedia || state.pendingClearFolder != null && !state.clearReadRequired))
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val runningSinceMillis by uploads.runningSinceMillis.collectAsStateWithLifecycle()

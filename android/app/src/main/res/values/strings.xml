@@ -99,6 +99,7 @@
     <string name="media_timeline">Video zaman çizelgesi</string>
     <string name="media_close_fullscreen">Tam ekranı kapat</string>
     <string name="media_clear">Paketi temizle</string>
+    <string name="media_retry_clear">Paket temizliğini tekrar dene</string>
     <string name="media_clear_warning">Bu işlem geri alınamaz. Aktif paketin tüm dosyaları ve ilişkili kayıtları silinecek. Tamamlanmış paketler korunur. Devam edilsin mi?</string>
     <string name="media_saved_reel">Kaydedilmiş Reel önizlemesi</string>
     <string name="media_render">Kaydedilmiş montajı render et</string>

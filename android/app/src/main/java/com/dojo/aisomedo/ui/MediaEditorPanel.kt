@@ -71,6 +71,8 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     onRetryPreview: (String) -> Unit = {},
     onClear: (Boolean) -> Unit = {},
     onDiscardReplaced: () -> Unit = {},
+    canClear: Boolean = canMutate,
+    pendingClearFolder: String? = null,
 ) {
     val snapshot = editor.snapshot
     val blocked = !canMutate || busy || editor.readRequired || editor.persistenceIssue != null || snapshot?.`package`?.status == "completed"
@@ -119,7 +121,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     }
     CollapsiblePanel(stringResource(R.string.media_management), actions = {
         MediaIconAction(stringResource(R.string.refresh), Icons.Default.Refresh, !busy, onClick = onRefresh)
-        MediaIconAction(stringResource(R.string.media_clear), Icons.Default.Delete, !blocked, onClick = { clearing = true })
+        MediaIconAction(stringResource(if (pendingClearFolder == null) R.string.media_clear else R.string.media_retry_clear), Icons.Default.Delete, !busy && canClear, onClick = { clearing = true })
     }) {
         editor.persistenceIssue?.let { issue ->
             Text(stringResource(if (issue == DraftIssue.STORAGE) R.string.draft_storage_failed else R.string.draft_corrupt),
@@ -274,7 +276,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         confirmButton = { TextButton(onClick = { removing = null; onRemove(id, true) }) { Text(stringResource(R.string.media_remove)) } },
         dismissButton = { TextButton(onClick = { removing = null }) { Text(stringResource(R.string.cancel)) } }) }
     if (clearing) AlertDialog(onDismissRequest = { clearing = false }, title = { Text(stringResource(R.string.media_clear)) },
-        text = { Text(stringResource(R.string.media_clear_warning)) },
+        text = { Text("${pendingClearFolder ?: snapshot?.`package`?.folderName.orEmpty()}\n${stringResource(R.string.media_clear_warning)}") },
         confirmButton = { TextButton(onClick = { clearing = false; onClear(true) }) { Text(stringResource(R.string.media_clear)) } },
         dismissButton = { TextButton(onClick = { clearing = false }) { Text(stringResource(R.string.cancel)) } })
     if (previewEnabled) previewed?.let { id -> byId[id]?.let { media -> key(media.mediaId, snapshot?.contentRevision) {

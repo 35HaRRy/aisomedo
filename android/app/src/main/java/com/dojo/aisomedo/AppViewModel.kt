@@ -71,6 +71,8 @@ data class AppUiState(
     val completedFolder: String? = null,
     val completedDetail: CompletedPackageOut? = null,
     val completedError: Boolean = false,
+    val pendingClearFolder: String? = null,
+    val clearReadRequired: Boolean = false,
 ) {
     val showConnectionNotice get() = phase == Phase.READY &&
         (!networkConnected || livePhase == LivePhase.DISCONNECTED || !authoritative && issue != null)
@@ -253,6 +255,8 @@ class AppViewModel(
 
     init {
         mutable.update { it.copy(
+            pendingClearFolder = saved.get<String>("clear_package_folder"),
+            clearReadRequired = saved.get<Boolean>("clear_requires_read") ?: saved.contains("clear_package_id"),
             drafts = saved.keys().filter { key -> key.startsWith("draft_") }.associate { key -> key.removePrefix("draft_") to saved.get<String>(key).orEmpty() },
             dirtySteps = saved.get<ArrayList<String>>("dirty_steps")?.toSet().orEmpty(),
             pendingAssets = listOf("logo_asset", "intro_asset", "outro_asset").mapNotNull { field ->
@@ -357,6 +361,8 @@ class AppViewModel(
             mutable.update { AppUiState(origin = origin, busy = it.busy, networkConnected = network.value.connected) }
         }
         token = credential?.token; bindingId = credential?.bindingId; boundRevision = revision
+        if (saved.get<Int>("clear_package_id") != null &&
+            (saved.get<String>("clear_origin") != origin || saved.get<String>("clear_binding") != bindingId)) forgetClearTarget()
         mutable.update { it.copy(origin = origin, issue = if (storageIssue) UiIssue.STORAGE else it.issue) }
         cached?.let { value ->
             mutable.update { it.copy(compat = value.compat ?: it.compat, updateUrl = value.updateUrl ?: it.updateUrl) }
@@ -1029,6 +1035,7 @@ class AppViewModel(
                 return
             }
             val old = state.value.editor
+            reconcileClearRead(explicit)
             val accepted = old.accept(snapshot, explicit, expected, savedTrims)
             mutable.update { it.copy(editor = accepted, editorFetchedAt = now()) }
             if (old.storedDraft != accepted.storedDraft && draftStore != null) {
@@ -1041,6 +1048,7 @@ class AppViewModel(
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = true, issue = EditorIssue.READ)) }
                 throw e
             }
+            reconcileClearRead(explicit)
             mutable.update { it.copy(editor = if (it.editor.dirty) it.editor.copy(snapshot = null, readRequired = true, issue = EditorIssue.CONFLICT) else MediaEditorState(), editorFetchedAt = now()) }
             persistState(current)
         } catch (e: CancellationException) { throw e }
@@ -1092,18 +1100,12 @@ class AppViewModel(
             try {
                 checkWrite(current, epoch, media = true)
                 val draft = editor.storedDraft ?: StoredDraft(folderName = folder, baseContentRevision = editor.snapshot.contentRevision)
-                if (!persistEditor(state.value.editor.copy(storedDraft = draft.copy(uncertain = true), draftPackageId = editor.draftPackageId ?: editor.snapshot.`package`.id)).await()) return@launch
+                if (!persistEditor(state.value.editor.copy(storedDraft = draft.copy(uncertain = true,
+                    pendingRemovals = if (discardId == null) draft.pendingRemovals else draft.pendingRemovals + discardId),
+                    draftPackageId = editor.draftPackageId ?: editor.snapshot.`package`.id)).await()) return@launch
                 checkWrite(current, epoch, media = true)
                 val response = action(api(), folder)
                 checkSession(current)
-                if (response is ClearPackageOut) {
-                    persistEditor(MediaEditorState(), editor.snapshot.`package`.id).await()
-                    saved.remove<Int>("clear_package_id"); saved.remove<String>("clear_package_folder"); saved.remove<Long>("clear_package_revision")
-                    val dashboard = api().dashboard(); checkRead(current, epoch)
-                    mutable.update { it.copy(dashboard = dashboard, dashboardFetchedAt = now()) }
-                    loadEditor(current, explicit = true)
-                    return@launch
-                }
                 if (discardId != null) persistEditor(state.value.editor.discard(discardId)).await()
                 if (response is ActiveEditorOut) {
                     val accepted = state.value.editor.accept(response, expected = expected)
@@ -1125,7 +1127,8 @@ class AppViewModel(
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = issue != EditorIssue.INVALID, issue = issue)) }
                 if (e is ApiFailure && e.status in setOf(404, 409, 422)) {
                     val retained = state.value.editor.storedDraft
-                    if (retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false))).await()
+                    if (retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false,
+                        pendingRemovals = if (discardId == null) retained.pendingRemovals else retained.pendingRemovals - discardId))).await()
                 }
                 if (refreshOnConflict && e is ApiFailure && e.status == 409) loadEditor(current, explicit = true)
             }
@@ -1178,15 +1181,81 @@ class AppViewModel(
         mediaMutation(snapshot) { api, folder -> api.renderPackage(folder, snapshot.packageRevision(), retry = snapshot.renderStatus == "failed") }
     }
     fun clearActivePackage(confirmed: Boolean) {
-        if (!confirmed || !admit(media = true) || state.value.editor.persistenceIssue != null) return
-        val snapshot = state.value.editor.snapshot ?: return
-        val id = saved.get<Int>("clear_package_id") ?: snapshot.`package`.id
-        val folder = saved.get<String>("clear_package_folder") ?: snapshot.`package`.folderName
-        val revision = saved.get<Long>("clear_package_revision") ?: snapshot.contentRevision
-        if (id != snapshot.`package`.id || folder != snapshot.`package`.folderName) return
+        if (!confirmed || !admit() || state.value.editor.persistenceIssue != null) return
+        val editor = state.value.editor
+        val pending = saved.get<Int>("clear_package_id")
+        if (pending != null && (saved.get<String>("clear_origin") != state.value.origin || saved.get<String>("clear_binding") != bindingId)) {
+            forgetClearTarget(); return
+        }
+        if (pending == null && !admit(media = true) || pending != null && state.value.clearReadRequired) return
+        val snapshot = editor.snapshot
+        val id = pending ?: snapshot?.`package`?.id ?: return
+        val folder = saved.get<String>("clear_package_folder") ?: snapshot?.`package`?.folderName ?: return
+        val revision = saved.get<Long>("clear_package_revision") ?: snapshot?.contentRevision ?: return
+        val ownsDraft = (editor.draftPackageId ?: snapshot?.`package`?.id) == id
         saved["clear_package_id"] = id; saved["clear_package_folder"] = folder; saved["clear_package_revision"] = revision
-        mediaMutation(snapshot) { api, _ -> api.clearPackage(ClearPackageIn(confirmed = true,
-            expectedFolderName = folder, expectedPackageId = id), PackageRevision(id, revision)) }
+        saved["clear_origin"] = state.value.origin; saved["clear_binding"] = bindingId
+        saved["clear_requires_read"] = true
+        mutable.update { it.copy(pendingClearFolder = folder, clearReadRequired = true) }
+        val epoch = network.value.epoch
+        launch { current ->
+            try {
+                checkWrite(current, epoch)
+                if (ownsDraft) {
+                    val draft = editor.storedDraft ?: StoredDraft(folderName = folder, baseContentRevision = revision)
+                    if (!persistEditor(editor.copy(storedDraft = draft.copy(uncertain = true), draftPackageId = id,
+                        readRequired = true, issue = EditorIssue.UNCERTAIN), id).await()) return@launch
+                }
+                checkWrite(current, epoch)
+                api().clearPackage(ClearPackageIn(confirmed = true, expectedFolderName = folder,
+                    expectedPackageId = id), PackageRevision(id, revision))
+                checkSession(current)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                checkSession(current)
+                if (error is ApiFailure && error.status in setOf(401, 426)) throw error
+                // A 404 after the identity-bound clear route checked its cleanup journal
+                // proves that neither the package nor unfinished cleanup remains.
+                if (error !is ApiFailure || error.status != 404) {
+                    val definite = error is ApiFailure && error.status in setOf(409, 422)
+                    mutable.update { it.copy(editor = it.editor.copy(readRequired = true,
+                        issue = if (definite) EditorIssue.CONFLICT else EditorIssue.UNCERTAIN)) }
+                    if (definite) {
+                        forgetClearTarget()
+                        val retained = state.value.editor.storedDraft
+                        if (ownsDraft && retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false)), id).await()
+                    }
+                    return@launch
+                }
+            }
+            if (ownsDraft) {
+                if (!persistEditor(MediaEditorState(draftPackageId = id), id).await()) return@launch
+            }
+            else clearCapturedDraft(current, id)
+            forgetClearTarget()
+            val dashboard = api().dashboard(); checkRead(current, epoch)
+            mutable.update { it.copy(dashboard = dashboard, dashboardFetchedAt = now()) }
+            loadEditor(current, explicit = true)
+        }
+    }
+    private fun forgetClearTarget() {
+        saved.remove<Int>("clear_package_id"); saved.remove<String>("clear_package_folder"); saved.remove<Long>("clear_package_revision")
+        saved.remove<Boolean>("clear_requires_read")
+        saved.remove<String>("clear_origin"); saved.remove<String>("clear_binding")
+        mutable.update { it.copy(pendingClearFolder = null, clearReadRequired = false) }
+    }
+    private suspend fun clearCapturedDraft(current: Int, id: Int) {
+        val origin = state.value.origin; val binding = bindingId ?: throw CancellationException("Session changed")
+        draftWrite?.await()
+        withContext(Dispatchers.IO) { synchronized(store) {
+            if (generation != current || store.readSession(origin)?.bindingId != binding) throw CancellationException("Session changed")
+            draftStore?.clear(origin, binding, id)
+        } }
+    }
+    private fun reconcileClearRead(explicit: Boolean) {
+        if (!explicit || saved.get<Int>("clear_package_id") == null) return
+        saved["clear_requires_read"] = false
+        mutable.update { it.copy(clearReadRequired = false) }
     }
     fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
     private fun clearNotificationSaved() { saved.keys().filter { it.startsWith("notification_") }.forEach { saved.remove<Any>(it) } }

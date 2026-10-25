@@ -12,6 +12,7 @@ export type StoredDraft = {
   groups: Record<string, DraftGroup>;
   inputs: Record<string, RangeInput[]>;
   uncertain: boolean;
+  pendingRemovals?: string[];
 };
 type Tombstone = { schemaVersion: 1; localRevision: number; deleted: true };
 type StoredEntry = StoredDraft | Tombstone;
@@ -51,6 +52,11 @@ export function reconcileDraft(key: DraftKey, draft: StoredDraft, snapshot: Acti
   const applicable = key.packageId === snapshot.package.id && draft.folderName === snapshot.package.folder_name
     && snapshot.package.status === "active";
   if (!applicable) return { draft: next, conflicts, applicable };
+  next.pendingRemovals = (next.pendingRemovals ?? []).filter(id => {
+    if (!snapshot.media.some(media => media.media_id === id && media.status === "removed")) return true;
+    delete next.groups[`video:${id}`]; delete next.groups[`photo:${id}`]; delete next.inputs[id];
+    return false;
+  });
   const groups = Object.entries(next.groups);
   for (const [name, group] of groups) {
     const current = serverGroup(snapshot, name);
@@ -60,7 +66,7 @@ export function reconcileDraft(key: DraftKey, draft: StoredDraft, snapshot: Acti
     } else if (!sameGroup(current, group.base)) conflicts[name] = current;
   }
   if (groups.length && !Object.keys(next.groups).length) next.uncertain = false;
-  return { draft: Object.keys(next.groups).length || next.uncertain ? next : null, conflicts, applicable };
+  return { draft: Object.keys(next.groups).length || next.uncertain || next.pendingRemovals.length ? next : null, conflicts, applicable };
 }
 
 export function resolveDraftConflict(
@@ -80,10 +86,12 @@ export function resolveDraftConflict(
 }
 
 function parseDraft(value: unknown, allowZero = false): StoredDraft {
-  if (!record(value) || Object.keys(value).sort().join() !== "baseContentRevision,folderName,groups,inputs,localRevision,schemaVersion,uncertain"
+  if (!record(value) || Object.keys(value).filter(key => key !== "pendingRemovals").sort().join() !== "baseContentRevision,folderName,groups,inputs,localRevision,schemaVersion,uncertain"
     || value.schemaVersion !== 1 || !Number.isSafeInteger(value.localRevision) || Number(value.localRevision) < (allowZero ? 0 : 1)
     || typeof value.folderName !== "string" || !value.folderName || !positive(value.baseContentRevision)
     || !record(value.groups) || !record(value.inputs) || typeof value.uncertain !== "boolean") throw new Error("draft_corrupt");
+  if (value.pendingRemovals !== undefined && (!Array.isArray(value.pendingRemovals)
+    || value.pendingRemovals.some(id => typeof id !== "string" || !safeId(id)))) throw new Error("draft_corrupt");
   for (const [key, group] of Object.entries(value.groups)) {
     const field = key.startsWith("video:") ? "ranges" : key.startsWith("photo:") ? "seconds"
       : ({ order: "ids", caption: "text", branding: "settings" } as Record<string, string>)[key];

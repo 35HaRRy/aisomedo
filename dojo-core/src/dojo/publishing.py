@@ -333,6 +333,12 @@ class DojoPublishing:
 
         now = self._clock.now().astimezone(ISTANBUL)
         completed_folder_name = f"{existing.folder_name}-completed"
+        completed_manifest = self._load_manifest(existing)
+        self._packages.after_commit(
+            f"preview-sweep:{existing.id}", lambda: self._prune_retired_preview_files(
+                replace(existing, folder_name=completed_folder_name), completed_manifest,
+            ),
+        )
 
         self._jobs.cancel_media_jobs(existing.id, None, kinds=("section_preview", "thumbnail"),
                                      cancelled_at=now)
@@ -1411,6 +1417,10 @@ class DojoPublishing:
                     if finished is not None:
                         record.update(status="failed", artifact_ref=None, duration=None)
         self._write_manifest(package, manifest)
+        self._packages.after_commit(
+            f"preview-sweep:{package.id}",
+            lambda: self._prune_retired_preview_files(package, manifest),
+        )
 
     def _process_render_job(self, job: Job) -> None:
         payload = job.payload or {}
@@ -2181,6 +2191,10 @@ class DojoPublishing:
                     yield
                     return
                 raise NoActivePackage("no active package")
+            if allow_missing and package.id != package_id \
+                    and (self.media_root / f".clearing-{package_id}.json").is_file():
+                yield  # Only the captured old identity's cleanup journal may be retried.
+                return
             state = self._packages.read_package_state(package.id)
             if package.id != package_id or state is None \
                     or state.content_revision != content_revision:
@@ -2380,6 +2394,10 @@ class DojoPublishing:
             self._packages.after_commit(
                 f"manifest:{package.id}", lambda: self.export_manifest(package),
             )
+            self._packages.after_commit(
+                f"preview-sweep:{package.id}",
+                lambda: self._prune_retired_preview_files(package, manifest),
+            )
 
     @staticmethod
     def _section_preview_input(entry: dict | None, ranges: list[VideoRange]) -> dict | None:
@@ -2431,6 +2449,27 @@ class DojoPublishing:
         return {"generation": job.job_id, "input_digest": inputs["input_digest"],
                 "status": job.status, "artifact_ref": None, "duration": None,
                 "retry_of": retry_of}
+
+    def _prune_retired_preview_files(self, package: Package, manifest: dict) -> None:
+        root = self.media_root / package.folder_name
+        retained = {
+            record.get("artifact_ref") for key in ("section_previews", "thumbnails")
+            for record in manifest.get(key, {}).values()
+        }
+        for prefix in ("media", "removed"):
+            for path in root.glob(f"{prefix}/*/previews/*"):
+                if path.suffix not in (".mp4", ".jpg") or len(path.stem) != 32 \
+                        or any(char not in "0123456789abcdef" for char in path.stem):
+                    continue
+                if path.relative_to(root).as_posix() in retained:
+                    continue
+                try:
+                    if path.resolve().is_relative_to(root.resolve()):
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    logging.getLogger(__name__).warning("retired preview cleanup failed", extra={
+                        "event": "preview.cleanup_failed", "package_id": package.id,
+                    })
 
     def _reconcile_section_previews(self, package: Package, before: dict, after: dict) -> None:
         old_media = {e["media_id"]: e for e in before.get("media", [])}

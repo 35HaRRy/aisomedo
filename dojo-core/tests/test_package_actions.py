@@ -187,8 +187,9 @@ def test_clear_purge_failure_can_retry_original_identity_after_replacement(tmp_p
             seam.clear_active_package(expected_folder_name=package.folder_name,
                                       expected_package_id=package.id)
     replacement = seam.ensure_active_package()
-    result = seam.clear_active_package(expected_folder_name=package.folder_name,
-                                      expected_package_id=package.id)
+    with seam.conditional_package_operation(package.id, 1, allow_missing=True):
+        result = seam.clear_active_package(expected_folder_name=package.folder_name,
+                                          expected_package_id=package.id)
     assert result["folder_name"] == package.folder_name
     assert seam.get_active_package() == replacement
     assert not list(tmp_path.glob(".clearing-*"))

@@ -84,9 +84,15 @@ Implementation plan: `docs/superpowers/plans/2026-10-24-active-package-media-pan
 - [x] Verify web unit tests, production build, and desktop/mobile browser workflows.
 - [x] Verify Android unit tests, application build, lint, and instrumentation compilation.
 - [ ] Execute Android connected-device UI/playback/layout acceptance: no emulator or device is connected.
-- [ ] Finish independent whole-branch review and resolve blocking findings.
+- [x] Finish independent whole-branch review and resolve blocking findings with failing-then-passing regression tests.
 
 Implementation is on `feature/active-package`. Full acceptance is not complete while connected-device checks remain blocked. No push or merge has been performed.
+
+Final automated verification: core **921 passed, 2 skipped**; backend **305 passed**; worker **143 passed**; web **396 passed**; browser **53 passed, 1 skipped**; Android **307 unit tests passed**, application build/lint/instrumentation compilation passed. The two core skips require Windows symlink privileges; the browser skip is native mouse dragging on mobile, where button reordering is covered. Real PostgreSQL, FFmpeg encoding, and subprocess cancellation checks executed.
+
+Independent review found three Important issues, now fixed: captured Android cleanup remains retryable without an active editor and cannot cross package/session identity; confirmed lost removals reconcile only the target draft without replay; obsolete generated previews are pruned after commit, with locked-file retry through existing worker maintenance. Failed transactions preserve the prior output, and originals/current previews/immutable review artifacts remain intact.
+
+Deferred Minor: Android photo-conflict UI currently displays an unavailable-package message instead of the server's photo-duration value. Conflict detection and explicit resolution remain enforced; the misleading server-value description still needs correction.
 
 ## Original requirements
 

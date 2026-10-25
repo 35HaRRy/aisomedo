@@ -121,11 +121,11 @@ function editedDraft(data: Data): StoredDraft | null {
     edited[id] = structuredClone(rows);
   }
   const uncertain = data.storedDraft?.uncertain ?? false;
-  if (!Object.keys(groups).length && !uncertain) return null;
+  if (!Object.keys(groups).length && !uncertain && !data.storedDraft?.pendingRemovals?.length) return null;
   return { schemaVersion: 1, localRevision: data.storedDraft?.localRevision ?? 0,
     folderName: data.storedDraft?.folderName ?? snapshot!.package.folder_name,
     baseContentRevision: data.storedDraft?.baseContentRevision ?? snapshot!.content_revision,
-    groups, inputs: edited, uncertain };
+    groups, inputs: edited, uncertain, pendingRemovals: data.storedDraft?.pendingRemovals ?? [] };
 }
 type WriteChange = { kind: "selections"; selections: SelectionMap; photos: Record<string, number> } | { kind: "order"; order: string[] } | { kind: "remove" | "restore" | "retry"; id: string } | { kind: "render" | "clear" };
 function expectedWrite(snapshot: ActiveEditorOut, change: WriteChange): ActiveEditorOut {
@@ -319,7 +319,8 @@ export function usePackageEditor(enabled = true): PackageEditorState {
       const draft = editedDraft(old) ?? { schemaVersion: 1 as const, localRevision: revision.current,
         folderName: target.folder_name, baseContentRevision: old.snapshot?.content_revision ?? old.pendingClear!.content_revision,
         groups: {}, inputs: {}, uncertain: false };
-      if (!await persist({ ...current.current, storedDraft: { ...draft, uncertain: true } })) return false;
+      if (!await persist({ ...current.current, storedDraft: { ...draft, uncertain: true,
+        pendingRemovals: change.kind === "remove" ? [...new Set([...(draft.pendingRemovals ?? []), change.id])] : draft.pendingRemovals } })) return false;
       if (!alive.current || controller.signal.aborted || live.getSnapshot() !== "live") return false;
       const response = await operation(target.folder_name, controller.signal);
       if (!alive.current || controller.signal.aborted) return false;
@@ -333,7 +334,8 @@ export function usePackageEditor(enabled = true): PackageEditorState {
         const groups = { ...acknowledged.storedDraft?.groups }, conflicts = { ...acknowledged.conflicts };
         for (const key of [`video:${change.id}`, `photo:${change.id}`]) { delete groups[key]; delete conflicts[key]; }
         const next = { ...acknowledged, conflicts,
-          storedDraft: acknowledged.storedDraft && { ...acknowledged.storedDraft, groups, uncertain: false },
+          storedDraft: acknowledged.storedDraft && { ...acknowledged.storedDraft, groups, uncertain: false,
+            pendingRemovals: acknowledged.storedDraft.pendingRemovals?.filter(id => id !== change.id) },
           draftInputs: { ...acknowledged.draftInputs, [change.id]: fresh[change.id] ?? [] },
           base: { ...acknowledged.base, [change.id]: fresh[change.id] ?? [] } };
         await persist({ ...next, storedDraft: editedDraft(next) });
@@ -359,7 +361,8 @@ export function usePackageEditor(enabled = true): PackageEditorState {
           readRequired: !definite,
           error: definite ? error.status === 422 ? "invalid" : change.kind === "render" ? "render" : "conflict" : "uncertain" });
         if (definite && current.current.storedDraft) await persist({ ...current.current,
-          storedDraft: { ...current.current.storedDraft, uncertain: false } });
+          storedDraft: { ...current.current.storedDraft, uncertain: false,
+            pendingRemovals: change.kind === "remove" ? current.current.storedDraft.pendingRemovals?.filter(id => id !== change.id) : current.current.storedDraft.pendingRemovals } });
         if (change.kind === "retry" && error instanceof ApiError && error.status === 409) await load(true, undefined, expected);
       }
       return false;
@@ -388,7 +391,8 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     const fresh = old.snapshot ? inputs(old.snapshot) : {};
     const groups = { ...old.storedDraft?.groups }, conflicts = rollover ? {} : { ...old.conflicts };
     for (const key of Object.keys(groups)) if (rollover || !id || key === `video:${id}` || key === `photo:${id}`) { delete groups[key]; delete conflicts[key]; }
-    const next = { ...old, storedDraft: rollover ? null : old.storedDraft && { ...old.storedDraft, groups }, conflicts,
+    const next = { ...old, storedDraft: rollover ? null : old.storedDraft && { ...old.storedDraft, groups,
+      pendingRemovals: id ? old.storedDraft.pendingRemovals?.filter(value => value !== id) : [] }, conflicts,
       draftInputs: id && !rollover ? { ...old.draftInputs, [id]: fresh[id] ?? [] } : fresh,
       base: id && !rollover ? { ...old.base, [id]: fresh[id] ?? [] } : fresh,
       baseFolder: id && !rollover ? old.baseFolder : old.snapshot?.package.folder_name ?? null,

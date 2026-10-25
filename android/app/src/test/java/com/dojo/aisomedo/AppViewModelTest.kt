@@ -321,8 +321,12 @@ class AppViewModelTest {
             f.bodies["/api/dashboard"] = f.bodies["/api/dashboard"]!!.replace("\"id\":1,\"folder_name\":\"active\"", "\"id\":2,\"folder_name\":\"replacement\"")
             f.bodies["/api/packages/active/editor"] = editorJson(folder = "replacement", id = 2)
             f.model.refresh(); f.await { !it.busy && it.editor.snapshot?.`package`?.id == 2 }
-            f.model.clearActivePackage(true); main.scheduler.runCurrent()
-            assertEquals(1, f.seen.count { it == "POST /api/packages/active/clear" })
+            f.model.refreshEditor(); f.await { !it.busy }
+            f.model.clearActivePackage(true); f.await { !it.busy }
+            val clears = (0 until f.server.requestCount).map { f.server.takeRequest() }.filter { it.path == "/api/packages/active/clear" }
+            assertEquals(2, clears.size)
+            assertTrue(clears.all { it.getHeader("If-Match") == "\"1:1\"" })
+            assertTrue(clears.all { it.body.readUtf8().contains("\"expected_package_id\":1") })
         }
     }
 
@@ -379,6 +383,86 @@ class AppViewModelTest {
             assertEquals("\"1:1\"", clear.getHeader("If-Match"))
             assertEquals("""{"confirmed":true,"expected_folder_name":"active","expected_package_id":1}""", clear.body.readUtf8())
             assertNull(DraftStore(f.dir.resolve("drafts")).read(f.origin, f.model.currentBinding!!, 1))
+        }
+    }
+
+    @Test fun cleanupRetryRemainsAvailableAfterAuthoritativeEditorDisappears() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            f.codes["/api/packages/active/clear"] = 503
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
+            f.codes["/api/packages/active/editor"] = 404
+            f.model.refreshEditor(); f.await { !it.busy && it.editor.snapshot == null }
+            f.codes["/api/packages/active/clear"] = 200
+            f.bodies["/api/packages/active/clear"] = """{"folder_name":"active","upload_ids":[]}"""
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.storedDraft == null }
+            val clears = (0 until f.server.requestCount).map { f.server.takeRequest() }.filter { it.path == "/api/packages/active/clear" }
+            assertEquals(2, clears.size)
+            assertTrue(clears.all { it.getHeader("If-Match") == "\"1:1\"" })
+        }
+    }
+
+    @Test fun definitiveClearRejectionAllowsFreshExplicitConfirmationAfterRefresh() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.codes["/api/packages/active/clear"] = 409
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.readRequired }
+            f.bodies["/api/packages/active/editor"] = editorJson().replace("\"content_revision\":1", "\"content_revision\":2")
+            f.model.refreshEditor(); f.await { !it.busy && !it.editor.readRequired }
+            f.model.clearActivePackage(true); f.await { !it.busy }
+            val clears = (0 until f.server.requestCount).map { f.server.takeRequest() }.filter { it.path == "/api/packages/active/clear" }
+            assertEquals(listOf("\"1:1\"", "\"1:2\""), clears.map { it.getHeader("If-Match") })
+        }
+    }
+
+    @Test fun retryingCapturedOldCleanupNeverRebindsOrDiscardsReplacementDraft() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.bodies["/api/dashboard"] = f.bodies["/api/dashboard"]!!.replace("\"id\":1,\"folder_name\":\"active\"", "\"id\":2,\"folder_name\":\"replacement\"")
+            f.bodies["/api/packages/active/editor"] = editorJson(folder = "replacement", id = 2)
+            f.saved["clear_package_id"] = 1; f.saved["clear_package_folder"] = "active"
+            f.saved["clear_package_revision"] = 1L; f.saved["clear_requires_read"] = true
+            f.saved["clear_origin"] = f.origin; f.saved["clear_binding"] = f.model.currentBinding
+            f.recreate(); f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", ""))); f.await { !it.editor.persisting }
+            f.model.refreshEditor(); f.await { !it.busy }
+            f.bodies["/api/packages/active/clear"] = """{"folder_name":"active","upload_ids":[]}"""
+            f.model.clearActivePackage(true); f.await { !it.busy }
+            assertEquals("", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            assertEquals(2, f.model.state.value.editor.draftPackageId)
+            assertEquals("replacement", DraftStore(f.dir.resolve("drafts")).read(f.origin, f.model.currentBinding!!, 2)!!.folderName)
+            assertNull(DraftStore(f.dir.resolve("drafts")).read(f.origin, f.model.currentBinding!!, 1))
+        }
+    }
+
+    @Test fun lostRemovalReconcilesOnlyConfirmedTargetAfterRecreationWithoutReplay() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.model.editRanges("c", listOf(RangeInput("0", ""))); f.await { !it.editor.persisting }
+            f.codes["/api/packages/active/media/a/remove?expected_folder_name=active"] = 502
+            f.model.removeMedia("a", true); f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
+            f.bodies["/api/packages/active/editor"] = editorJson(aStatus = "removed", order = "\"b\",\"c\"")
+            f.recreate(); f.await { it.phase == Phase.READY && !it.busy }
+            f.model.refreshEditor(); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.isDirty("a"))
+            assertTrue(f.model.state.value.editor.isDirty("c"))
+            assertTrue(f.model.state.value.editor.conflicts.isEmpty())
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/media/a/remove?expected_folder_name=active" })
+        }
+    }
+
+    @Test fun capturedCleanupCannotCrossCredentialBindingOnRecreation() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.codes["/api/packages/active/clear"] = 503
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
+            f.store.saveToken(f.origin, "REPLACEMENT")
+            f.recreate(); f.await { it.canEditMedia }
+            assertNull(f.saved.get<Int>("clear_package_id"))
+            assertNull(f.model.state.value.pendingClearFolder)
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/clear" })
         }
     }
 
