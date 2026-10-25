@@ -7,6 +7,8 @@ export function packageSnapshot(): ActiveEditorOut {
     uploaded_at: "2026-10-02T10:00:00Z", status: "finalized", processed: { duration: 30 },
     is_video: true, source_duration: 30, effective_duration: 30,
     preview_url: `/api/packages/active/media/${id}/preview?expected_folder_name=02-10-2026%2013-00`,
+    original_url: `/api/packages/active/media/${id}/original?expected_package_id=1&expected_folder_name=02-10-2026%2013-00`,
+    thumbnail_url: `/api/packages/active/media/${id}/thumbnail?expected_package_id=1&expected_folder_name=02-10-2026%2013-00`,
     artifacts: [],
   }));
   return {

@@ -38,7 +38,7 @@ it("last section removal returns whole-video mode and preserves usable focus", (
 it("preview uses native seeking, error/retry, and never fetches a blob", () => {
   const { container } = setup(); const video = container.querySelector("video")!;
   expect(video).toHaveAttribute("controls"); expect(video).toHaveAttribute("playsinline"); expect(video).toHaveAttribute("preload", "metadata");
-  expect(video).toHaveAttribute("src", packageSnapshot().media[0].preview_url);
+  expect(video).toHaveAttribute("src", packageSnapshot().media[0].original_url);
   fireEvent.error(video); expect(screen.getByText("Video önizlemesi yüklenemedi.")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Önizlemeyi yeniden yükle" }));
   expect(container.querySelector("video")).not.toBe(video);
@@ -55,4 +55,15 @@ it("missing duration blocks editing rather than guessing bounds", () => {
   render(<VideoSectionEditor media={{ ...packageSnapshot().media[0], source_duration: null }} ranges={[]} inputs={[]} validationError={null} disabled={false} onChange={() => {}} onInputChange={() => {}} />);
   expect(screen.getByText("Video süresi bilinmiyor. Videoyu yeniden işleyin veya paketten çıkarın.")).toBeInTheDocument();
   expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+});
+
+it("saved sections remain below original during an empty unsaved draft", () => {
+  const media = { ...packageSnapshot().media[0], section_preview: {
+    status: "ready" as const, generation: "saved", url: "/saved-sections.mp4", duration: 5,
+  } };
+  const { container, rerender } = render(<VideoSectionEditor media={media} ranges={[]} inputs={[]} validationError={null} disabled={false} dirty onChange={() => {}} onInputChange={() => {}} />);
+  expect([...container.querySelectorAll("video")].map(video => video.getAttribute("src"))).toEqual([media.original_url, "/saved-sections.mp4"]);
+  expect(screen.getByText("Önizleme kaydedilmemiş değişiklikleri içermez.")).toBeInTheDocument();
+  rerender(<VideoSectionEditor media={{ ...media, section_preview: { status: "missing", generation: null, url: null, duration: null } }} ranges={[]} inputs={[]} validationError={null} disabled={false} onChange={() => {}} onInputChange={() => {}} />);
+  expect(container.querySelectorAll("video")).toHaveLength(1);
 });

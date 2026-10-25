@@ -4,6 +4,7 @@ import { PendingActions } from "./Dashboard";
 import { PackageManager } from "../packages/PackageManager";
 import { ReviewFlow } from "../reviews/ReviewFlow";
 import { CollapsiblePanel } from "./CollapsiblePanel";
+import { SavedReelPanel } from "../packages/SavedReelPanel";
 
 export function PackageSummary({ data, reviewId, occurrenceId, packageFolder, onRefresh, stale }: { data: DashboardOut; reviewId: number | null; occurrenceId: number | null; packageFolder: string | null; onRefresh: () => void; stale: boolean }) {
   if (reviewId !== null || occurrenceId !== null) return <ReviewFlow key={`${reviewId}-${occurrenceId}-${packageFolder}`} data={data} reviewId={reviewId} occurrenceId={occurrenceId} packageFolder={packageFolder} onRefresh={onRefresh} stale={stale} />;
@@ -14,6 +15,7 @@ export function PackageSummary({ data, reviewId, occurrenceId, packageFolder, on
     </CollapsiblePanel>
     <PackageManager />
     <PendingActions data={data} />
+    <SavedReelPanel />
     <p className="muted">{tr.reviewNotice}</p>
   </>;
 }

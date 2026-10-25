@@ -45,10 +45,11 @@
 .package-media-list h3 { font-size: 1rem; }
 .package-media-list .package-media-heading > div:first-child { min-width: 0; }
 .package-media-grid { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
-.package-media-grid > li { width: 214px; max-width: 100%; padding: 16px; border: 1px solid var(--line); border-radius: 12px; align-content: start; }
-.package-media-grid > li[data-editor-open="true"] { width: min(100%, 760px); }
+.package-media-grid > li { grid-template-columns: minmax(0, 1fr); width: 254px; max-width: 100%; height: 440px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; align-content: start; gap: 12px; }
+.package-media-grid > li[data-editor-open="true"] { width: 100%; flex-basis: 100%; height: auto; }
 .package-media-grid .package-media-heading { flex-direction: column; width: 100%; gap: 8px; }
-.package-media-grid h3 { overflow-wrap: anywhere; }
+.package-media-grid h3 { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.package-media-grid .package-media-heading > div:first-child { width: 100%; }
 .package-media-grid .package-media-actions { flex-wrap: wrap; width: 100%; gap: 0; }
 .package-media-grid .photo-duration-control { min-width: 0; }
 .package-media-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
@@ -65,7 +66,15 @@
 .package-media-list > li[data-drop-position="after"]::after { right: -9px; }
 @media (max-width: 700px) { .package-media-actions { width: 100%; } }
 .montage-duration { display: grid; gap: 8px; margin: 20px 0; font-variant-numeric: tabular-nums; }
-.package-save-actions { margin-top: 20px; }
+.package-save-actions { margin: 0; display: inline-flex; gap: 4px; }
+.card-save-reason { font-size: .8125rem; max-height: 5rem; overflow: auto; }
+.media-image-button { display: grid; place-items: center; width: 100%; height: 112px; padding: 0; background: var(--accent-soft); border: 0; }
+.media-image-button .package-photo-preview { width: 100%; height: 100%; max-height: 112px; object-fit: contain; }
+.media-fullscreen { width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh; border: 0; margin: 0; padding: 20px; color: inherit; background: var(--surface); }
+.media-fullscreen::backdrop { background: rgb(0 0 0 / 80%); }
+.media-fullscreen header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.media-fullscreen h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-fullscreen video, .media-fullscreen img { display: block; width: 100%; height: calc(100% - 80px); object-fit: contain; margin-top: 16px; }
 .removed-media { margin-top: 32px; }
 .removed-media > p { margin-top: 8px; }
 .package-media-list > li.package-media-heading { display: flex; }
@@ -102,12 +111,12 @@
 .timeline-whole { display: grid; place-items: center; height: 100%; color: var(--muted); font-size: .875rem; pointer-events: none; }
 .range-timeline > p { font-size: .8125rem; }
 .range-fields { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }
-.range-fields li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; border-top: 1px solid var(--line); padding-top: 16px; }
-.range-fields strong { grid-column: 1 / -1; font-size: .875rem; }
+.range-fields li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; border-top: 1px solid var(--line); padding-top: 16px; }
+.range-fields strong { grid-column: 1 / -1; font-size: .875rem; padding-right: 48px; min-height: 32px; }
 .range-fields label { font-size: .8125rem; margin: 0; min-width: 0; }
 .range-fields input { margin-top: 6px; min-width: 0; }
 .range-fields input[aria-invalid="true"] { border-color: #943e2c; }
-.range-fields button { justify-self: start; grid-column: 1 / -1; }
+.range-fields .section-remove { position: absolute; top: 4px; right: 0; }
 @media (max-width: 900px) { .video-section-editor { grid-template-columns: minmax(0, 1fr); } .section-preview video { max-height: 260px; } }
 @media (max-width: 500px) { .range-fields li { grid-template-columns: minmax(0, 1fr); } }
 .onboarding { display: grid; gap: 24px }

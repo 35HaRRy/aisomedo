@@ -13,6 +13,15 @@ beforeEach(() => { localStorage.clear(); Object.defineProperty(navigator, "onLin
 
 const saveButton = (filename = "a.mp4") => within(screen.getByRole("heading", { name: filename }).closest("li")!).getByRole("button", { name: "Bölümleri kaydet" });
 
+it("collapsed list mounts thumbnails only and omits unchanged save reasons", async () => {
+  const { container } = await setup();
+  expect(container.querySelector("video")).toBeNull();
+  expect(screen.getByRole("img", { name: "a.mp4 önizlemesi" })).toHaveAttribute("src", expect.stringContaining("/thumbnail?"));
+  fireEvent.error(screen.getByRole("img", { name: "a.mp4 önizlemesi" }));
+  expect(screen.getByRole("button", { name: "a.mp4 tam ekran görüntüle" })).toHaveTextContent("Önizleme dosyası mevcut değil.");
+  expect(screen.queryByText("Kaydedilecek değişiklik yok.")).not.toBeInTheDocument();
+});
+
 it("failed local storage warns that draft is not recoverable after closing", async () => {
   const { server } = await setup();
   draftMemory.failWrites();
@@ -57,8 +66,8 @@ it("photo duration edits save and discard; disabled save explains unchanged stat
     server.snapshot.montage.order.push("photo");
     server.snapshot.render_stale = true;
   });
-  expect(screen.getAllByText("Kaydedilecek değişiklik yok.")).toHaveLength(3);
-  const duration = screen.getByRole("spinbutton", { name: "photo.jpg görüntülenme süresi (saniye)" });
+  expect(screen.queryByText("Kaydedilecek değişiklik yok.")).not.toBeInTheDocument();
+  const duration = screen.getByRole("spinbutton", { name: "photo.jpg Gösterilme süresi (sn)" });
   expect(duration).toHaveValue(3);
   fireEvent.change(duration, { target: { value: "4.5" } });
   expect(saveButton("photo.jpg")).toBeEnabled();
@@ -83,18 +92,17 @@ it("clear warns, cancellation writes nothing, confirmation removes package and u
   expect(server.writes[0].body).toEqual({ expected_folder_name: "02-10-2026 13-00", expected_package_id: 1, confirmed: true });
 });
 
-it("saved reel preview shows rendered artifact and render action keeps unsaved section drafts", async () => {
+it("active media panel does not mount the separate saved Reel panel", async () => {
   const { server, container } = await setup(server => {
     server.snapshot.render_status = "ready"; server.snapshot.render_preview_url = "/api/packages/active/render/preview?revision=saved";
   });
-  expect(screen.getByLabelText("Kaydedilmiş Reel önizlemesi", { selector: "video" })).toHaveAttribute("src", "/api/packages/active/render/preview?revision=saved");
+  expect(screen.queryByLabelText("Kaydedilmiş Reel önizlemesi", { selector: "video" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   fireEvent.click(screen.getByRole("button", { name: "Bölüm ekle" }));
-  fireEvent.click(screen.getByRole("button", { name: "Kaydedilmiş montajı render et" }));
-  await waitFor(() => expect(server.writes).toHaveLength(1));
-  expect(server.writes[0].url).toBe("/api/packages/active/render");
+  expect(screen.queryByRole("button", { name: "Kaydedilmiş montajı render et" })).not.toBeInTheDocument();
+  expect(server.writes).toHaveLength(0);
   expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("1");
-  expect(container.querySelector(".saved-reel-preview")).toBeInTheDocument();
+  expect(container.querySelector(".saved-reel-preview")).not.toBeInTheDocument();
 });
 async function setup(configure?: (server: ReturnType<typeof editorServer>) => void) {
   window.location.hash = "#/package";

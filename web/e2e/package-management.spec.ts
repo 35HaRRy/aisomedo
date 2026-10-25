@@ -6,6 +6,7 @@ import { client, dashboard, setupState } from "../src/test/fixtures";
 import { installLiveStream } from "./live-fixture";
 
 const bytes = readFileSync(fileURLToPath(new URL("./fixtures/timeline.mp4", import.meta.url)));
+const card = (page: Page, filename: string) => page.getByRole("list", { name: "Montaj sırası" }).locator(":scope > li").filter({ has: page.getByRole("heading", { name: filename, exact: true }) });
 async function fixture(page: Page, photo = false) {
   await installLiveStream(page);
   const snapshot = packageSnapshot(); const writes: unknown[] = [], errors: string[] = [];
@@ -20,7 +21,8 @@ async function fixture(page: Page, photo = false) {
   await page.route(url => url.pathname.startsWith("/api/"), async route => {
     const url = new URL(route.request().url()), path = decodeURIComponent(url.pathname), method = route.request().method();
     const json = (value: unknown, status = 200) => route.fulfill({ status, json: value });
-    if (path.endsWith("/preview") || path.endsWith("/artifacts")) {
+    if (path.endsWith("/thumbnail")) return route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="120"><rect width="180" height="120" fill="#16665b"/></svg>' });
+    if (path.endsWith("/preview") || path.endsWith("/artifacts") || path.endsWith("/original")) {
       const range = route.request().headers()["range"]?.match(/^bytes=(\d+)-(\d*)$/);
       const start = range ? Number(range[1]) : 0, end = range?.[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
       await route.fulfill({ status: range ? 206 : 200, body: bytes.subarray(start, end + 1),
@@ -110,7 +112,7 @@ test("package panels toggle independently and completed navigation protects draf
   await page.getByRole("button", { name: "Bölüm ekle", exact: true }).click();
   await page.getByLabel("1. bölüm bitişi (saniye)").fill("5");
   await toggle.click();
-  await expect(panel.getByRole("button", { name: "Bölümleri kaydet" })).toBeHidden();
+   await expect(panel.getByRole("button", { name: "Bölümleri kaydet" }).first()).toBeHidden();
   await expect(page.getByLabel("Fotoğraf ve video seç")).toBeVisible();
   await panel.getByRole("button", { name: "Aktif paket medyası panelini aç", exact: true }).click();
   await expect(page.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("5");
@@ -160,7 +162,7 @@ test("timeline geometry, native seek, drafts, persistence and cancellation", asy
   await page.mouse.click(box.x + box.width * 0.65, box.y + box.height / 2);
   await expect.poll(() => page.locator("video").evaluate((node: HTMLVideoElement) => node.currentTime)).toBeCloseTo(19.5, 0);
   await expect.poll(() => page.locator("video").evaluate((node: HTMLVideoElement) => node.duration)).toBe(30);
-  await page.getByRole("button", { name: "Bölümleri kaydet" }).click();
+  await card(page, "a.mp4").getByRole("button", { name: "Bölümleri kaydet" }).click();
   await expect(page.getByText("Bölümler kaydedildi.")).toBeVisible();
   expect(server.snapshot.montage.selections.a).toEqual([{ start: 0, end: 5 }, { start: 10, end: 15 }, { start: 24, end: 30 }]);
   await page.reload(); await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
@@ -242,6 +244,10 @@ test("compact media cards flow left to right and wrap without filename or editor
   const list = page.getByRole("list", { name: "Montaj sırası" }), cards = list.locator(":scope > li");
   await expect(cards).toHaveCount(8);
   const first = (await cards.nth(0).boundingBox())!, second = (await cards.nth(1).boundingBox())!, last = (await cards.nth(7).boundingBox())!;
+  for (const bounds of await cards.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height))) expect(bounds).toBe(first.height);
+  expect(await cards.evaluateAll(nodes => nodes.every(node => [...node.children].every(child => child.getBoundingClientRect().bottom <= node.getBoundingClientRect().bottom)))).toBe(true);
+  const longTitle = cards.nth(7).getByRole("heading");
+  expect(await longTitle.evaluate(node => getComputedStyle(node).whiteSpace)).toBe("nowrap");
   if (!isMobile) { expect(second.y).toBe(first.y); expect(second.x).toBeGreaterThan(first.x + first.width); }
   expect(last.y).toBeGreaterThan(first.y);
   const photoCard = cards.nth(2), preview = photoCard.getByRole("img");
@@ -252,6 +258,10 @@ test("compact media cards flow left to right and wrap without filename or editor
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
   await expect(page.getByRole("group", { name: "Video zaman çizelgesi" })).toBeVisible();
+  const expanded = (await cards.nth(0).boundingBox())!, listBounds = (await list.boundingBox())!;
+  expect(expanded.width).toBeCloseTo(listBounds.width, 0);
+  const neighbor = (await cards.nth(1).boundingBox())!;
+  expect(neighbor.y).toBeGreaterThanOrEqual(expanded.y + expanded.height);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
   await list.scrollIntoViewIfNeeded();
@@ -261,19 +271,23 @@ test("compact media cards flow left to right and wrap without filename or editor
 
 test("photo duration, draft discard, playable saved reel and confirmed package cleanup", async ({ page }, info) => {
   const server = await fixture(page, true);
-  const duration = page.getByRole("spinbutton", { name: "photo.jpg görüntülenme süresi (saniye)" });
+  const photoCard = card(page, "photo.jpg");
+  const duration = page.getByRole("spinbutton", { name: "photo.jpg Gösterilme süresi (sn)" });
   await expect(duration).toHaveValue("3");
   await duration.fill("4.5");
-  await page.getByRole("button", { name: "Bölümleri kaydet" }).click();
-  await expect(page.getByRole("button", { name: "Bölümleri kaydet" })).toBeDisabled();
+  await photoCard.getByRole("button", { name: "Bölümleri kaydet" }).click();
+  await expect(photoCard.getByRole("button", { name: "Bölümleri kaydet" })).toBeDisabled();
   expect(server.snapshot.media.find(m => m.media_id === "photo")!.effective_duration).toBe(4.5);
   await duration.fill("6");
-  await page.getByRole("button", { name: "Kaydedilmemiş değişiklikleri geri al" }).click();
+  await photoCard.getByRole("button", { name: "Kaydedilmemiş değişiklikleri geri al" }).click();
   await expect(duration).toHaveValue("4.5");
   await duration.fill("7");
   await page.getByRole("button", { name: "Kaydedilmiş montajı render et" }).click();
   const reel = page.locator('video[aria-label="Kaydedilmiş Reel önizlemesi"]');
   await expect.poll(() => reel.evaluate((node: HTMLVideoElement) => node.duration)).toBe(30);
+  await expect(page.getByRole("heading", { name: "Kaydedilmiş Reel önizlemesi · 30.00 s" })).toBeVisible();
+  await expect(page.locator(".saved-reel-preview")).toHaveCount(1);
+  expect(await page.locator(".saved-reel-preview").evaluate(node => !!(node.compareDocumentPosition(document.querySelector(".package-upload-controls")!) & Node.DOCUMENT_POSITION_PRECEDING))).toBe(true);
   await reel.evaluate((node: HTMLVideoElement) => node.play());
   await expect.poll(() => reel.evaluate((node: HTMLVideoElement) => node.currentTime)).toBeGreaterThan(0);
   await expect(duration).toHaveValue("7");
@@ -289,4 +303,40 @@ test("photo duration, draft discard, playable saved reel and confirmed package c
   await expect(page.getByText("Aktif paket yok. Medya yükleyerek yeni paket oluşturabilirsiniz.")).toBeVisible();
   await expect(page.getByRole("list", { name: "Montaj sırası" })).toHaveCount(0);
   expect(server.errors).toEqual([]);
+});
+
+test("list requests no video until original viewer opens; Escape restores focus", async ({ page }) => {
+  const mediaRequests: string[] = [];
+  page.on("request", request => { if (/\/(original|preview)(\?|$)/.test(request.url())) mediaRequests.push(request.url()); });
+  await fixture(page);
+  expect(mediaRequests).toEqual([]);
+  const trigger = page.getByRole("button", { name: "a.mp4 tam ekran görüntüle" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "a.mp4" });
+  await expect(dialog.locator("video")).toHaveAttribute("src", /\/original\?/);
+  await expect(dialog.getByRole("button", { name: "Tam ekranı kapat" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  expect(await dialog.evaluate(node => node.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test("fractional terminal endpoints stay exact with reachable End and touch handles", async ({ page, isMobile }) => {
+  const server = await fixture(page);
+  server.snapshot.media[0].source_duration = 6.1238;
+  await page.reload();
+  await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
+  await page.getByRole("button", { name: "Bölüm ekle", exact: true }).click();
+  const track = page.getByRole("group", { name: "Video zaman çizelgesi" });
+  const end = page.getByRole("slider", { name: "1. bölüm bitişi", exact: true });
+  await end.focus(); await end.press("End");
+  await expect(end).toHaveAttribute("aria-valuenow", "6.1238");
+  await track.scrollIntoViewIfNeeded();
+  const box = (await end.boundingBox())!, bounds = (await track.boundingBox())!;
+  expect(box.width).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  expect(box.x + box.width).toBeLessThanOrEqual((await card(page, "a.mp4").boundingBox())!.x + (await card(page, "a.mp4").boundingBox())!.width);
+  await gesture(page, end, { x: box.x + box.width / 2, y: box.y + box.height / 2 }, { x: bounds.x + bounds.width + 15, y: box.y + box.height / 2 }, !!isMobile);
+  await expect(end).toHaveAttribute("aria-valuenow", "6.1238");
 });

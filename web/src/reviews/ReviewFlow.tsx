@@ -7,6 +7,7 @@ import { useLiveData } from "../useLiveData";
 import { PackageManager } from "../packages/PackageManager";
 import { CollapsiblePanel } from "../components/CollapsiblePanel";
 import { MediaActionIcon } from "../packages/MediaActionIcon";
+import { SavedReelPanel } from "../packages/SavedReelPanel";
 
 type Decision = "approve" | "skip" | "reschedule";
 const copy = tr.review;
@@ -138,7 +139,7 @@ function DueContinuation({ data, occurrenceId, packageFolder, onRefresh, stale }
   if (boundReview.current !== null) return <ReviewPanel key={boundReview.current} id={boundReview.current} onRefresh={onRefresh} stale={stale || changed} />;
   if (changed) return <p role="status" className="notice">{copy.changedPackage} <a href="#/dashboard">{copy.back}</a></p>;
   if (!action) return <p role="status" className="notice">{tr.reviewGone} <a href="#/dashboard">{copy.back}</a></p>;
-  return <><header className="page-heading"><h1>{tr.package}</h1><p>{tr.packageIntro}</p></header><PackageManager /></>;
+  return <><header className="page-heading"><h1>{tr.package}</h1><p>{tr.packageIntro}</p></header><PackageManager /><SavedReelPanel /></>;
 }
 
 export function ReviewFlow(props: { data: DashboardOut; reviewId: number | null; occurrenceId: number | null; packageFolder: string | null; onRefresh: () => void; stale: boolean }) {
