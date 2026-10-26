@@ -56,9 +56,7 @@ def test_media_changes_clear_reel_and_wait_for_review_to_render(tmp_path, change
     seam._clock._now = due_at
     seam.evaluate_due_work()
     jobs = store.package_work(seam.get_active_package())[1]
-    assert not [j for j in jobs if j.kind == "render" and j.status in ("queued", "processing")]
-    assert seam.get_active_editor()["render_status"] == "missing"
-    seam.render_preview(expected_folder_name=folder)
+    assert len([j for j in jobs if j.kind == "render" and j.status in ("queued", "processing")]) == 1
     while (job := seam.claim_next_job()) is not None:
         seam.process_job(job.job_id)
     assert seam.get_active_editor()["render_status"] == "ready"
@@ -190,7 +188,7 @@ def test_concurrent_same_digest_completion_keeps_first_ready_artifact(tmp_path):
     assert artifact.path.read_bytes() == b"first"
 
 
-def test_scheduler_never_renders_even_with_an_actual_due_occurrence(tmp_path):
+def test_automatic_render_requires_an_actual_due_occurrence(tmp_path):
     from dojo.model import YayinZamani
 
     store, seam, renderer = make_seam(tmp_path)
@@ -204,10 +202,6 @@ def test_scheduler_never_renders_even_with_an_actual_due_occurrence(tmp_path):
     store.create(YayinZamani(0, "oneoff", now, "pending", now))
     seam.evaluate_due_work()
     seam.evaluate_due_work()
-    jobs = store.package_work(seam.get_active_package())[1]
-    assert [job for job in jobs if job.kind == "render"] == []
-    seam.render_preview()
-    seam.render_preview()
     jobs = store.package_work(seam.get_active_package())[1]
     assert len([job for job in jobs if job.kind == "render"]) == 1
     job = seam.claim_next_job()
@@ -246,7 +240,8 @@ def test_render_recovers_a_missing_current_artifact(tmp_path, automatic):
         now = seam._clock.now()
         store.create(YayinZamani(0, "oneoff", now, "pending", now))
         seam.evaluate_due_work()
-    seam.render_preview()
+    else:
+        seam.render_preview()
     job = seam.claim_next_job()
     assert job is not None and job.kind == "render"
     seam.process_job(job.job_id)

@@ -170,6 +170,26 @@ def test_caption_and_branding_edits_clear_render_revision(tmp_path):
     assert load_manifest(tmp_path, seam)["render_revision"] is None
 
 
+def test_default_caption_change_applies_to_active_draft(tmp_path):
+    _, seam = make_seam(tmp_path)
+    set_defaults(seam)
+    seam.get_or_create_active_package()
+
+    seam.patch_branding_defaults(
+        {"caption_template": "Yeni şablon"}, requester="2", apply_to_draft=False,
+    )
+    assert load_manifest(tmp_path, seam)["caption"] == "Bugün dojoda {{isim}}"
+
+    seam.patch_branding_defaults(
+        {"caption_template": "Daha yeni şablon"}, requester="2", apply_to_draft=True,
+    )
+
+    manifest = load_manifest(tmp_path, seam)
+    assert manifest["caption"] == "Daha yeni şablon"
+    assert manifest["render_revision"] is None
+    assert "caption.draft_updated" in [e.action for e in seam.list_audit()]
+
+
 def test_default_card_change_applies_to_active_draft(tmp_path):
     _, seam = make_seam(tmp_path)
     set_defaults(seam)

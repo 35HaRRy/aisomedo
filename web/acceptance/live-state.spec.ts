@@ -37,9 +37,11 @@ test("live profiles merge drafts and recover without polling through the gateway
       await page.getByRole("button", { name: "Bölüm ekle" }).click();
       await page.getByLabel("1. bölüm bitişi (saniye)").fill(end);
     }
-    await a.getByRole("button", { name: "Bölümleri kaydet" }).click();
+    await a.getByRole("listitem").filter({ hasText: "live-a.mp4" })
+      .getByRole("button", { name: "Bölümleri kaydet" }).click();
     await expect(a.getByText("Bölümler kaydedildi.")).toBeVisible();
-    await b.getByRole("button", { name: "Bölümleri kaydet" }).click();
+    await b.getByRole("listitem").filter({ hasText: "live-b.mp4" })
+      .getByRole("button", { name: "Bölümleri kaydet" }).click();
     await expect(b.getByText("Bölümler kaydedildi.")).toBeVisible();
     const merged = await (await first.request.get("/api/packages/active/editor")).json() as ActiveEditorOut;
     expect(merged.montage.selections[idA]).toEqual([{ start: 0, end: 5 }]);
@@ -74,9 +76,17 @@ test("live profiles merge drafts and recover without polling through the gateway
     await a.getByRole("button", { name: "live-a.mp4 bölümlerini düzenle" }).click();
     await expect(a.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("");
     await expect.poll(async () => (await (await fixtures.get("/worker-health")).json()).phase).toBe("idle");
-    await expect(a.getByRole("button", { name: "live-a.mp4 dosyasını sağa taşı" })).toBeEnabled();
-    let idleReads = 0;
-    a.on("request", request => { if (request.method() === "GET" && new URL(request.url()).pathname.startsWith("/api/") && !request.url().endsWith("/api/events")) idleReads++; });
+    await expect(a.getByRole("button", { name: "live-a.mp4 sırasını sürükle" })).toBeEnabled();
+    let idleReads = 0, lastReadAt = Date.now();
+    a.on("request", request => {
+      if (request.method() === "GET" && new URL(request.url()).pathname.startsWith("/api/") && !request.url().endsWith("/api/events")) {
+        idleReads++; lastReadAt = Date.now();
+      }
+    });
+    // Section-preview jobs finish after the reload and invalidate the editor; let
+    // that worker-originated burst settle before measuring an idle window.
+    await expect.poll(() => Date.now() - lastReadAt, { timeout: 30_000 }).toBeGreaterThan(3_000);
+    idleReads = 0;
     // Intentional observation window: longer than the removed five-second polling interval.
     await a.waitForTimeout(12_000);
     expect(idleReads).toBe(0);

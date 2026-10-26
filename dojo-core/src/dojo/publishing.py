@@ -1526,9 +1526,10 @@ class DojoPublishing:
     def _ensure_reviews_for_due(self) -> None:
         """Create at most one durable review per due occurrence for the active revision.
 
-        A review is only created once a render is materialized. Missing/stale Reels
-        wait for a manual render or an automatic request from the review screen.
-        Background scheduler ticks never enqueue Reel renders.
+        A review is only created once a render is materialized. For a non-empty package
+        we enqueue a render when stale (the render job's completion hook creates the
+        review) or, when the render is already current, create it directly. An empty
+        active package creates no review and leaves the occurrence pending.
         """
         if self._select_due_occurrence() is None:
             return
@@ -1546,6 +1547,8 @@ class DojoPublishing:
         digest = self._render_digest(package, manifest)
         if self._has_current_render(package, manifest, digest):
             self._create_review_if_due(package, digest)
+        else:
+            self._enqueue_render(package, digest)
 
     @_package_edit
     def _create_review_if_due(self, package: Package, digest: str) -> None:
@@ -2719,8 +2722,13 @@ class DojoPublishing:
                         "outro_asset", "outro_duration")
             if before.get(key) != after.get(key)
         }
-        if changed and self.get_active_package() is not None:
+        if self.get_active_package() is None:
+            return
+        if changed:
             self.set_branding(changed, requester=requester)
+        if before.get("caption_template") != after.get("caption_template"):
+            # Caption is a manifest field, not part of ``branding``; mirror it explicitly.
+            self.set_caption(str(after.get("caption_template") or ""), requester=requester)
 
     def patch_branding_defaults(
         self, changes: dict[str, object], requester: str | None = None, *,
