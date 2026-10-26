@@ -18,6 +18,7 @@ import org.junit.*
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.KeyGenerator
@@ -40,7 +41,7 @@ class OfflineAppViewModelTest {
         val seen = CopyOnWriteArrayList<String>()
         var delayDashboard = false
         var folder = "active"
-        var delayAsset = false
+        var assetResponseGate: CountDownLatch? = null
         val owner = ViewModelStore()
         val origin: String
         var model: AppViewModel
@@ -70,9 +71,11 @@ class OfflineAppViewModelTest {
                         "/api/meta/status" -> """{"health":"not_connected"}"""
                         else -> "{}"
                     }
+                    if (path == "/api/settings/branding/assets") assetResponseGate?.let {
+                        check(it.await(30, TimeUnit.SECONDS)) { "Asset response was not released" }
+                    }
                     return MockResponse().setResponseCode(codes[path] ?: 200).setBody(body).apply {
                         if (delayDashboard && path == "/api/dashboard") setBodyDelay(1, TimeUnit.SECONDS)
-                        if (delayAsset && path == "/api/settings/branding/assets") setBodyDelay(1, TimeUnit.SECONDS)
                     }
                 }
             }
@@ -94,7 +97,7 @@ class OfflineAppViewModelTest {
         fun connect() { network.value = NetworkStatus(true, network.value.epoch + 1) }
         fun disconnect() { network.value = NetworkStatus(false, network.value.epoch + 1); main.scheduler.runCurrent() }
         fun settle() { repeat(30) { main.scheduler.runCurrent(); Thread.sleep(10) } }
-        override fun close() { owner.clear(); server.shutdown(); directory.deleteRecursively() }
+        override fun close() { assetResponseGate?.countDown(); owner.clear(); server.shutdown(); directory.deleteRecursively() }
     }
     @Test fun coldOfflineStartRestoresHistoricalSections() = runTest(main.scheduler) {
         Fixture().use { f ->
@@ -241,11 +244,16 @@ class OfflineAppViewModelTest {
     @Test fun delayedAssetRemainsPendingUntilExplicitFreshRetry() = runTest(main.scheduler) {
         Fixture(connected = true).use { f ->
             f.await { it.canMutate }; f.model.selectStep("logo"); f.await { !it.busy }
-            f.delayAsset = true; f.model.uploadAsset("logo_asset", byteArrayOf(1))
+            val gate = CountDownLatch(1)
+            f.assetResponseGate = gate
+            f.model.uploadAsset("logo_asset", byteArrayOf(1))
             f.await { "POST /api/settings/branding/assets" in f.seen }
+            // Keep the response in flight until write authority has been revoked.
             f.network.value = NetworkStatus(false, 1); main.scheduler.runCurrent()
+            gate.countDown()
+            f.await { !it.busy && it.pendingAssets.isNotEmpty() }
             f.network.value = NetworkStatus(true, 2)
-            f.await { !it.busy && f.model.state.value.pendingAssets.isNotEmpty() }
+            f.await { it.canMutate && it.pendingAssets.isNotEmpty() }
             assertEquals(0, f.seen.count { it == "PATCH /api/settings/branding" })
             assertEquals("branding/assets/new.png", f.model.state.value.pendingAssets["logo_asset"]?.asset)
             f.model.selectStep("logo"); f.await { it.canConfigure("logo") }

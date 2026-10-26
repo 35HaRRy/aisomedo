@@ -56,7 +56,9 @@ def test_media_changes_clear_reel_and_wait_for_review_to_render(tmp_path, change
     seam._clock._now = due_at
     seam.evaluate_due_work()
     jobs = store.package_work(seam.get_active_package())[1]
-    assert len([j for j in jobs if j.kind == "render" and j.status in ("queued", "processing")]) == 1
+    assert len([
+        j for j in jobs if j.kind == "render" and j.status in ("queued", "processing")
+    ]) == 1
     while (job := seam.claim_next_job()) is not None:
         seam.process_job(job.job_id)
     assert seam.get_active_editor()["render_status"] == "ready"
