@@ -197,8 +197,12 @@ class FfmpegReelRenderer:
             duration = trim_end - trim_start
         duration_args = ["-t", f"{duration:.9f}"]
 
+        # Composite before blur so invisible RGB values cannot tint the background.
         filter_complex = (
-            f"[0:v]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,crop={CANVAS_W}:{CANVAS_H},"
+            f"[0:v]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,"
+            f"crop={CANVAS_W}:{CANVAS_H}[bg_source];"
+            f"color=c=black:s={CANVAS_W}x{CANVAS_H}:r={FPS}[canvas];"
+            "[canvas][bg_source]overlay=shortest=1,"
             "boxblur=luma_radius=20:luma_power=2:chroma_radius=20:chroma_power=2[bg];"
             f"[0:v]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=decrease[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2[base]"
@@ -218,6 +222,10 @@ class FfmpegReelRenderer:
                     "-map", out_chain, *audio_map,
                     "-r", str(FPS), *duration_args,
                     "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac",
+                    # Every segment must share one audio layout: concat copies
+                    # streams, and mixed rates/channels corrupt AAC timing on
+                    # playback (browser stops mid-reel with a decode error).
+                    "-ar", str(AUDIO_RATE), "-ac", "2",
                     "-movflags", "+faststart", str(seg)]
         result = _run_command(command, cancelled)
         if result.returncode != 0 or not seg.is_file():

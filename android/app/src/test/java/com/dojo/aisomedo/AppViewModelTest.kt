@@ -563,8 +563,13 @@ class AppViewModelTest {
         assertTrue(model.state.value.review.canApprove)
     }
 
+    private fun Fixture.readySetup() {
+        bodies["/api/setup"] = """{"checklist":[],"ready":true}"""
+    }
+
     @Test fun brandingSelectionSurvivesReturnRefresh() = runTest(main.scheduler) {
         for (field in listOf("logo_asset", "intro_asset", "outro_asset")) Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS)
             f.await { it.canConfigure("logo") && it.canConfigure("cards") }
@@ -1031,7 +1036,7 @@ class AppViewModelTest {
             f.bodies["/api/reviews/8"] = reviewJson(id = 8)
             f.model.refreshReview(); f.await { !it.review.busy }
             assertEquals(8, f.model.state.value.review.target!!.reviewId)
-            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
         }
     }
     @Test fun failedGlobalRefreshBlocksAllReviewMutationsUntilRecovery() = runTest(main.scheduler) {
@@ -1205,6 +1210,49 @@ class AppViewModelTest {
         }
     }
 
+    @Test fun dueReviewAutomaticallyRendersButPackageScreenDoesNot() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.pendingDashboard("preparing")
+            f.bodies["/api/packages/active/render"] = """{"render_revision":"exact","stale":true}"""
+            f.model.navigate(Destination.PACKAGE)
+            f.await { it.editor.snapshot != null && !it.busy }
+            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+            f.model.openReview(ReviewTarget(occurrenceId = 2, packageFolder = "active"))
+            f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+        }
+    }
+
+    @Test fun missingDirectReviewAutomaticallyRendersSavedMontage() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.pendingDashboard("preparing", 7)
+            f.bodies["/api/reviews/7"] = reviewJson(ready = false)
+            f.bodies["/api/packages/active/render"] = """{"render_revision":"exact","stale":true}"""
+            f.model.openReview(ReviewTarget(reviewId = 7))
+            f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+            assertEquals(Destination.PACKAGE, f.model.state.value.destination)
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun dueReviewRendersAfterLiveResynchronizationWithoutBlockingWrites() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            f.pendingDashboard("preparing")
+            f.model.setForeground(false)
+            main.scheduler.runCurrent()
+            f.model.setForeground(true)
+            f.await { !it.busy && !it.review.busy && it.livePhase == com.dojo.aisomedo.live.LivePhase.LIVE }
+            f.await { f.seen.count { it == "POST /api/packages/active/render" } == 1 && !it.review.busy }
+            assertTrue(f.model.state.value.canMutate)
+        }
+    }
+
     @Test fun openingPackageReadsEditorWithoutCreatingPackage() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.await { it.phase == Phase.READY && !it.busy }
@@ -1238,6 +1286,7 @@ class AppViewModelTest {
     }
     @Test fun reminderSavePersistsOvernightWindowAndReloadsAfterRecreation() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
             f.model.setDraft("reminder_interval", "90", "reminders")
@@ -1259,6 +1308,7 @@ class AppViewModelTest {
     }
     @Test fun remindersRejectInvalidInputAndRetainDraftOnRejectedSave() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
             val count = f.server.requestCount
@@ -1278,6 +1328,7 @@ class AppViewModelTest {
     }
     @Test fun reminderIntervalOnlyEditPreservesSecondBearingWindow() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.bodies["/api/settings/reminders"] = """{"interval_minutes":60,"delivery_start":"09:00:10","delivery_end":"09:00:50","timezone":"Europe/Istanbul"}"""
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
@@ -1294,6 +1345,7 @@ class AppViewModelTest {
     }
     @Test fun reminderRefreshPreservesDirtyFieldsUntilExplicitReloadAndOfflineSaveNeverSends() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
             f.model.setDraft("reminder_interval", "90", "reminders")
@@ -1495,6 +1547,7 @@ class AppViewModelTest {
     }
     @Test fun compatibilityBeforePairingThenTokenSavedAndMeValidated() = runTest(main.scheduler) {
         Fixture().use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
             f.await { it.phase == Phase.PAIRING }
             assertEquals("/api/compat", f.server.takeRequest().path)
             f.model.pair("12345678", "Telefon")
@@ -1516,9 +1569,39 @@ class AppViewModelTest {
     }
     @Test fun incompleteSetupOpensOnlyOnce() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.closeSetup(); f.model.refresh(); f.await { !it.busy }
             assertNull(f.model.state.value.step)
+        }
+    }
+    @Test fun incompleteSetupRedirectsSettingsToOnboarding() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.closeSetup(); f.model.navigate(Destination.SETTINGS)
+            assertEquals("consent", f.model.state.value.step)
+            assertNotEquals(Destination.SETTINGS, f.model.state.value.destination)
+        }
+    }
+    @Test fun removePairingRevokesServerAndClearsLocalSession() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/pairing/clients/1/revoke"] = """{"revoked":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.removePairing()
+            f.await { it.phase == Phase.ADDRESS }
+            assertTrue(f.seen.contains("POST /api/pairing/clients/1/revoke"))
+            assertNull(f.store.readToken(f.origin))
+        }
+    }
+    @Test fun removePairingClearsLocalSessionEvenWhenRevokeFails() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.codes["/api/pairing/clients/1/revoke"] = 500
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.removePairing()
+            f.await { it.phase == Phase.ADDRESS }
+            assertTrue(f.seen.contains("POST /api/pairing/clients/1/revoke"))
+            assertNull(f.store.readToken(f.origin))
         }
     }
     @Test fun invalidCodeIsDifferentFromAuthenticated401() = runTest(main.scheduler) {
@@ -1747,9 +1830,11 @@ class AppViewModelTest {
     }
     @Test fun reopeningSessionRestoresSafeDraftAndNeverPairsAgain() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
-            f.model.setDraft("caption", "Rotation draft", "caption_template")
             f.model.navigate(Destination.SETTINGS)
+            f.await { it.canConfigure("caption_template") && !it.busy }
+            f.model.setDraft("caption", "Rotation draft", "caption_template")
             val saved = SavedStateHandle(f.model.saved.keys().associateWith { f.model.saved.get<Any>(it) })
             val owner = ViewModelStore()
             val reopened = AppViewModel(f.store, OkHttpClient(), 1, true, saved)
@@ -1837,6 +1922,7 @@ class AppViewModelTest {
     }
     @Test fun leavingWizardDuringSaveDoesNotReopenIt() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.selectStep("caption_template"); f.await { !it.busy }
             f.bodies["/api/setup"] = """{"checklist":[{"key":"caption_template","label":"Caption","complete":true},{"key":"cards","label":"Cards","complete":false,"required":false}],"ready":true}"""

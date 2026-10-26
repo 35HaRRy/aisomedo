@@ -59,7 +59,7 @@ export interface PackageEditorState {
   setRanges(id: string, ranges: VideoRange[]): void;
   setInput(id: string, index: number, bound: "start" | "end", value: string): void;
   setPhotoDuration(id: string, value: string): void;
-  renderPreview(): Promise<boolean>;
+  renderPreview(retry?: boolean): Promise<boolean>;
   clearPackage(): Promise<ClearPackageOut | null>;
   save(id: string): Promise<boolean>;
   canSaveMedia(id: string): boolean;
@@ -446,7 +446,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     },
     isDirty: id => changed(current.current, id), setRanges, setInput, save, discard,
     setPhotoDuration: (id, value) => setInput(id, 0, "end", value),
-    renderPreview: () => mutate((folder, signal) => api.renderPackage(folder, current.current.snapshot?.render_status === "failed", current.current.snapshot!, signal), { kind: "render" }),
+    renderPreview: (retry = false) => mutate((folder, signal) => api.renderPackage(folder, retry || current.current.snapshot?.render_status === "failed", current.current.snapshot!, signal), { kind: "render" }),
     clearPackage: async () => {
       let result: ClearPackageOut | null = null;
       const succeeded = await mutate(async (folder, signal) => {

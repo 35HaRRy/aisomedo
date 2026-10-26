@@ -313,7 +313,7 @@ def test_saved_render_queue_ready_delivery_and_stale_preview(tmp_path):
     assert response.headers["cache-control"] == "private, no-store"
     client.put("/api/packages/active/selections", json=body(publishing, mid))
     stale = client.get("/api/packages/active/editor").json()
-    assert stale["render_status"] == "stale" and stale["render_preview_url"] is None
+    assert stale["render_status"] == "missing" and stale["render_preview_url"] is None
     assert client.get(ready["render_preview_url"]).status_code == 404
     client.cookies.clear()
     assert client.get(ready["render_preview_url"]).status_code == 401

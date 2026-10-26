@@ -15,13 +15,16 @@ export function useDraft<T>(source: T | null, initial: T) {
   const [draft, setDraft] = useState(initial);
   const [dirty, setDirty] = useState(false);
   const [baseline, setBaseline] = useState("");
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
   const fingerprint = JSON.stringify(source);
   useEffect(() => {
-    if (source && !dirty) { setDraft(source); setBaseline(fingerprint); }
-  }, [fingerprint, dirty]);
+    if (source && !dirtyRef.current) { setDraft(source); setBaseline(fingerprint); }
+  }, [fingerprint]);
   return { draft, dirty, changed: dirty && baseline !== fingerprint,
     edit: (value: T) => { setDirty(true); setDraft(value); },
     reload: () => { if (source) { setDraft(source); setBaseline(fingerprint); setDirty(false); } },
+    markSaved: () => { setDirty(false); setBaseline(fingerprint); },
   };
 }
 

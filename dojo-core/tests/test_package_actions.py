@@ -44,7 +44,7 @@ def test_photo_duration_saved_removed_restored_and_rendered(tmp_path):
     assert seam.get_active_editor()["render_status"] == "ready"
     assert seam.get_render_preview(expected_folder_name=folder).path.read_bytes() == b"fake-reel"
     seam.set_selections({}, expected_folder_name=folder, photo_durations={mid: 6})
-    assert seam.get_active_editor()["render_status"] == "stale"
+    assert seam.get_active_editor()["render_status"] == "missing"
     with pytest.raises(MediaNotFound):
         seam.get_render_preview(expected_folder_name=folder)
 

@@ -8,6 +8,7 @@ import { PackageManager } from "../packages/PackageManager";
 import { CollapsiblePanel } from "../components/CollapsiblePanel";
 import { MediaActionIcon } from "../packages/MediaActionIcon";
 import { SavedReelPanel } from "../packages/SavedReelPanel";
+import { usePackageEditorContext } from "../packages/PackageEditorProvider";
 
 type Decision = "approve" | "skip" | "reschedule";
 const copy = tr.review;
@@ -143,6 +144,24 @@ function DueContinuation({ data, occurrenceId, packageFolder, onRefresh, stale }
 }
 
 export function ReviewFlow(props: { data: DashboardOut; reviewId: number | null; occurrenceId: number | null; packageFolder: string | null; onRefresh: () => void; stale: boolean }) {
-  return props.reviewId !== null ? <ReviewPanel key={props.reviewId} id={props.reviewId} onRefresh={props.onRefresh} stale={props.stale} />
-    : props.occurrenceId !== null ? <DueContinuation {...props} occurrenceId={props.occurrenceId} /> : null;
+  const editor = usePackageEditorContext(), snapshot = editor.snapshot;
+  const requested = useRef<string | null>(null);
+  const continuation = useRef(props.occurrenceId);
+  const action = props.data.pending_actions.find(item => continuation.current !== null
+    ? item.occurrence_id === continuation.current : props.reviewId !== null
+    ? item.review_id === props.reviewId : item.occurrence_id === props.occurrenceId);
+  if (action && ["preparing", "empty_package"].includes(action.state)) continuation.current = action.occurrence_id;
+  useEffect(() => {
+    if (props.stale || !editor.canEdit || !snapshot || !action ||
+      !["empty_package", "preparing"].includes(action.state) || !(Date.parse(action.due_at) <= Date.now()) ||
+      snapshot.package.folder_name !== action.package_folder || props.packageFolder && props.packageFolder !== action.package_folder ||
+      !snapshot.montage.order.length || snapshot.montage.over_limit || !snapshot.montage.duration_complete ||
+      ![undefined, null, "missing", "stale"].includes(snapshot.render_status)) return;
+    const key = `${action.occurrence_id}:${snapshot.package.id}:${snapshot.content_revision}`;
+    if (requested.current === key) return;
+    requested.current = key;
+    void editor.renderPreview();
+  }, [action, editor, snapshot, props.stale, props.packageFolder]);
+  return continuation.current !== null ? <DueContinuation {...props} occurrenceId={continuation.current} />
+    : props.reviewId !== null ? <ReviewPanel key={props.reviewId} id={props.reviewId} onRefresh={props.onRefresh} stale={props.stale} /> : null;
 }

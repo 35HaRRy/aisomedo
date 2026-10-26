@@ -185,6 +185,14 @@ def test_saved_section_worker_updates_are_view_only_and_reels_wait_for_due_time(
             now = domain._clock.now()
             store.set("branding.logo_asset", "logo.png", updated_at=now)
             store.create(YayinZamani(0, "oneoff", now, "pending", now))
+            domain.evaluate_due_work()
+            assert not [job for job in store.package_work(package)[1] if job.kind == "render"]
+            editor = client.get("/api/packages/active/editor").json()
+            assert client.post("/api/packages/active/render", json={
+                "expected_folder_name": package.folder_name,
+            }, headers={
+                "If-Match": f'"{package.id}:{editor["content_revision"]}"',
+            }).status_code == 200
             process = context.Process(target=worker, args=(url, str(tmp_path), [], True))
             process.start()
             process.join(15)

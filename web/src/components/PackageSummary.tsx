@@ -14,8 +14,8 @@ export function PackageSummary({ data, reviewId, occurrenceId, packageFolder, on
         <div><dt>{tr.createdAt}</dt><dd>{formatDate(data.package.created_at)}</dd></div></dl> : <p>{tr.noPackageHelp}</p>}
     </CollapsiblePanel>
     <PackageManager />
-    <PendingActions data={data} />
     <SavedReelPanel />
+    <PendingActions data={data} />
     <p className="muted">{tr.reviewNotice}</p>
   </>;
 }

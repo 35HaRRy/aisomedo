@@ -106,6 +106,7 @@ export const api = {
   completeUpload: (id: string, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}/complete`, { method: "POST", signal }),
   resolveUpload: (id: string, body: ResolveConflictIn, signal?: AbortSignal) => request<UploadOut>(`/api/media/uploads/${encodeURIComponent(id)}/resolve`, { method: "POST", body: JSON.stringify(body), signal }),
   me: (signal?: AbortSignal) => request<ClientOut>("/api/pairing/me", { signal }),
+  revokeClient: (id: number, signal?: AbortSignal) => request(`/api/pairing/clients/${id}/revoke`, { method: "POST", signal }),
   pair: async (body: ValidateIn, signal?: AbortSignal): Promise<void> => {
     await request("/api/pairing/validate", { method: "POST", body: JSON.stringify(body), signal });
   },

@@ -17,6 +17,7 @@ let setupStatus = 200;
 let acceptedAt: string | null = "2026-08-03T07:00:00Z";
 let cardSkips = 0;
 let activityAction = "plan.updated";
+let revocations = 0;
 
 beforeEach(() => {
   window.location.hash = "#/settings";
@@ -25,11 +26,12 @@ beforeEach(() => {
   reminders = { interval_minutes: 360, delivery_start: "08:00:00", delivery_end: "22:00:00", timezone: "Europe/Istanbul" };
   instagram = { health: "reconnect_required", ig_username: "old_dojo" };
   reminderStatus = 200; dashboardStatus = 200; consentStatus = 200; setupStatus = 200;
-  acceptedAt = "2026-08-03T07:00:00Z"; cardSkips = 0; activityAction = "plan.updated";
+  acceptedAt = "2026-08-03T07:00:00Z"; cardSkips = 0; activityAction = "plan.updated"; revocations = 0;
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     if (url === "/api/events") return liveResponse();
     if (url === "/api/compat") return json({ api_version: "0.1.0" });
     if (url === "/api/pairing/me") return json(client);
+    if (url === "/api/pairing/clients/1/revoke") { revocations++; return json({ revoked: true }); }
     if (url === "/api/setup") return json(setupState(), setupStatus);
     if (url === "/api/dashboard") return json({ ...dashboard(), plan }, dashboardStatus);
     if (url === "/api/packages/active/editor") return json(emptyEditor());
@@ -59,35 +61,65 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+const step = async (name: string) => { fireEvent.click(await screen.findByRole("button", { name: new RegExp(`^${name}`) })); };
+const content = (name: string) => screen.getByRole("heading", { name }).closest(".setup-content") as HTMLElement;
+
+it("replaces settings panels with the embedded setup widget", async () => {
+  render(<App />);
+  await screen.findByRole("heading", { name: "Ayarlar" });
+  const steps = await screen.findByRole("list", { name: "Kurulum adımları" });
+  expect(steps.children).toHaveLength(8);
+  expect(within(steps).getByRole("button", { name: /^Hatırlatmalar/ })).toHaveAttribute("aria-current", "step");
+  expect(screen.queryByRole("link", { name: "Kurulumu bitir" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Kuruluma sonra devam et" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Dojo Yayın Planı" })).not.toBeInTheDocument();
+  await step("Medya rızası");
+  await within(content("Medya rızası")).findByText(/Sürüm 2/);
+  expect(within(content("Medya rızası")).queryByRole("checkbox")).not.toBeInTheDocument();
+});
+
 it("persists plan, branding and reminder edits across a page remount", async () => {
   const view = render(<App />);
+  await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(360));
+  await step("Dojo Yayın Planı");
   await waitFor(() => expect(screen.getByLabelText("Yayın saati")).toHaveValue("10:00"));
   fireEvent.change(screen.getByLabelText("Yayın saati"), { target: { value: "13:30" } });
   fireEvent.click(screen.getByRole("button", { name: "Planı kaydet" }));
   await waitFor(() => expect(plan.anchor_time).toBe("13:30"));
   await screen.findByText("Ayarlar kaydedildi.");
+  await step("Açıklama şablonu");
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Dojo"));
   fireEvent.change(screen.getByRole("textbox", { name: "Açıklama şablonu" }), { target: { value: "Yeni Dojo {title}" } });
   fireEvent.click(screen.getByRole("button", { name: "Açıklamayı kaydet" }));
   await waitFor(() => expect(branding.caption_template).toBe("Yeni Dojo {title}"));
+  await step("Dojo logosu");
+  await screen.findByRole("img", { name: "Logo önizlemesi" });
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["image"], "logo.png", { type: "image/png" })] } });
   fireEvent.click(screen.getByRole("button", { name: "Logoyu kaydet" }));
   await waitFor(() => expect(branding.logo_asset).toBe("branding/assets/" + "b".repeat(32) + ".png"));
+  await step("İsteğe bağlı kartlar");
+  await waitFor(() => expect(screen.getByLabelText("Giriş süresi (saniye)")).toBeEnabled());
   fireEvent.change(screen.getByLabelText("Giriş görseli"), { target: { files: [new File(["image"], "intro.png", { type: "image/png" })] } });
   fireEvent.change(screen.getByLabelText("Giriş süresi (saniye)"), { target: { value: "2" } });
   fireEvent.click(screen.getByRole("button", { name: "Kartları kaydet" }));
   await waitFor(() => expect(branding.intro_duration).toBe(2));
+  await step("Hatırlatmalar");
+  await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(360));
   fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "120" } });
   fireEvent.change(screen.getByLabelText("Bildirim başlangıcı"), { target: { value: "22:00" } });
   fireEvent.change(screen.getByLabelText("Bildirim bitişi"), { target: { value: "08:00" } });
   fireEvent.click(screen.getByRole("button", { name: "Hatırlatmaları kaydet" }));
   await waitFor(() => expect(reminders).toEqual({ interval_minutes: 120, delivery_start: "22:00", delivery_end: "08:00", timezone: "Europe/Istanbul" }));
   view.unmount(); render(<App />);
-  await waitFor(() => expect(screen.getByLabelText("Yayın saati")).toHaveValue("13:30"));
-  await waitFor(() => expect(screen.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Yeni Dojo {title}"));
-  await waitFor(() => expect(screen.getByLabelText("Giriş süresi (saniye)")).toHaveValue(2));
   await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120));
-  expect(screen.getByLabelText("Bildirim başlangıcı")).toHaveValue("22:00");
-  expect(screen.getByRole("img", { name: "Logo önizlemesi" })).toHaveAttribute("src", "/api/settings/branding/assets/" + "b".repeat(32) + ".png");
+  await step("Dojo Yayın Planı");
+  await waitFor(() => expect(screen.getByLabelText("Yayın saati")).toHaveValue("13:30"));
+  await step("Açıklama şablonu");
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Yeni Dojo {title}"));
+  await step("İsteğe bağlı kartlar");
+  await waitFor(() => expect(screen.getByLabelText("Giriş süresi (saniye)")).toHaveValue(2));
+  await step("Dojo logosu");
+  await waitFor(() => expect(screen.getByRole("img", { name: "Logo önizlemesi" })).toHaveAttribute("src", "/api/settings/branding/assets/" + "b".repeat(32) + ".png"));
   expect(cardSkips).toBe(0);
   expect(screen.queryByRole("button", { name: "Kartları değiştirmeden devam et" })).not.toBeInTheDocument();
 });
@@ -98,14 +130,13 @@ it("keeps reminder draft after rejection and refresh, then adopts server values 
   fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "120" } });
   reminderStatus = 422;
   fireEvent.click(screen.getByRole("button", { name: "Hatırlatmaları kaydet" }));
-  const region = screen.getByRole("region", { name: "Hatırlatmalar" });
-  await within(region).findByRole("alert");
+  await screen.findByRole("alert");
   expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120);
   reminders = { ...reminders, interval_minutes: 60 };
   vi.useFakeTimers();
   await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120);
-  fireEvent.click(within(region).getByRole("button", { name: "Sunucudaki değerleri yükle" }));
+  fireEvent.click(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" }));
   expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(60);
 });
 
@@ -115,7 +146,7 @@ it("rejects invalid reminder values locally without changing stored policy", asy
   const button = screen.getByRole("button", { name: "Hatırlatmaları kaydet" });
   fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "0" } });
   fireEvent.submit(button.closest("form")!);
-  await within(screen.getByRole("region", { name: "Hatırlatmalar" })).findByRole("alert");
+  await screen.findByRole("alert");
   expect(reminders.interval_minutes).toBe(360);
   fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "120" } });
   fireEvent.change(screen.getByLabelText("Bildirim bitişi"), { target: { value: "08:00" } });
@@ -125,8 +156,10 @@ it("rejects invalid reminder values locally without changing stored policy", asy
 
 it("shows consent and reconnects Instagram without changing package or recurring anchor", async () => {
   render(<App />); vi.spyOn(window, "open").mockReturnValue(null);
+  await step("Medya rızası");
   await screen.findByText(/Rıza kaydedildi/);
   expect(screen.getByText(/Sürüm 2/)).toBeInTheDocument();
+  await step("Instagram bağlantısı");
   await screen.findByText(/@old_dojo.*Yeniden bağlantı/);
   fireEvent.click(screen.getByRole("button", { name: "Instagram ile yetkilendir" }));
   fireEvent.click(await screen.findByRole("button", { name: "@new_dojo hesabını seç" }));
@@ -139,17 +172,18 @@ it("shows consent and reconnects Instagram without changing package or recurring
 it("loads settings independently of dashboard and recovers missing consent", async () => {
   dashboardStatus = 500; consentStatus = 404;
   render(<App />);
-  await waitFor(() => expect(screen.getByLabelText("Yayın saati")).toHaveValue("10:00"));
+  await step("Medya rızası");
   await screen.findByText(/Rıza metni henüz tanımlanmamış/);
   consentStatus = 200;
-  fireEvent.click(within(screen.getByRole("region", { name: "Medya rızası" })).getByRole("button", { name: "Tekrar dene" }));
+  fireEvent.click(within(content("Medya rızası")).getByRole("button", { name: "Tekrar dene" }));
   await screen.findByText(/Rıza kaydedildi/);
 });
 
 it("shows unconnected Instagram status explicitly", async () => {
   instagram = { health: "not_connected", ig_username: null };
   render(<App />);
-  await within(await screen.findByRole("region", { name: "Instagram" })).findByText("Hesap bağlı değil");
+  await step("Instagram bağlantısı");
+  await within(content("Instagram bağlantısı")).findByText("Hesap bağlı değil");
 });
 
 it("reports persisted save separately from an unrelated setup refresh failure", async () => {
@@ -158,11 +192,31 @@ it("reports persisted save separately from an unrelated setup refresh failure", 
   setupStatus = 500;
   fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "120" } });
   fireEvent.click(screen.getByRole("button", { name: "Hatırlatmaları kaydet" }));
-  const region = screen.getByRole("region", { name: "Hatırlatmalar" });
-  await within(region).findByText("Ayarlar kaydedildi.");
-  expect(within(region).queryByRole("alert")).not.toBeInTheDocument();
+  await screen.findByText("Ayarlar kaydedildi.");
   expect(reminders.interval_minutes).toBe(120);
   expect(screen.getByRole("alert")).toHaveTextContent("Son bilgiler gösteriliyor");
+});
+
+it("does not report another device after saving reminders", async () => {
+  render(<App />);
+  await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(360));
+  const warning = "Başka bir cihaz ayarları değiştirdi. Taslağınız korunuyor.";
+  fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "120" } });
+  fireEvent.click(screen.getByRole("button", { name: "Hatırlatmaları kaydet" }));
+  await waitFor(() => expect(reminders.interval_minutes).toBe(120));
+  await screen.findByText("Ayarlar kaydedildi.");
+  vi.useFakeTimers();
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.queryByText(warning)).not.toBeInTheDocument();
+  vi.useRealTimers();
+  fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "60" } });
+  expect(screen.queryByText(warning)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Hatırlatmaları kaydet" }));
+  await waitFor(() => expect(reminders.interval_minutes).toBe(60));
+  await screen.findByText("Ayarlar kaydedildi.");
+  vi.useFakeTimers();
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.queryByText(warning)).not.toBeInTheDocument();
 });
 
 it("clears previous save acknowledgment when edited draft is later rejected", async () => {
@@ -170,26 +224,38 @@ it("clears previous save acknowledgment when edited draft is later rejected", as
   await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(360));
   fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "120" } });
   fireEvent.click(screen.getByRole("button", { name: "Hatırlatmaları kaydet" }));
-  const region = screen.getByRole("region", { name: "Hatırlatmalar" });
-  await within(region).findByText("Ayarlar kaydedildi.");
+  await screen.findByText("Ayarlar kaydedildi.");
   await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120));
   fireEvent.change(screen.getByLabelText("Hatırlatma aralığı (dakika)"), { target: { value: "60" } });
-  expect(within(region).queryByText("Ayarlar kaydedildi.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Ayarlar kaydedildi.")).not.toBeInTheDocument();
   reminderStatus = 422;
   fireEvent.click(screen.getByRole("button", { name: "Hatırlatmaları kaydet" }));
-  await within(region).findByRole("alert");
-  expect(within(region).queryByText("Ayarlar kaydedildi.")).not.toBeInTheDocument();
+  await screen.findByRole("alert");
+  expect(screen.queryByText("Ayarlar kaydedildi.")).not.toBeInTheDocument();
   expect(reminders.interval_minutes).toBe(120);
 });
 
 it("displays unaccepted consent without offering installation-wide acceptance in Settings", async () => {
   acceptedAt = null;
   render(<App />);
-  const region = await screen.findByRole("region", { name: "Medya rızası" });
-  await within(region).findByText(/Sürüm 2/);
-  expect(within(region).queryByRole("checkbox")).not.toBeInTheDocument();
-  expect(within(region).queryByRole("button", { name: "Rızayı kaydet" })).not.toBeInTheDocument();
-  expect(within(region).getByRole("status")).toHaveTextContent("henüz kaydedilmedi");
+  await step("Medya rızası");
+  await within(content("Medya rızası")).findByText(/Sürüm 2/);
+  expect(within(content("Medya rızası")).queryByRole("checkbox")).not.toBeInTheDocument();
+  expect(within(content("Medya rızası")).queryByRole("button", { name: "Rızayı kaydet" })).not.toBeInTheDocument();
+  expect(within(content("Medya rızası")).getByRole("status")).toHaveTextContent("henüz kaydedilmedi");
+});
+
+it("removes the paired browser only after confirmation", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  render(<App />);
+  await screen.findByRole("heading", { name: "Ayarlar" });
+  fireEvent.click(screen.getByRole("button", { name: "Kaldır" }));
+  expect(revocations).toBe(0);
+  expect(screen.getByRole("heading", { name: "Ayarlar" })).toBeInTheDocument();
+  confirm.mockReturnValue(true);
+  fireEvent.click(screen.getByRole("button", { name: "Kaldır" }));
+  await screen.findByRole("heading", { name: "Tarayıcıyı eşleştir" });
+  expect(revocations).toBe(1);
 });
 
 it.each([

@@ -1,38 +1,31 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useState } from "react";
+import { api, ApiError } from "../api/client";
 import type { ClientOut } from "../api/openapi";
 import { tr } from "../i18n";
-import { BrandingStep } from "../onboarding/BrandingStep";
-import { CardsStep } from "../onboarding/CardsStep";
-import { ConsentStep } from "../onboarding/ConsentStep";
-import { InstagramStep } from "../onboarding/InstagramStep";
-import { PlanStep } from "../onboarding/PlanStep";
-import { ReminderSettings } from "./ReminderSettings";
+import { OnboardingWizard } from "../onboarding/OnboardingWizard";
+import { useSession } from "../session";
 
-function SettingsSection({ title, onRefresh, children }: { title: string; onRefresh: () => void; children: (onSaved: () => void) => ReactNode }) {
-  const [revision, setRevision] = useState(0);
-  const [acknowledged, setAcknowledged] = useState(false);
-  const heading = useRef<HTMLHeadingElement>(null);
-  function saved() {
-    setRevision(value => value + 1); setAcknowledged(true); onRefresh(); heading.current?.focus();
+export function SettingsSummary({ client }: { client: ClientOut }) {
+  const { invalidate } = useSession();
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState(false);
+  async function remove() {
+    if (!window.confirm(tr.settingsPage.removeWarning)) return;
+    setRemoving(true); setRemoveError(false);
+    try {
+      await api.revokeClient(client.id);
+      invalidate();
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 401) invalidate();
+      else setRemoveError(true);
+    } finally {
+      setRemoving(false);
+    }
   }
-  return <section className="summary-sheet settings-section" aria-label={title}>
-    <h2 ref={heading} tabIndex={-1}>{title}</h2>
-    {acknowledged && <p role="status">{tr.settingsPage.saved}</p>}
-    <div key={revision} onChange={() => setAcknowledged(false)} onSubmitCapture={() => setAcknowledged(false)} onClick={() => setAcknowledged(false)}>{children(saved)}</div>
-  </section>;
-}
-
-export function SettingsSummary({ client, onRefresh }: { client: ClientOut; onRefresh: () => void }) {
-  return <><header className="page-heading"><h1>{tr.settings}</h1><p>{tr.settingsPage.intro}</p><a href="#/onboarding">{tr.settingsPage.openSetup}</a></header>
-    <section className="summary-sheet"><h2>{tr.client}</h2><p>{client.name}</p></section>
-    <div className="settings-grid">
-      <SettingsSection title={tr.plan} onRefresh={onRefresh}>{onSaved => <PlanStep onSaved={onSaved} />}</SettingsSection>
-      <SettingsSection title={tr.settingsPage.reminders} onRefresh={onRefresh}>{onSaved => <ReminderSettings onSaved={onSaved} />}</SettingsSection>
-      <SettingsSection title={tr.settingsPage.logo} onRefresh={onRefresh}>{onSaved => <BrandingStep kind="logo" onSaved={onSaved} />}</SettingsSection>
-      <SettingsSection title={tr.settingsPage.caption} onRefresh={onRefresh}>{onSaved => <BrandingStep kind="caption_template" onSaved={onSaved} />}</SettingsSection>
-      <SettingsSection title={tr.settingsPage.cards} onRefresh={onRefresh}>{onSaved => <CardsStep onboarding={false} onSaved={onSaved} />}</SettingsSection>
-      <SettingsSection title={tr.instagram} onRefresh={onRefresh}>{onSaved => <InstagramStep onSaved={onSaved} />}</SettingsSection>
-      <SettingsSection title={tr.settingsPage.consent} onRefresh={onRefresh}>{onSaved => <ConsentStep readOnly onSaved={onSaved} />}</SettingsSection>
-    </div>
+  return <><header className="page-heading"><h1>{tr.settings}</h1><p>{tr.settingsPage.intro}</p></header>
+    <section className="summary-sheet"><div className="client-row"><div><h2>{tr.client}</h2><p>{client.name}</p></div>
+      <button className="danger" onClick={() => void remove()} disabled={removing}>{tr.settingsPage.remove}</button></div>
+      {removeError && <p role="alert">{tr.settingsPage.removeFailed}</p>}</section>
+    <OnboardingWizard embedded />
   </>;
 }

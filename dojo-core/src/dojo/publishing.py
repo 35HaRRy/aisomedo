@@ -463,19 +463,25 @@ class DojoPublishing:
                 and digest is not None and review.revision_digest == digest
                 and manifest.get("render_revision") == digest
             )
-            if not ready:
-                continue
-            try:
-                resolve_artifact(self.media_root / review.package_folder, manifest,
-                                 "render/reel.mp4")
-            except MediaNotFound:
+            if ready:
+                try:
+                    resolve_artifact(self.media_root / review.package_folder, manifest,
+                                     "render/reel.mp4")
+                except MediaNotFound:
+                    ready = False
+            if not ready and not (
+                package is not None and package.status == "active"
+                and review.package_folder == package.folder_name and review.status == "pending"
+                and occurrence is not None and occurrence.status in ("pending", "due")
+                and occurrence.due_at <= now
+            ):
                 continue
             actions.append(PendingAction(
                 occurrence_id=review.occurrence_id, review_id=review.id,
                 version=review.version,
                 due_at=occurrence.due_at if occurrence else review.created_at,
                 package_folder=review.package_folder,
-                state="review_ready",
+                state="review_ready" if ready else "preparing" if has_media else "empty_package",
                 review_status=review.status if review.status != "pending" else None,
             ))
         reviewed = {r.occurrence_id for r in reviews}
@@ -1520,10 +1526,9 @@ class DojoPublishing:
     def _ensure_reviews_for_due(self) -> None:
         """Create at most one durable review per due occurrence for the active revision.
 
-        A review is only created once a render is materialized. For a non-empty package
-        we enqueue a render when stale (the render job's completion hook creates the
-        review) or, when the render is already current, create it directly. An empty
-        active package creates no review and leaves the occurrence pending.
+        A review is only created once a render is materialized. Missing/stale Reels
+        wait for a manual render or an automatic request from the review screen.
+        Background scheduler ticks never enqueue Reel renders.
         """
         if self._select_due_occurrence() is None:
             return
@@ -1541,8 +1546,6 @@ class DojoPublishing:
         digest = self._render_digest(package, manifest)
         if self._has_current_render(package, manifest, digest):
             self._create_review_if_due(package, digest)
-        else:
-            self._enqueue_render(package, digest)
 
     @_package_edit
     def _create_review_if_due(self, package: Package, digest: str) -> None:
@@ -2398,6 +2401,23 @@ class DojoPublishing:
                 f"preview-sweep:{package.id}",
                 lambda: self._prune_retired_preview_files(package, manifest),
             )
+            if changed:
+                self._packages.after_commit(
+                    f"reel-sweep:{package.id}", lambda: self._prune_stale_reel(package),
+                )
+
+    def _prune_stale_reel(self, package: Package) -> None:
+        with self._packages.package_lock():
+            current = self._packages.get_by_folder(package.folder_name)
+            if current is None or current.id != package.id or current.status != "active":
+                return
+            manifest = self._load_manifest(current)
+            if manifest.get("render_revision") is None or (
+                manifest["render_revision"] != self._render_digest(current, manifest)
+            ):
+                (self.media_root / current.folder_name / "render" / "reel.mp4").unlink(
+                    missing_ok=True,
+                )
 
     @staticmethod
     def _section_preview_input(entry: dict | None, ranges: list[VideoRange]) -> dict | None:
@@ -2657,10 +2677,17 @@ class DojoPublishing:
         )
 
     def set_branding_defaults(
-        self, config: BrandingConfig, requester: str | None = None
+        self, config: BrandingConfig, requester: str | None = None, *,
+        apply_to_draft: bool = False,
     ) -> BrandingConfig:
-        """Set the installation-wide branding defaults; draft copies keep old values."""
+        """Set the installation-wide branding defaults.
+
+        ``apply_to_draft`` carries the change into the active package too, so a
+        card uploaded from Settings reaches the current Reel instead of only the
+        next package.
+        """
         now = self._clock.now()
+        before = self.get_branding_defaults().to_dict()
         for key, value in config.to_dict().items():
             self._settings.set(f"branding.{key}", value, updated_at=now)
         self._audit.append(
@@ -2671,10 +2698,33 @@ class DojoPublishing:
                 details=config.to_dict(),
             )
         )
-        return self.get_branding_defaults()
+        result = self.get_branding_defaults()
+        if apply_to_draft:
+            self._mirror_defaults_to_draft(before, result.to_dict(), requester)
+        return result
+
+    def _mirror_defaults_to_draft(
+        self, before: dict, after: dict, requester: str | None
+    ) -> None:
+        """Carry changed branding defaults into the active draft.
+
+        Draft branding is copied when a package is created, so without this a
+        card uploaded from Settings never reaches the current Reel; only the
+        next package would pick it up. Per-package overrides made through
+        ``set_branding`` still win until the defaults themselves change.
+        """
+        changed = {
+            key: after.get(key)
+            for key in ("logo_asset", "intro_asset", "intro_duration",
+                        "outro_asset", "outro_duration")
+            if before.get(key) != after.get(key)
+        }
+        if changed and self.get_active_package() is not None:
+            self.set_branding(changed, requester=requester)
 
     def patch_branding_defaults(
-        self, changes: dict[str, object], requester: str | None = None
+        self, changes: dict[str, object], requester: str | None = None, *,
+        apply_to_draft: bool = False,
     ) -> BrandingConfig:
         """Validate a partial update before writing only the changed settings."""
         current = self.get_branding_defaults().to_dict()
@@ -2703,6 +2753,8 @@ class DojoPublishing:
         result = self.get_branding_defaults()
         self._audit.append(AuditEvent(action="branding.defaults_updated",
             actor=requester or "system", occurred_at=now, details=result.to_dict()))
+        if apply_to_draft:
+            self._mirror_defaults_to_draft(current, result.to_dict(), requester)
         return result
 
     def _seed_draft_defaults(self, package: Package) -> None:

@@ -8,6 +8,65 @@ from dojo import RenderFailed
 from .test_render import finalize_media, make_seam
 
 
+@pytest.mark.parametrize(
+    "change", ["duration", "order", "remove", "restore", "upload", "selections"],
+)
+def test_media_changes_clear_reel_and_wait_for_review_to_render(tmp_path, change):
+    from datetime import timedelta
+
+    from dojo.exceptions import MediaNotFound
+    from dojo.model import YayinZamani
+
+    store, seam, renderer = make_seam(tmp_path)
+    photo = finalize_media(tmp_path, seam)
+    video = finalize_media(tmp_path, seam, filename="video.mp4",
+                           content_type="video/mp4", duration=30)
+    store.set("branding.logo_asset", "logo.png", updated_at=seam._clock.now())
+    if change == "restore":
+        seam.remove_media(photo)
+    seam.render_preview()
+    seam.process_job(seam.claim_next_job().job_id)
+    folder = seam.get_active_package().folder_name
+    artifact = seam.get_render_preview(expected_folder_name=folder).path
+    due_at = seam._clock.now() + timedelta(hours=1)
+    store.create(YayinZamani(0, "oneoff", due_at, "pending", seam._clock.now()))
+
+    if change == "duration":
+        seam.set_selections({}, expected_folder_name=folder, photo_durations={photo: 6})
+    elif change == "order":
+        seam.set_order([video, photo])
+    elif change == "remove":
+        seam.remove_media(photo)
+    elif change == "restore":
+        seam.restore_media(photo)
+    elif change == "upload":
+        finalize_media(tmp_path, seam, filename="new.jpg")
+    else:
+        seam.set_selections({video: [{"start": 1, "end": 5}]}, expected_folder_name=folder)
+
+    seam.evaluate_due_work()
+    jobs = store.package_work(seam.get_active_package())[1]
+    assert not [j for j in jobs if j.kind == "render" and j.status in ("queued", "processing")]
+    assert not artifact.exists()
+    assert seam.get_active_editor()["render_status"] == "missing"
+    with pytest.raises(MediaNotFound):
+        seam.get_render_preview(expected_folder_name=folder)
+    assert len(renderer.calls) == 1
+
+    seam._clock._now = due_at
+    seam.evaluate_due_work()
+    jobs = store.package_work(seam.get_active_package())[1]
+    assert not [j for j in jobs if j.kind == "render" and j.status in ("queued", "processing")]
+    assert seam.get_active_editor()["render_status"] == "missing"
+    seam.render_preview(expected_folder_name=folder)
+    while (job := seam.claim_next_job()) is not None:
+        seam.process_job(job.job_id)
+    assert seam.get_active_editor()["render_status"] == "ready"
+    assert artifact.is_file()
+    assert len(renderer.calls) == 2
+    assert len(seam.list_pending_reviews()) == 1
+
+
 def test_default_logo_is_part_of_the_render_digest(tmp_path):
     _, seam, _ = make_seam(tmp_path)
     finalize_media(tmp_path, seam)
@@ -131,7 +190,7 @@ def test_concurrent_same_digest_completion_keeps_first_ready_artifact(tmp_path):
     assert artifact.path.read_bytes() == b"first"
 
 
-def test_automatic_render_requires_an_actual_due_occurrence(tmp_path):
+def test_scheduler_never_renders_even_with_an_actual_due_occurrence(tmp_path):
     from dojo.model import YayinZamani
 
     store, seam, renderer = make_seam(tmp_path)
@@ -145,6 +204,10 @@ def test_automatic_render_requires_an_actual_due_occurrence(tmp_path):
     store.create(YayinZamani(0, "oneoff", now, "pending", now))
     seam.evaluate_due_work()
     seam.evaluate_due_work()
+    jobs = store.package_work(seam.get_active_package())[1]
+    assert [job for job in jobs if job.kind == "render"] == []
+    seam.render_preview()
+    seam.render_preview()
     jobs = store.package_work(seam.get_active_package())[1]
     assert len([job for job in jobs if job.kind == "render"]) == 1
     job = seam.claim_next_job()
@@ -183,8 +246,7 @@ def test_render_recovers_a_missing_current_artifact(tmp_path, automatic):
         now = seam._clock.now()
         store.create(YayinZamani(0, "oneoff", now, "pending", now))
         seam.evaluate_due_work()
-    else:
-        seam.render_preview()
+    seam.render_preview()
     job = seam.claim_next_job()
     assert job is not None and job.kind == "render"
     seam.process_job(job.job_id)

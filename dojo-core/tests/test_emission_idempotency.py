@@ -93,6 +93,7 @@ def test_later_tick_during_blocked_render(pg_store, other, tmp_path):
     finalize_media(tmp_path, first)
     pg_store.create(YayinZamani(0, "oneoff", FIXED_AT, "pending", FIXED_AT))
     first.evaluate_due_work()
+    first.render_preview()
     claimed = first.claim_next_job()
     with ThreadPoolExecutor(1) as pool:
         running = pool.submit(first.process_job, claimed.job_id)

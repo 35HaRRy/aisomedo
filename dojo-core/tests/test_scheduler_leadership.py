@@ -305,6 +305,9 @@ def test_run_tick_slow_render_second_tick_enqueues_no_second_job(
     pg_store.create(YayinZamani(0, "oneoff", FIXED_AT, "pending", FIXED_AT))
     monkeypatch.setattr(pub, "claim_next_job", lambda: None)
     run_tick(pub, None)
+    assert _render_jobs(pg_store) == []
+    pg_store.set("branding.logo_asset", "logo.png", updated_at=FIXED_AT)
+    pub.render_preview()
     queued = _render_jobs(pg_store)
     assert len(queued) == 1
     assert queued[0][1] == "queued"
@@ -338,7 +341,7 @@ def test_run_tick_emission_exception_recovers_next_tick(
     def _boom(self: DojoPublishing, *args: object, **kwargs: object) -> None:
         raise RuntimeError("injected emission failure")
 
-    monkeypatch.setattr(DojoPublishing, "_enqueue_render", _boom)
+    monkeypatch.setattr(DojoPublishing, "_ensure_reviews_for_due", _boom)
     run_tick(pub, None)
     assert pg_store.list_all() == before
     assert _render_jobs(pg_store) == []
@@ -346,4 +349,4 @@ def test_run_tick_emission_exception_recovers_next_tick(
     monkeypatch.undo()
     run_tick(pub, None)
     assert len(pg_store.list_all()) == 2
-    assert len(_render_jobs(pg_store)) == 1
+    assert _render_jobs(pg_store) == []

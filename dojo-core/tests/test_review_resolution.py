@@ -62,6 +62,7 @@ def finalize_media(tmp_path, seam, *, filename="pic.jpg", content_type="image/jp
 
 
 def claim_render(seam):
+    seam.render_preview()  # Simulate opening the review screen.
     job = seam.claim_next_job()
     assert job is not None and job.kind == "render"
     seam.process_job(job.job_id)

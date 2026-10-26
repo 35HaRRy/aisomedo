@@ -20,7 +20,10 @@ export const tr = {
   liveWorkspace: "Canlı çalışma alanı",
   settingsPage: {
     intro: "Yayın planını, marka görsellerini ve hatırlatmaları düzenleyin. Instagram bağlantısını ve medya rızasını kontrol edin.",
-    openSetup: "Kurulumu aç", saved: "Ayarlar kaydedildi.",
+    saved: "Ayarlar kaydedildi.",
+    remove: "Kaldır",
+    removeWarning: "Bu tarayıcının eşleştirmesi kaldırılacak. Devam edilsin mi?",
+    removeFailed: "Eşleştirme kaldırılamadı. Tekrar deneyin.",
     consentPending: "Bu sürüm için medya rızası henüz kaydedilmedi. Rızayı kaydetmek için kurulumu açın.",
     logo: "Dojo logosu", caption: "Açıklama şablonu", cards: "Giriş ve çıkış kartları", consent: "Medya rızası",
     reminders: "Hatırlatmalar", reminderHelp: "Bekleyen Yayın İncelemesi için bildirim aralığını ve bildirim gönderilebilecek saatleri seçin. Bu pencere dışındaki saatler sessizdir. Gece yarısını geçen bir pencere seçebilirsiniz.",

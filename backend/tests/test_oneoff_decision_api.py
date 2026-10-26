@@ -36,6 +36,12 @@ def test_review_moves_same_occurrence_to_server_now_and_worker_creates_exact_rev
     assert publishing.list_pending_reviews() == []  # API never renders or publishes.
     assert decide(client, slot).status_code == 409
     publishing.evaluate_due_work()
+    editor = client.get("/api/packages/active/editor").json()
+    assert client.post("/api/packages/active/render", json={
+        "expected_folder_name": editor["package"]["folder_name"],
+    }, headers={
+        "If-Match": f'"{editor["package"]["id"]}:{editor["content_revision"]}"',
+    }).status_code == 200
     job = publishing.claim_next_job()
     while job is not None and job.kind in ("thumbnail", "section_preview"):
         publishing.process_job(job.job_id)

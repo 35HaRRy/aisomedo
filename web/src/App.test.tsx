@@ -67,14 +67,18 @@ it("shows initial setup error without inventing completion or redirect", async (
   await screen.findByRole("heading", { name: "Dojo logosu" });
 });
 
-it("reopens from Settings and resumes after reload", async () => {
+it("hides setup access in Settings once setup is complete", async () => {
   window.location.hash = "#/settings";
-  const view = render(<App />);
-  fireEvent.click(await screen.findByRole("link", { name: "Kurulumu aç" }));
-  await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
-  view.unmount(); setup = setupState("consent");
   render(<App />);
-  await screen.findByRole("heading", { name: "Medya rızası" });
+  await screen.findByRole("heading", { name: "Ayarlar" });
+  expect(screen.queryByRole("link", { name: "Kurulumu aç" })).not.toBeInTheDocument();
+});
+
+it("redirects incomplete setup away from Settings", async () => {
+  setup = setupState("instagram"); window.location.hash = "#/settings";
+  render(<App />);
+  await screen.findByRole("heading", { name: "Instagram bağlantısı" });
+  expect(window.location.hash).toBe("#/onboarding");
 });
 afterEach(() => vi.useRealTimers());
 
@@ -131,6 +135,23 @@ it("package panels collapse independently", async () => {
   expect(screen.getByRole("heading", { name: "Bekleyen işlem" })).toBeVisible();
   fireEvent.click(within(panel).getByRole("button", { name: "Aktif paket medyası panelini aç" }));
   expect(within(panel).getByRole("button", { name: "Paketi temizle" })).toBeVisible();
+});
+
+it("orders package panels and starts uploads collapsed", async () => {
+  window.location.hash = "#/package";
+  snapshot.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 1, state: "review_ready", package_folder: snapshot.package!.folder_name, due_at: snapshot.generated_at }];
+  render(<App />);
+  await screen.findByRole("heading", { name: "Aktif paket medyası" });
+  const titles = Array.from(document.querySelectorAll("main section[aria-labelledby]"))
+    .map(panel => panel.querySelector("h2")?.textContent ?? "");
+  expect(titles).toEqual([
+    snapshot.package!.folder_name,
+    "Fotoğraf ve video yükle",
+    "Aktif paket medyası",
+    expect.stringContaining("Kaydedilmiş Reel önizlemesi"),
+    "Bekleyen işlem",
+  ]);
+  expect(screen.getByRole("button", { name: "Fotoğraf ve video yükle panelini aç" })).toHaveAttribute("aria-expanded", "false");
 });
 
 it("reads dashboard and editor only on the pages that consume them", async () => {

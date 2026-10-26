@@ -44,6 +44,7 @@ def test_queued_render_does_not_emit_review_after_gate_changes(
     finalize_media(tmp_path, publishing)
     set_plan_due(publishing, monday_dt())
     publishing.evaluate_due_work()
+    publishing.render_preview()
     if change == "policy":
         setup.set_policy(version=2, text="v2", requester="cli")
     else:

@@ -45,8 +45,8 @@ export function VideoSectionEditor({ media, ranges, inputs, validationError, dis
           add.current?.focus();
         }}><MediaActionIcon action="remove" /></button>
       </li>)}</ol>
-      <div className="upload-actions"><button ref={add} disabled={editingBlocked} onClick={() => { const next = addRangeAtPlayhead(ranges, playhead, duration); setNoGap(!next); if (next) onChange(next); }}>{tr.editor.addSection}</button>
-        <span className="time-readout">{tr.editor.retained}: {validationError ? "—" : retainedDuration(ranges, duration).toFixed(2)} s</span></div>
+      <div className="section-add-row"><span className="time-readout">{tr.editor.retained}: {validationError ? "—" : retainedDuration(ranges, duration).toFixed(2)} s</span>
+        <button ref={add} className="media-icon-button" disabled={editingBlocked} aria-label={tr.editor.addSection} title={tr.editor.addSection} onClick={() => { const next = addRangeAtPlayhead(ranges, playhead, duration); setNoGap(!next); if (next) onChange(next); }}><MediaActionIcon action="add" /></button></div>
       {noGap && <p role="status">{tr.editor.noGap}</p>}
     </div>
   </section>;

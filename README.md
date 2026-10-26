@@ -100,8 +100,9 @@ Queued/processing is not finalized success.
 
 ### Guided browser setup
 
-After pairing, incomplete setup opens at `#/onboarding`. Resume later or reopen
-from **Ayarlar → Kurulumu aç**. Configure Instagram, a Monday publication plan,
+After pairing, incomplete setup opens at `#/onboarding`; opening Settings or the
+dashboard redirects there until setup is complete. Once complete, Settings edits
+each section directly with no setup link. Configure Instagram, a Monday publication plan,
 media consent, logo, caption template, and optional intro/outro cards directly
 in the wizard. A valid disabled plan counts as configured without enabling
 publishing. Optional cards never block readiness; skipping retains existing cards.

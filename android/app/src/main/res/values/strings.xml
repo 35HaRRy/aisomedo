@@ -138,6 +138,7 @@
     <string name="range_end">Bitiş (saniye)</string>
     <string name="range_remove">%1$d. bölümü kaldır</string>
     <string name="range_add">Bölüm ekle</string>
+    <string name="range_retained">Kullanılacak süre: %1$s saniye</string>
     <string name="range_reset">Videonun tamamını kullan</string>
     <string name="upload_channel">Medya yüklemeleri</string>
     <string name="upload_notification_title">Aktif Pakete yükleniyor</string>
@@ -238,6 +239,9 @@
     <string name="change_server">Sunucuyu değiştir</string>
     <string name="change_server_warning">Bu cihazın yeniden eşleştirilmesi gerekecek.</string>
     <string name="confirm_change">Değiştir ve eşleştirmeyi kaldır</string>
+    <string name="remove_pairing">Kaldır</string>
+    <string name="remove_pairing_warning">Bu cihazın eşleştirmesi kaldırılacak. Yeniden eşleştirmeniz gerekecek.</string>
+    <string name="remove_pairing_confirm">Eşleştirmeyi kaldır</string>
     <string name="device_identity">%1$s · Cihaz %2$d</string>
     <string name="version_context">Sürüm: %1$d · Sunucu en az %2$d, güncel %3$d</string>
     <string name="update_title">Güncelleme gerekli</string>

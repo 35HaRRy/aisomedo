@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Refresh
@@ -288,6 +289,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     val duration = media.sourceDuration?.takeIf { it.isFinite() && it > 0 }
     if (duration == null) { Text(stringResource(R.string.media_duration_help)); return }
     val invalid = rows.isNotEmpty() && parseRanges(rows, duration) == null
+    val retained = if (rows.isEmpty()) duration else parseRanges(rows, duration)?.sumOf { it.end - it.start }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(stringResource(if (rows.isEmpty()) R.string.range_whole else R.string.range_selected))
         Text(stringResource(R.string.range_source, seconds(duration)), style = MaterialTheme.typography.bodySmall)
@@ -305,7 +307,10 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         }
         if (invalid) Text(stringResource(R.string.media_invalid), color = MaterialTheme.colorScheme.error,
             modifier = Modifier.testTag("range-error-${media.mediaId}").semantics { liveRegion = LiveRegionMode.Polite })
-        OutlinedButton(onClick = { onChange(rows + RangeInput("", "")) }, enabled = !blocked, modifier = Modifier.testTag("range-add-${media.mediaId}")) { Text(stringResource(R.string.range_add)) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.range_retained, retained?.let(::seconds) ?: "—"), style = MaterialTheme.typography.bodySmall)
+            MediaIconAction(stringResource(R.string.range_add), Icons.Default.Add, !blocked, Modifier.testTag("range-add-${media.mediaId}")) { onChange(rows + RangeInput("", "")) }
+        }
         TextButton(onClick = { onChange(emptyList()) }, enabled = !blocked && rows.isNotEmpty()) { Text(stringResource(R.string.range_reset)) }
     }
 }

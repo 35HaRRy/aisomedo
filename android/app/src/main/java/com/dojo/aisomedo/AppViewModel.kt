@@ -106,6 +106,7 @@ class AppViewModel(
     private var prompted = false
     private var reviewJob: Job? = null
     private var reviewEpoch = 0
+    private var automaticReviewRender: String? = null
     private var oneoffEpoch = 0
     private var oneoffDecisionRevision = 0L
     private var pendingPushRefresh = false
@@ -194,7 +195,10 @@ class AppViewModel(
             { failure(it) }, snapshotVersions::observe)
         live = coordinator
         liveObservation = viewModelScope.launch {
-            coordinator.phase.collect { phase -> mutable.update { it.copy(livePhase = phase) } }
+            coordinator.phase.collect { phase ->
+                mutable.update { it.copy(livePhase = phase) }
+                if (phase == LivePhase.LIVE && state.value.review.target?.occurrenceId != null) refreshReviewOnInvalidation()
+            }
         }
         coordinator.setForeground(foreground && network.value.connected)
     }
@@ -603,6 +607,7 @@ class AppViewModel(
     private fun clearSaved() { saved.keys().toList().forEach { saved.remove<Any>(it) } }
     fun navigate(destination: Destination) {
         if (state.value.phase != Phase.READY) return
+        if (destination == Destination.SETTINGS && state.value.setup?.ready == false) { openSetup(); return }
         oneoffEpoch++
         saved["destination"] = destination.name
         closeSetup(); mutable.update { it.copy(destination = destination,
@@ -618,6 +623,16 @@ class AppViewModel(
     fun openSetup() {
         if (state.value.phase != Phase.READY) return
         selectStep(state.value.setup?.checklist?.firstOrNull { it.required && !it.complete }?.key ?: "pairing")
+    }
+    fun removePairing() {
+        val id = state.value.client?.id ?: return
+        if (state.value.busy) return
+        val current = generation
+        mutable.update { it.copy(busy = true) }
+        viewModelScope.launch {
+            try { api().revokeClient(id) } catch (_: Exception) { /* Local removal must not depend on the network. */ }
+            if (generation == current && !cleared) changeServer()
+        }
     }
     fun closeSetup() { saved.remove<String>("step"); mutable.update { it.copy(step = null) } }
     fun selectStep(key: String) {
@@ -1323,7 +1338,10 @@ class AppViewModel(
         if (target?.valid != true) { clearReviewSaved(); return }
         mutable.update { it.copy(review = ReviewState(target = target, continuing = saved.get<Boolean>("review_continuing") ?: false)) }
     }
-    private fun clearReviewSaved() { saved.keys().filter { it.startsWith("review_") }.forEach { saved.remove<Any>(it) } }
+    private fun clearReviewSaved() {
+        automaticReviewRender = null
+        saved.keys().filter { it.startsWith("review_") }.forEach { saved.remove<Any>(it) }
+    }
     fun openReview(target: ReviewTarget) {
         if (state.value.phase != Phase.READY || !target.valid) return
         oneoffEpoch++
@@ -1418,11 +1436,17 @@ class AppViewModel(
             require(detail.review.id > 0 && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank() &&
                  detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "failed", "uncertain", "publishing", "approved", "skipped", "rescheduled"))
             saved.get<Int>("review_source_occurrence")?.let { require(detail.review.occurrenceId == it) }
-            val source = saved.get<Int>("review_source_occurrence")
+            val source = saved.get<Int>("review_source_occurrence") ?: detail.review.occurrenceId.takeIf {
+                target.action == ReviewAction.REVIEW && detail.review.status == "pending" &&
+                    detail.review.id == target.reviewId &&
+                    (target.packageFolder == null || target.packageFolder == detail.review.packageFolder) &&
+                    (target.expectedVersion == null || target.expectedVersion == detail.review.version)
+            }
             if (source != null && detail.review.status in setOf("pending", "failed", "uncertain") && !detail.renderReady) {
-                val next = ReviewTarget(occurrenceId = source, packageFolder = target.packageFolder, action = ReviewAction.UPLOAD)
+                val next = ReviewTarget(occurrenceId = source, packageFolder = target.packageFolder ?: detail.review.packageFolder, action = ReviewAction.UPLOAD)
                 saveReviewTarget(next); saved["review_continuing"] = true
                 mutable.update { it.copy(review = ReviewState(target = next, busy = true, continuing = true)) }
+                navigate(Destination.PACKAGE)
                 loadReview(current, epoch); return
             }
             val issue = when {
@@ -1478,7 +1502,7 @@ class AppViewModel(
                     return
                 }
             }
-            if (target.action == ReviewAction.UPLOAD || state.value.review.continuing) {
+            if (target.action in setOf(ReviewAction.REVIEW, ReviewAction.UPLOAD) || state.value.review.continuing) {
                 val snapshot = transport.mediaEditor()
                 checkReview(current, epoch)
                 checkRead(current, networkEpoch)
@@ -1491,6 +1515,25 @@ class AppViewModel(
                         continuing = it.review.continuing && !failed)) }
                     persistState(current)
                     if (failed) saved["review_continuing"] = false
+                    val renderKey = "${target.occurrenceId}:${snapshot.`package`.id}:${snapshot.contentRevision}"
+                    if (!liveReading && pending?.state == "preparing" && java.time.OffsetDateTime.parse(pending.dueAt).toInstant() <= java.time.Instant.ofEpochMilli(now()) &&
+                        snapshot.renderStatus in setOf(null, "missing", "stale") &&
+                        snapshot.montage.order.isNotEmpty() && snapshot.montage.durationComplete && !snapshot.montage.overLimit &&
+                        automaticReviewRender != renderKey) {
+                        checkReview(current, epoch)
+                        checkWrite(current, networkEpoch)
+                        automaticReviewRender = renderKey
+                        try { transport.renderPackage(requireNotNull(target.packageFolder), snapshot.packageRevision(), false) }
+                        catch (e: ApiFailure) {
+                            if (e.status != 409) throw e
+                            checkReview(current, epoch)
+                            mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.PACKAGE_CHANGED, readRequired = true, continuing = false)) }
+                            return
+                        }
+                        checkReview(current, epoch)
+                        checkRead(current, networkEpoch)
+                        mutable.update { it.copy(editor = it.editor.copy(snapshot = snapshot.copy(renderStatus = "queued"))) }
+                    }
                 }
             }
         }

@@ -98,19 +98,6 @@ import com.dojo.aisomedo.notifications.*
                                     LastFetchedAt(state.dashboardFetchedAt, "package-fetched-at")
                                     LastFetchedAt(state.editorFetchedAt, "editor-fetched-at")
                                 }
-                                if (state.editor.snapshot == null && state.editor.storedDraft == null && state.editor.persistenceIssue == null && state.editorFetchedAt == null && (state.dashboardFetchedAt == null || state.dashboard?.`package` != null)) {
-                                    Text(stringResource(R.string.cache_unavailable))
-                                    OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
-                                } else MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
-                                    model::removeMedia, model::restoreMedia, model::editRanges, model::saveMedia, model::discardMedia,
-                                    canMutate = state.canEditMedia, onPreview = model::downloadMediaPreview,
-                                    previewEnabled = state.networkConnected && state.authoritative,
-                                    canResolve = state.canMutate, onResolveConflict = model::resolveMediaConflict,
-                                    onRetryPersistence = model::retryEditorPersistence, onPhotoDuration = model::editPhotoDuration,
-                                    onRetryPreview = model::retrySectionPreview, onClear = model::clearActivePackage,
-                                    onDiscardReplaced = model::discardReplacedMediaDraft,
-                                    pendingClearFolder = state.pendingClearFolder,
-                                    canClear = state.canMutate && (state.canEditMedia || state.pendingClearFolder != null && !state.clearReadRequired))
                                 if (uploads != null) {
                                     val rows by uploads.rows.collectAsStateWithLifecycle()
                                     val runningSinceMillis by uploads.runningSinceMillis.collectAsStateWithLifecycle()
@@ -127,13 +114,27 @@ import com.dojo.aisomedo.notifications.*
                                             else if (state.review.target?.action != ReviewAction.UPLOAD) uploads.enqueue(uris)
                                         }, canMutate = state.canMutate && writeAccess != null && writeAccess == model.currentBinding,
                                         runningSinceMillis = runningSinceMillis,
+                                        defaultExpanded = false,
                                         selectionContext = model.currentBinding?.takeIf { state.networkConnected && network.connected }?.let {
                                             "${state.origin}:$it:${network.epoch}:${state.review.target?.occurrenceId}:${state.review.target?.reviewId}:${state.review.target?.action}"
                                         })
                                     OutlinedButton(onClick = model::refresh, enabled = !state.busy) { Text(stringResource(R.string.refresh)) }
                                 }
-                                 PendingPanel(state.dashboard, state.canMutate && !state.stale, onPending)
-                                 SavedReelPanel(state.editor, state.canEditMedia && state.networkConnected, model::renderActivePackage, model::downloadMediaPreview)
+                                if (state.editor.snapshot == null && state.editor.storedDraft == null && state.editor.persistenceIssue == null && state.editorFetchedAt == null && (state.dashboardFetchedAt == null || state.dashboard?.`package` != null)) {
+                                    Text(stringResource(R.string.cache_unavailable))
+                                    OutlinedButton(onClick = model::refresh, enabled = !state.busy && state.networkConnected) { Text(stringResource(R.string.refresh)) }
+                                } else MediaEditorPanel(state.editor, state.busy, scroll, viewport, model::refreshEditor, model::reorderMedia,
+                                    model::removeMedia, model::restoreMedia, model::editRanges, model::saveMedia, model::discardMedia,
+                                    canMutate = state.canEditMedia, onPreview = model::downloadMediaPreview,
+                                    previewEnabled = state.networkConnected && state.authoritative,
+                                    canResolve = state.canMutate, onResolveConflict = model::resolveMediaConflict,
+                                    onRetryPersistence = model::retryEditorPersistence, onPhotoDuration = model::editPhotoDuration,
+                                    onRetryPreview = model::retrySectionPreview, onClear = model::clearActivePackage,
+                                    onDiscardReplaced = model::discardReplacedMediaDraft,
+                                    pendingClearFolder = state.pendingClearFolder,
+                                    canClear = state.canMutate && (state.canEditMedia || state.pendingClearFolder != null && !state.clearReadRequired))
+                                SavedReelPanel(state.editor, state.canEditMedia && state.networkConnected, model::renderActivePackage, model::downloadMediaPreview)
+                                PendingPanel(state.dashboard, state.canMutate && !state.stale, onPending)
                             }
                             Destination.COMPLETED -> CompletedPackagesScreen(state, model::selectCompleted, model::refreshCompleted, model::downloadMediaPreview)
                             Destination.ACTIVITY -> {

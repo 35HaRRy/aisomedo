@@ -71,7 +71,7 @@ private val diagnosticSegments = setOf(
     "settings", "plan", "branding", "assets", "cards", "skip", "meta", "status", "instagram", "token",
     "oauth", "start", "attempts", "select", "packages", "active", "render", "preview", "editor", "order",
     "selections", "media", "remove", "restore", "upload-limits", "uploads", "complete", "resolve",
-    "conflicts", "ranges", "reviews", "approve", "reschedule", "occurrences", "push-token",
+    "conflicts", "ranges", "reviews", "approve", "reschedule", "occurrences", "push-token", "clients", "revoke",
 )
 
 class DojoApi(private val origin: String, private val token: String?, private val versionCode: Int, http: OkHttpClient,
@@ -235,6 +235,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun compat(): CompatInfo = decode(request("GET", "/api/compat"))
     suspend fun pair(code: String, name: String): PairingOut = decode(request("POST", "/api/pairing/validate", json.encodeToJsonElement(ValidateIn(code, "device", name))))
     suspend fun me(): ClientOut = decode(request("GET", "/api/pairing/me"))
+    suspend fun revokeClient(id: Int) { request("POST", "/api/pairing/clients/$id/revoke") }
     suspend fun dashboard(): DashboardOut = decode(request("GET", "/api/dashboard"))
     suspend fun changeOneoffDate(id: Int, body: OneoffDateIn): DashboardSlotOut = decode(request("PATCH", "/api/dashboard/occurrences/$id", json.encodeToJsonElement(body)))
     suspend fun decideOneoff(id: Int, body: OneoffDecisionIn): OneoffDecisionOut = decode(request("POST", "/api/dashboard/occurrences/$id/decision", json.encodeToJsonElement(body)))

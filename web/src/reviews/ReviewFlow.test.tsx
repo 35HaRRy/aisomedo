@@ -60,6 +60,53 @@ async function loadedPreview() {
   return video;
 }
 
+it.each(["#/package", "#/package?occurrence=1", "#/package?occurrence=1&folder=old-package"])("only a due review screen auto-renders saved media: %s", async route => {
+  state.pending_actions[0] = { ...state.pending_actions[0], review_id: null, version: null, state: "preparing" };
+  editor.montage.order = ["photo"];
+  editor.render_status = "missing";
+  window.location.hash = route;
+  render(<App />);
+  if (route.includes("old-package")) {
+    await screen.findByText("Paket değişti. Güncel işlemi kontrol panelinden açın.");
+  } else {
+    await screen.findByRole("heading", { name: "Aktif paket medyası" });
+  }
+  if (route === "#/package?occurrence=1") {
+    await waitFor(() => expect(writes.filter(item => item.path.endsWith("/render"))).toHaveLength(1));
+    await act(async () => { invalidateLive(); });
+    expect(writes.filter(item => item.path.endsWith("/render"))).toHaveLength(1);
+  } else expect(writes).toEqual([]);
+});
+
+it("a missing direct review renders then binds its ready successor", async () => {
+  detail.render_ready = false;
+  state.pending_actions[0].state = "preparing";
+  editor.montage.order = ["photo"];
+  editor.render_status = "missing";
+  render(<App />);
+  await waitFor(() => expect(writes.filter(item => item.path.endsWith("/render"))).toHaveLength(1));
+  detail = reviewDetail(3);
+  state.pending_actions[0] = { ...state.pending_actions[0], state: "review_ready", review_id: 3 };
+  await act(async () => { invalidateLive(); });
+  const video = await loadedPreview();
+  expect(video).toHaveAttribute("src", "/api/packages/active/render/preview?revision=exact-3");
+  expect(writes).toHaveLength(1);
+});
+
+it.each(["failed", "ready", "queued", "processing", "future", "empty", "over_limit"])("review auto-render skips %s", async condition => {
+  state.pending_actions[0] = { ...state.pending_actions[0], review_id: null, version: null, state: "preparing" };
+  editor.montage.order = condition === "empty" ? [] : ["photo"];
+  editor.render_status = "missing";
+  if (["failed", "ready", "queued", "processing"].includes(condition)) editor.render_status = condition as "failed" | "ready" | "queued" | "processing";
+  if (condition === "future") state.pending_actions[0].due_at = "2099-08-03T07:00:00Z";
+  if (condition === "over_limit") editor.montage.over_limit = true;
+  window.location.hash = "#/package?occurrence=1";
+  render(<App />);
+  await screen.findByRole("heading", { name: "Aktif paket medyası" });
+  await act(async () => { invalidateLive(); });
+  expect(writes).toEqual([]);
+});
+
 it("review header has icon-only refresh/edit controls and collapses without submitting", async () => {
   render(<App />); await loadedPreview();
   const panel = screen.getByRole("region", { name: detail.review.package_folder });

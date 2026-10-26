@@ -28,7 +28,6 @@ import java.util.Locale
             "queued" -> R.string.media_render_queued
             "processing" -> R.string.media_render_processing
             "failed" -> R.string.media_render_failed
-            "stale" -> R.string.media_render_stale
             "ready" -> R.string.media_render_ready
             else -> R.string.media_not_rendered_body
         }))
