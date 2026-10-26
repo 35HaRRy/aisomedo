@@ -23,6 +23,9 @@ export const API_PATHS: readonly string[] = [
   "/api/activity",
   "/api/compat",
   "/api/dashboard",
+  "/api/dashboard/occurrences/{occurrence_id}",
+  "/api/dashboard/occurrences/{occurrence_id}/decision",
+  "/api/events",
   "/api/media/upload-limits",
   "/api/media/uploads",
   "/api/media/uploads/{upload_id}",
@@ -44,9 +47,14 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/active/clear",
   "/api/packages/active/complete",
   "/api/packages/active/editor",
+  "/api/packages/active/edits",
+  "/api/packages/active/media/{media_id}/original",
   "/api/packages/active/media/{media_id}/preview",
   "/api/packages/active/media/{media_id}/remove",
   "/api/packages/active/media/{media_id}/restore",
+  "/api/packages/active/media/{media_id}/sections/preview",
+  "/api/packages/active/media/{media_id}/sections/retry",
+  "/api/packages/active/media/{media_id}/thumbnail",
   "/api/packages/active/montage",
   "/api/packages/active/order",
   "/api/packages/active/publication",
@@ -70,6 +78,8 @@ export const API_PATHS: readonly string[] = [
   "/api/pairing/me",
   "/api/pairing/me/push-token",
   "/api/pairing/validate",
+  "/api/reviews/occurrences/{occurrence_id}/reschedule",
+  "/api/reviews/occurrences/{occurrence_id}/skip",
   "/api/reviews/pending",
   "/api/reviews/{review_id}",
   "/api/reviews/{review_id}/approve",
@@ -100,13 +110,16 @@ export type AcceptanceOut = {
 };
 
 export type ActiveEditorOut = {
+  "content_revision": number;
   "media": Array<EditorMediaOut>;
   "montage": MontageOut;
   "package": PackageOut;
+  "render_duration"?: number | null;
   "render_preview_url"?: string | null;
   "render_revision"?: string | null;
   "render_stale": boolean;
   "render_status"?: "missing" | "stale" | "queued" | "processing" | "ready" | "failed";
+  "view_revision": number;
 };
 
 export type ActivityEventOut = {
@@ -215,6 +228,7 @@ export type DashboardActionOut = {
   "occurrence_id": number;
   "package_folder": string | null;
   "review_id": number | null;
+  "review_status"?: string | null;
   "state": "review_ready" | "empty_package" | "preparing";
   "version": number | null;
 };
@@ -227,7 +241,9 @@ export type DashboardInstagramOut = {
 export type DashboardOut = {
   "generated_at": string;
   "instagram": DashboardInstagramOut;
+  "manual_review_allowed"?: boolean;
   "next_slot": DashboardSlotOut | null;
+  "next_slots"?: Array<DashboardSlotOut> | null;
   "package": PackageOut | null;
   "pending_actions": Array<DashboardActionOut>;
   "plan": PlanOut;
@@ -237,11 +253,18 @@ export type DashboardOut = {
 export type DashboardSlotOut = {
   "due_at": string;
   "kind": string;
+  "occurrence_id"?: number | null;
 };
 
 export type DashboardWorkerOut = {
   "phase": "idle" | "busy" | "stopped" | null;
   "status": "healthy" | "unhealthy" | "unknown";
+};
+
+export type EditConflictOut = {
+  "code": "edit_conflict";
+  "conflicts": Array<GroupConflictOut>;
+  "content_revision": number;
 };
 
 export type EditorMediaOut = {
@@ -251,13 +274,37 @@ export type EditorMediaOut = {
   "filename": string;
   "is_video": boolean;
   "media_id": string;
+  "original_url"?: string | null;
   "preview_url": string | null;
   "processed": ProcessedMetadataOut;
   "removed_position"?: number | null;
+  "section_preview"?: SectionPreviewOut | null;
   "size_bytes": number;
   "source_duration": number | null;
   "status": string;
+  "thumbnail_url"?: string | null;
   "uploaded_at": string;
+};
+
+export type EmptyRescheduleIn = {
+  "expected_folder_name": string;
+  "new_due_at": string;
+};
+
+export type EmptySkipIn = {
+  "confirmed"?: boolean;
+  "expected_folder_name": string;
+};
+
+export type GroupConflictOut = {
+  "current": Record<string, unknown>;
+  "key": string;
+};
+
+export type GroupEditIn = {
+  "base": Record<string, unknown>;
+  "key": string;
+  "proposed": Record<string, unknown>;
 };
 
 export type MetaCandidateOut = {
@@ -289,6 +336,33 @@ export type MontageOut = {
   "trims": Record<string, VideoRangeOut>;
 };
 
+export type OccurrenceDecisionOut = {
+  "new_due_at": string | null;
+  "next_regular_at": string | null;
+  "occurrence_id": number;
+  "oneoff_occurrence_id": number | null;
+  "package_folder": string;
+  "status": string;
+};
+
+export type OneoffDateIn = {
+  "expected_due_at": string;
+  "new_due_at": string;
+};
+
+export type OneoffDecisionIn = {
+  "action": "review" | "skip";
+  "confirmed"?: boolean;
+  "expected_due_at": string;
+};
+
+export type OneoffDecisionOut = {
+  "due_at": string;
+  "occurrence_id": number;
+  "package_folder": string | null;
+  "status": string;
+};
+
 export type PackageArtifactOut = {
   "artifact_ref": string;
   "available": boolean;
@@ -297,6 +371,13 @@ export type PackageArtifactOut = {
   "kind": "original" | "processed" | "render";
   "preview_url": string | null;
   "url": string | null;
+};
+
+export type PackageEditIn = {
+  "base_content_revision": number;
+  "changes": Array<GroupEditIn>;
+  "expected_folder_name": string;
+  "expected_package_id": number;
 };
 
 export type PackageOut = {
@@ -374,11 +455,25 @@ export type ReviewOut = {
   "caption": string | null;
   "created_at": string;
   "id": number;
+  "instagram_fail_message"?: string | null;
   "occurrence_id": number;
   "package_folder": string;
   "revision_digest": string;
   "status": string;
   "version": number;
+};
+
+export type SectionPreviewOut = {
+  "duration"?: number | null;
+  "generation"?: string | null;
+  "status"?: "missing" | "queued" | "processing" | "ready" | "failed";
+  "url"?: string | null;
+};
+
+export type SectionPreviewRetryIn = {
+  "expected_folder_name": string;
+  "expected_generation": string;
+  "expected_package_id": number;
 };
 
 export type SelectIn = {

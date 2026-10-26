@@ -46,6 +46,7 @@ def load_manifest(tmp_path, seam):
 
 
 def set_defaults(seam, **overrides):
+    apply_to_draft = bool(overrides.pop("apply_to_draft", False))
     base = {
         "logo_asset": "logo.png",
         "intro_asset": "intro.mp4",
@@ -55,7 +56,9 @@ def set_defaults(seam, **overrides):
         "caption_template": "Bugün dojoda {{isim}}",
     }
     base.update(overrides)
-    return seam.set_branding_defaults(BrandingConfig(**base), requester="cli")
+    return seam.set_branding_defaults(
+        BrandingConfig(**base), requester="cli", apply_to_draft=apply_to_draft,
+    )
 
 
 def test_get_branding_defaults_empty_by_default(tmp_path):
@@ -154,17 +157,76 @@ def test_caption_and_branding_edits_clear_render_revision(tmp_path):
     manifest_path = tmp_path / seam.get_active_package().folder_name / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["render_revision"] = "rev-1"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
 
     seam.set_caption("x")
     assert load_manifest(tmp_path, seam)["render_revision"] is None
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["render_revision"] = "rev-2"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
 
     seam.set_branding({"intro_asset": "y.mp4"})
     assert load_manifest(tmp_path, seam)["render_revision"] is None
+
+
+def test_default_caption_change_applies_to_active_draft(tmp_path):
+    _, seam = make_seam(tmp_path)
+    set_defaults(seam)
+    seam.get_or_create_active_package()
+
+    seam.patch_branding_defaults(
+        {"caption_template": "Yeni şablon"}, requester="2", apply_to_draft=False,
+    )
+    assert load_manifest(tmp_path, seam)["caption"] == "Bugün dojoda {{isim}}"
+
+    seam.patch_branding_defaults(
+        {"caption_template": "Daha yeni şablon"}, requester="2", apply_to_draft=True,
+    )
+
+    manifest = load_manifest(tmp_path, seam)
+    assert manifest["caption"] == "Daha yeni şablon"
+    assert manifest["render_revision"] is None
+    assert "caption.draft_updated" in [e.action for e in seam.list_audit()]
+
+
+def test_default_card_change_applies_to_active_draft(tmp_path):
+    _, seam = make_seam(tmp_path)
+    set_defaults(seam)
+    seam.get_or_create_active_package()
+    manifest_path = tmp_path / seam.get_active_package().folder_name / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["render_revision"] = "rev-1"
+    seam._write_manifest(seam.get_active_package(), manifest)
+
+    seam.patch_branding_defaults(
+        {"intro_asset": "new-intro.mp4"}, requester="2", apply_to_draft=True,
+    )
+
+    manifest = load_manifest(tmp_path, seam)
+    assert manifest["branding"]["intro_asset"] == "new-intro.mp4"
+    assert manifest["branding"]["outro_asset"] == "outro.mp4"
+    assert manifest["render_revision"] is None
+    assert "branding.draft_updated" in [e.action for e in seam.list_audit()]
+
+
+def test_replaced_defaults_apply_to_active_draft(tmp_path):
+    _, seam = make_seam(tmp_path)
+    set_defaults(seam)
+    seam.get_or_create_active_package()
+
+    set_defaults(seam, intro_asset="other-intro.mp4", outro_asset=None,
+                 outro_duration=None, apply_to_draft=True)
+
+    manifest = load_manifest(tmp_path, seam)
+    assert manifest["branding"]["intro_asset"] == "other-intro.mp4"
+    assert manifest["branding"]["outro_asset"] is None
+
+
+def test_default_change_without_active_package_is_allowed(tmp_path):
+    _, seam = make_seam(tmp_path)
+    seam.patch_branding_defaults({"intro_asset": "intro.mp4"})
+    assert seam.get_branding_defaults().intro_asset == "intro.mp4"
 
 
 def test_publish_without_logo_raises(tmp_path):

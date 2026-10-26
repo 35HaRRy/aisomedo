@@ -236,7 +236,7 @@ def _finalize_one_photo(pub: DojoPublishing, package_folder: str) -> None:
         },
     }]
     manifest["order"] = ["m1"]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    pub._write_manifest(pub.get_active_package(), manifest)
 
 
 def _render_jobs(store: PostgresStore) -> list[tuple[str, str]]:
@@ -266,6 +266,7 @@ def test_run_tick_follower_processes_job_but_emits_nothing(
         {"package": package.folder_name, "digest": "d1"}, FIXED_AT,
     ))
     follower_pub = _tick_publishing(observer, media_root)
+    before = observer.list_all()
 
     barrier = Barrier(2, timeout=15)
 
@@ -282,7 +283,7 @@ def test_run_tick_follower_processes_job_but_emits_nothing(
         barrier.wait()
         pending.result(timeout=15)
 
-    assert observer.list_all() == []
+    assert observer.list_all() == before
     assert follower_pub.list_pending_reviews() == []
     assert observer.get("seed-render").status == "failed"
     assert _render_jobs(observer) == [("seed-render", "failed")]
@@ -301,6 +302,7 @@ def test_run_tick_slow_render_second_tick_enqueues_no_second_job(
     package = pub.ensure_active_package()
     _finalize_one_photo(pub, package.folder_name)
 
+    pg_store.create(YayinZamani(0, "oneoff", FIXED_AT, "pending", FIXED_AT))
     monkeypatch.setattr(pub, "claim_next_job", lambda: None)
     run_tick(pub, None)
     queued = _render_jobs(pg_store)
@@ -331,13 +333,14 @@ def test_run_tick_emission_exception_recovers_next_tick(
     pub.set_plan(SchedulePlan(
         anchor_date=MONDAY_ANCHOR, anchor_time=time(9, 0), enabled=True,
     ))
+    before = pg_store.list_all()
 
     def _boom(self: DojoPublishing, *args: object, **kwargs: object) -> None:
         raise RuntimeError("injected emission failure")
 
     monkeypatch.setattr(DojoPublishing, "_enqueue_render", _boom)
     run_tick(pub, None)
-    assert pg_store.list_all() == []
+    assert pg_store.list_all() == before
     assert _render_jobs(pg_store) == []
 
     monkeypatch.undo()

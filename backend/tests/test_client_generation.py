@@ -72,6 +72,17 @@ def test_upload_generation_emits_wire_types(tmp_path):
     assert 'export type UploadInitIn =' in output
     assert 'export type UploadOut =' in output
     assert '"received_ranges": Array<Array<number>>;' in output
+    kotlin = module.ANDROID_TARGET.read_text(encoding="utf-8")
+    assert "val maxFileBytes: Long" in kotlin
+    assert "val declaredSizeBytes: Long" in kotlin
+    assert "val receivedBytes: Long" in kotlin
+    assert "val receivedRanges: List<List<Long>>" in kotlin
+    assert "val conflicts: List<Map<String, JsonElement>> = emptyList()" in kotlin
+    assert "data class ResolveConflictIn(" in kotlin
+    assert '@SerialName("confirmed_overwrite") val confirmedOverwrite: Boolean = false' in kotlin
+    assert '@SerialName("apply_to_all") val applyToAll: Boolean = false' in kotlin
+    assert '@SerialName("target_media_id") val targetMediaId: String? = null' in kotlin
+    assert "val androidMinVersionCode: Int" in kotlin
 
 
 def test_kotlin_preserves_required_null_and_defaults():
@@ -95,6 +106,36 @@ def test_kotlin_preserves_required_null_and_defaults():
     assert output.index("class Child") < output.index("class Root")
 
 
+def test_android_editor_generation_emits_nested_selections_and_large_media(tmp_path):
+    from backend.main import create_app
+
+    module = generator()
+    module.ROOT = tmp_path
+    module.WEB_TARGET = tmp_path / "web.ts"
+    module.ANDROID_TARGET = tmp_path / "client.kt"
+    (tmp_path / "openapi.json").write_text(json.dumps(create_app().openapi()), encoding="utf-8")
+    module.main()
+    kotlin = module.ANDROID_TARGET.read_text(encoding="utf-8")
+    assert "val montage: MontageOut" in kotlin
+    assert "val selections: Map<String, List<VideoRangeOut>>" in kotlin
+    assert "val expectedFolderName: String" in kotlin
+    assert "val sizeBytes: Long" in kotlin
+    assert "val contentRevision: Long" in kotlin
+    assert "val viewRevision: Long" in kotlin
+    assert "data class PackageEditIn(" in kotlin
+    assert "data class EditConflictOut(" in kotlin
+    typescript = module.WEB_TARGET.read_text(encoding="utf-8")
+    assert "export type PackageEditIn =" in typescript
+    assert "export type EditConflictOut =" in typescript
+    assert "export type SectionPreviewRetryIn =" in typescript
+    assert '"section_preview"?: SectionPreviewOut | null;' in typescript
+    assert "val sectionPreview: SectionPreviewOut? = null" in kotlin
+    assert 'val status: String = "missing"' in kotlin
+    assert "val renderDuration: Double? = null" in kotlin
+    assert "data class ClearPackageIn(" in kotlin
+    assert "data class ClearPackageOut(" in kotlin
+
+
 @pytest.mark.parametrize("bad", [
     {"allOf": [{"type": "string"}, {"type": "integer"}]},
     {"anyOf": [{"type": "string"}, {"type": "integer"}]},
@@ -102,3 +143,19 @@ def test_kotlin_preserves_required_null_and_defaults():
 def test_kotlin_rejects_unsupported_shapes(bad):
     with pytest.raises(ValueError):
         generator().kotlin_models({"components": {"schemas": {"Root": bad}}}, ["Root"])
+
+
+def test_android_activity_generation_preserves_actor_union(tmp_path):
+    from backend.main import create_app
+
+    module = generator()
+    module.ROOT = tmp_path
+    module.WEB_TARGET = tmp_path / "web.ts"
+    module.ANDROID_TARGET = tmp_path / "client.kt"
+    (tmp_path / "openapi.json").write_text(json.dumps(create_app().openapi()), encoding="utf-8")
+    module.main()
+    kotlin = module.ANDROID_TARGET.read_text(encoding="utf-8")
+    assert "data class ActivityPageOut(" in kotlin
+    assert "val actor: JsonElement" in kotlin
+    assert "data class ClientRefOut(" in kotlin
+    assert "val details: Map<String, JsonElement>" in kotlin

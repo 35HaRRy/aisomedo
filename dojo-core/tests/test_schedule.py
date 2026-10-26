@@ -73,7 +73,7 @@ def test_ensure_schedule_upto_backfills_and_one_future_row(tmp_path) -> None:
     seam.ensure_schedule_upto(now)
 
     reg = [o for o in store.list_all() if o.kind == "regular"]
-    due = [o.due_at for o in store.list_due(now)]
+    due = sorted(o.due_at for o in store.list_due(now))
     # Mondays at +0, +14, +21(+14 would be the future row) up to now
     assert due == [anchor, anchor + timedelta(days=14)]
     # exactly one future row: the next Monday after now
@@ -91,7 +91,8 @@ def test_ensure_schedule_upto_idempotent_across_restart(tmp_path) -> None:
     now = anchor + timedelta(days=35)
     seam._clock = FakeClock(now)
     seam.ensure_schedule_upto(now)
-    count_before = len(store.list_all())
+    rows_before = store.list_all()
+    version_before = store.get_resource_version("dashboard")
 
     # "restart": a fresh seam sharing the same store
     seam2 = DojoPublishing(
@@ -101,7 +102,28 @@ def test_ensure_schedule_upto_idempotent_across_restart(tmp_path) -> None:
     )
     seam2.ensure_schedule_upto(now)
 
-    assert len(store.list_all()) == count_before
+    assert store.list_all() == rows_before
+    assert store.get_resource_version("dashboard") == version_before
+
+
+def test_idle_scheduler_turns_preserve_occurrences_without_live_changes(tmp_path) -> None:
+    store, seam = make_seam(tmp_path)
+    anchor = monday_dt()
+    seam.set_plan(
+        SchedulePlan(anchor_date=anchor.date(), anchor_time=anchor.time(), enabled=True)
+    )
+    seam._clock = FakeClock(anchor + timedelta(days=21))
+    seam.evaluate_due_work()
+    rows_before = store.list_all()
+    versions_before = {
+        key: store.get_resource_version(key) for key in ("dashboard", "publication")
+    }
+
+    for _ in range(3):
+        seam.evaluate_due_work()
+
+    assert store.list_all() == rows_before
+    assert {key: store.get_resource_version(key) for key in versions_before} == versions_before
 
 
 def test_plan_edit_reflected_in_future_rows(tmp_path) -> None:

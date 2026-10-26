@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from threading import RLock
@@ -12,6 +13,7 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 
 from dojo.exceptions import ConsentPolicyChanged, NoConsentPolicy
+from dojo.live import ChangeEvent, PackageState, emits
 from dojo.model import (
     AuditEvent,
     Client,
@@ -106,6 +108,15 @@ class InMemoryStore:
         self._creation_lock = RLock()
         self._package_lock = RLock()
         self._emission_active: ContextVar[bool] = ContextVar("emission_active", default=False)
+        self._package_states: dict[int, PackageState] = {}
+        self._live_versions: dict[str, int] = {}
+        self._live_events: dict[str, ChangeEvent] = {}
+        self._commit_callbacks: ContextVar[dict[str, Callable[[], None]] | None] = ContextVar(
+            "commit_callbacks", default=None,
+        )
+        self._pending_changes: ContextVar[tuple[set[str], set[int]] | None] = ContextVar(
+            "pending_changes", default=None,
+        )
 
     @contextmanager
     def package_lock(self, *, wait: bool = True) -> Iterator[bool]:
@@ -123,6 +134,7 @@ class InMemoryStore:
                 or j.payload.get("package") == package.folder_name]
         return uploads, jobs
 
+    @emits("dashboard", "completed", "publication", "activity")
     def delete_package_records(self, package: Package, media_ids: set[str]) -> None:
         uploads, jobs = self.package_work(package)
         upload_ids, job_ids = {u.upload_id for u in uploads}, {j.job_id for j in jobs}
@@ -141,17 +153,106 @@ class InMemoryStore:
         self._jobs = [j for j in self._jobs if j.job_id not in job_ids]
         self._uploads = [u for u in self._uploads if u.upload_id not in upload_ids]
         self._packages = [p for p in self._packages if p.id != package.id]
+        self._package_states.pop(package.id, None)
+        self.queue_change([f"package:{package.id}"])
 
     @contextmanager
     def emission_transaction(self) -> Iterator[None]:
-        """Single-process test adapter: no persistence rollback or distributed lock."""
+        """Serialize test-adapter writes and restore state if the turn fails."""
         if self._emission_active.get():
             raise RuntimeError("nested emission transactions are not supported")
-        token = self._emission_active.set(True)
-        try:
+        with self._package_lock:
+            snapshot = {name: deepcopy(value) for name, value in self.__dict__.items()
+                        if not name.endswith("_lock") and not isinstance(value, ContextVar)
+                        and not callable(value)}
+            token = self._emission_active.set(True)
+            callbacks: dict[str, Callable[[], None]] = {}
+            callback_token = self._commit_callbacks.set(callbacks)
+            pending: tuple[set[str], set[int]] = (set(), set())
+            change_token = self._pending_changes.set(pending)
+            try:
+                yield
+                if pending[0]:
+                    self.record_change(sorted(pending[0]), revoked_client_ids=sorted(pending[1]))
+            except BaseException:
+                self.__dict__.update(snapshot)
+                raise
+            finally:
+                self._emission_active.reset(token)
+                self._commit_callbacks.reset(callback_token)
+                self._pending_changes.reset(change_token)
+            for callback in callbacks.values():
+                callback()
+
+    def after_commit(self, key: str, callback: Callable[[], None]) -> None:
+        callbacks = self._commit_callbacks.get()
+        if callbacks is None:
+            raise RuntimeError("after_commit requires a command transaction")
+        callbacks[key] = callback
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        with self._package_lock:
             yield
-        finally:
-            self._emission_active.reset(token)
+
+    @contextmanager
+    def command_transaction(self) -> Iterator[None]:
+        if self._emission_active.get():
+            yield
+        else:
+            with self.emission_transaction():
+                yield
+
+    def _require_command_transaction(self) -> None:
+        if not self._emission_active.get():
+            raise RuntimeError("live state writes require a command transaction")
+
+    def read_package_state(
+        self, package_id: int, *, for_update: bool = False,
+    ) -> PackageState | None:
+        if for_update:
+            self._require_command_transaction()
+        return deepcopy(self._package_states.get(package_id))
+
+    def write_package_state(
+        self, package_id: int, document: dict, *, content_changed: bool,
+    ) -> PackageState:
+        self._require_command_transaction()
+        if not any(p.id == package_id for p in self._packages):
+            raise ValueError(f"package {package_id} not found")
+        old = self._package_states.get(package_id)
+        state = PackageState(package_id,
+                             old.content_revision + int(content_changed) if old else 1,
+                             old.view_revision + 1 if old else 1, deepcopy(document))
+        self._package_states[package_id] = state
+        return deepcopy(state)
+
+    def record_change(
+        self, resources: list[str], *, revoked_client_ids: list[int] | None = None,
+    ) -> ChangeEvent:
+        self._require_command_transaction()
+        versions: dict[str, int] = {}
+        for resource in sorted(set(resources)):
+            self._live_versions[resource] = self._live_versions.get(resource, 0) + 1
+            versions[resource] = self._live_versions[resource]
+        event = ChangeEvent(str(uuid4()), versions, list(revoked_client_ids or []))
+        self._live_events[event.event_id] = event
+        return deepcopy(event)
+
+    def get_change(self, event_id: str) -> ChangeEvent | None:
+        return deepcopy(self._live_events.get(event_id))
+
+    def get_resource_version(self, resource: str) -> int:
+        return self._live_versions.get(resource, 0)
+
+    def queue_change(
+        self, resources: list[str], *, revoked_client_ids: list[int] | None = None,
+    ) -> None:
+        pending = self._pending_changes.get()
+        if pending is None:
+            raise RuntimeError("live changes require a command transaction")
+        pending[0].update(resources)
+        pending[1].update(revoked_client_ids or [])
 
     def try_advisory_xact_lock(self, key: int) -> bool:
         if not self._emission_active.get():
@@ -169,6 +270,7 @@ class InMemoryStore:
     @overload
     def create(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
+    @emits(result=True)
     def create(
         self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
     ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
@@ -191,6 +293,7 @@ class InMemoryStore:
                     for existing in self._occurrences:
                         if existing.kind == "regular" and existing.due_at == obj.due_at:
                             return existing
+                self._check_schedule_uniqueness(obj)
                 created_occ = replace(obj, id=self._next_occ_id)
                 self._next_occ_id += 1
                 self._occurrences.append(created_occ)
@@ -214,16 +317,20 @@ class InMemoryStore:
         self._packages.append(created_package)
         return created_package
 
+    @emits(result=True)
     def create_job_once(
         self, job: Job, *, audit: AuditEvent | None = None,
     ) -> tuple[Job, bool]:
         with self._creation_lock:
-            if job.kind == "render" and job.status in ("queued", "processing"):
+            if job.kind in ("render", "section_preview", "thumbnail") \
+                    and job.status in ("queued", "processing"):
+                fields = (("package", "digest") if job.kind == "render"
+                          else ("package_id", "media_id"))
                 for existing in self._jobs:
-                    if (existing.kind == "render"
+                    if (existing.kind == job.kind
                             and existing.status in ("queued", "processing")
-                            and existing.payload.get("package") == job.payload.get("package")
-                            and existing.payload.get("digest") == job.payload.get("digest")):
+                            and all(existing.payload.get(key) == job.payload.get(key)
+                                    for key in fields)):
                         return existing, False
             created = replace(job, id=self._next_job_id)
             if audit is not None:
@@ -232,6 +339,7 @@ class InMemoryStore:
             self._jobs.append(created)
             return created, True
 
+    @emits(result=True)
     def create_review_once(
         self, review: YayinIncelemesi, *, audit: AuditEvent | None = None,
     ) -> tuple[YayinIncelemesi, bool]:
@@ -241,6 +349,7 @@ class InMemoryStore:
             )
             if existing is not None:
                 return existing, False
+            self._check_schedule_uniqueness(review)
             created = replace(review, id=self._next_review_id)
             if audit is not None:
                 self.append(replace(audit, details={**audit.details, "review_id": created.id}))
@@ -253,6 +362,21 @@ class InMemoryStore:
             if package.status == "active":
                 return package
         return None
+
+    def _check_schedule_uniqueness(self, obj: YayinZamani | YayinIncelemesi) -> None:
+        if isinstance(obj, YayinZamani):
+            if obj.status != "pending":
+                return
+            kinds = ("regular",) if obj.kind == "regular" else ("manual", "oneoff")
+            conflict = any(o.id != obj.id and o.kind in kinds and o.status == "pending"
+                           for o in self._occurrences)
+        else:
+            actionable = ("pending", "failed", "uncertain", "publishing")
+            conflict = obj.status in actionable and any(
+                r.id != obj.id and r.status in actionable for r in self._reviews
+            )
+        if conflict:
+            raise IntegrityError("schedule uniqueness", {}, Exception("pending record exists"))
 
     def list_completed(self) -> list[Package]:
         return [p for p in self._packages if p.status == "completed"]
@@ -277,6 +401,7 @@ class InMemoryStore:
     @overload
     def update(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
+    @emits(result=True)
     def update(
         self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
     ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
@@ -297,12 +422,14 @@ class InMemoryStore:
                     return obj
             raise ValueError(f"job {obj.id} not found")
         if isinstance(obj, YayinZamani):
+            self._check_schedule_uniqueness(obj)
             for i, existing_occ in enumerate(self._occurrences):
                 if existing_occ.id == obj.id:
                     self._occurrences[i] = obj
                     return obj
             raise ValueError(f"occurrence {obj.id} not found")
         if isinstance(obj, YayinIncelemesi):
+            self._check_schedule_uniqueness(obj)
             for i, existing_review in enumerate(self._reviews):
                 if existing_review.id == obj.id:
                     self._reviews[i] = obj
@@ -314,6 +441,7 @@ class InMemoryStore:
                 return obj
         raise ValueError(f"package {obj.id} not found")
 
+    @emits("activity")
     def append(self, event: AuditEvent) -> None:
         stored = replace(event, id=self._next_event_id)
         self._next_event_id += 1
@@ -344,6 +472,7 @@ class InMemoryStore:
     def find_client_by_id(self, client_id: int) -> Client | None:
         return next((c for c in self._clients if c.id == client_id), None)
 
+    @emits(result=True)
     def create_client(self, client: Client, credential_hash: str) -> Client:
         created = replace(client, id=self._next_client_id)
         self._next_client_id += 1
@@ -360,10 +489,12 @@ class InMemoryStore:
     def list_clients(self) -> list[Client]:
         return list(self._clients)
 
+    @emits("auth")
     def mark_client_revoked(self, client_id: int, at: datetime) -> None:
         for i, client in enumerate(self._clients):
             if client.id == client_id and client.revoked_at is None:
                 self._clients[i] = replace(client, revoked_at=at)
+                self.queue_change(["auth"], revoked_client_ids=[client_id])
                 return
 
     def touch_client(self, client_id: int, at: datetime) -> None:
@@ -372,6 +503,7 @@ class InMemoryStore:
                 self._clients[i] = replace(client, last_seen_at=at)
                 return
 
+    @emits(result=True)
     def create_policy(
         self, *, version: int, text: str, created_by: str, created_at: datetime
     ) -> ConsentPolicy:
@@ -413,6 +545,7 @@ class InMemoryStore:
     def find_acceptance(self, policy_version: int) -> ConsentAcceptance | None:
         return next((a for a in self._acceptances if a.policy_version == policy_version), None)
 
+    @emits("setup", "settings", "dashboard", result=True)
     def record_acceptance(self, acceptance: ConsentAcceptance) -> bool:
         with self._consent_lock:
             return self._record_acceptance(acceptance)
@@ -425,6 +558,7 @@ class InMemoryStore:
         self._acceptances.append(created)
         return True
 
+    @emits("setup", "settings", "dashboard", result=True)
     def accept_policy_version(
         self, *, client: Client, version: int | None, accepted_at: datetime
     ) -> tuple[ConsentAcceptance, bool]:
@@ -490,6 +624,7 @@ class InMemoryStore:
     def get_by_upload(self, upload_pk: int) -> Job | None:
         return next((j for j in self._jobs if j.upload_id == upload_pk), None)
 
+    @emits(result=True)
     def claim_next(self, claimed_at: datetime) -> Job | None:
         for i, job in enumerate(self._jobs):
             if job.status == "queued":
@@ -498,8 +633,40 @@ class InMemoryStore:
                 return claimed
         return None
 
+    @emits("settings", "setup", "dashboard")
     def set(self, key: str, value: object, *, updated_at: datetime) -> None:
         self._settings[key] = value
+
+    @emits()
+    def cancel_media_jobs(
+        self, package_id: int, media_id: str | None, *, kinds: tuple[str, ...],
+        cancelled_at: datetime,
+    ) -> int:
+        count = 0
+        with self._creation_lock:
+            for index, job in enumerate(self._jobs):
+                if job.kind in kinds and job.status in ("queued", "processing") \
+                        and job.payload.get("package_id") == package_id \
+                        and (media_id is None or job.payload.get("media_id") == media_id):
+                    self._jobs[index] = replace(job, status="cancelled", finished_at=cancelled_at)
+                    count += 1
+        if count:
+            self.queue_change(["dashboard", "publication", f"package:{package_id}"])
+        return count
+
+    @emits(result=True)
+    def finish_if_processing(
+        self, job_id: str, *, status: str, finished_at: datetime,
+        error_reason: str | None = None,
+    ) -> Job | None:
+        if status not in ("done", "failed", "cancelled"):
+            raise ValueError("job finish status must be terminal")
+        with self._creation_lock:
+            job = self.get(job_id)
+            if not isinstance(job, Job) or job.status != "processing":
+                return None
+            return self.update(replace(job, status=status, finished_at=finished_at,
+                                       error_reason=error_reason))
 
     def max_regular_due_at(self) -> datetime | None:
         dates = [o.due_at for o in self._occurrences if o.kind == "regular"]
@@ -514,13 +681,14 @@ class InMemoryStore:
     def has_regular_at(self, due_at: datetime) -> bool:
         return any(o.kind == "regular" and o.due_at == due_at for o in self._occurrences)
 
-    def has_pending_manual(self) -> bool:
-        return any(o.kind == "manual" and o.status == "pending" for o in self._occurrences)
+    def has_pending_exception(self) -> bool:
+        return any(o.kind in ("manual", "oneoff") and o.status == "pending"
+                   for o in self._occurrences)
 
     def list_due(self, now: datetime) -> list[YayinZamani]:
         return [
             o for o in self._occurrences
-            if o.status == "pending" and o.due_at <= now
+            if o.status in ("pending", "due") and o.due_at <= now
         ]
 
     def list_all(self) -> list[YayinZamani]:
@@ -546,8 +714,12 @@ class InMemoryStore:
             None,
         )
 
+    def has_for_occurrence(self, occurrence_id: int) -> bool:
+        return any(r.occurrence_id == occurrence_id for r in self._reviews)
+
     def list_pending(self) -> list[YayinIncelemesi]:
-        return [r for r in self._reviews if r.status == "pending"]
+        return [r for r in self._reviews
+                if r.status in ("pending", "failed", "uncertain", "publishing")]
 
     def resolve_if_pending(
         self,
@@ -558,7 +730,10 @@ class InMemoryStore:
         resolved_by: str | None,
     ) -> YayinIncelemesi | None:
         for i, review in enumerate(self._reviews):
-            if review.id == review_id and review.status == "pending" and review.version == version:
+            allowed: tuple[str, ...] = ("pending", "failed", "uncertain")
+            if status == "approved":
+                allowed += ("publishing",)
+            if review.id == review_id and review.status in allowed and review.version == version:
                 updated = replace(
                     review,
                     status=status,
@@ -782,6 +957,7 @@ class InMemoryStore:
                 return None
             return self._meta_conn, self._meta_enc_token
 
+    @emits(result=True)
     def upsert_active(
         self,
         *,
@@ -820,6 +996,7 @@ class InMemoryStore:
                 return self._meta_enc_token, self._meta_expires_at
             return None
 
+    @emits(result=True)
     def update_health(
         self, health: str, last_checked_at: datetime | None, last_error: str | None,
         *, expected_encrypted_token: str | None = None,
@@ -836,6 +1013,7 @@ class InMemoryStore:
             )
             return self._meta_conn
 
+    @emits(result=True)
     def update_token(
         self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime,
         *, expected_encrypted_token: str | None = None,
@@ -862,10 +1040,12 @@ class InMemoryStore:
                 return rec
         return None
 
+    @emits("setup", "settings", "dashboard", result=True)
     def create_attempt(self, attempt: dict) -> dict:
         self._meta_attempts[attempt["id"]] = attempt
         return attempt
 
+    @emits("setup", "settings", "dashboard")
     def mark_attempt_completed(
         self,
         attempt_id: str,
@@ -881,6 +1061,7 @@ class InMemoryStore:
         rec["encrypted_temp_token"] = encrypted_temp_token
         rec["temp_token_expires_at"] = temp_token_expires_at
 
+    @emits("setup", "settings", "dashboard")
     def mark_attempt_failed(self, attempt_id: str, error: str) -> None:
         rec = self._meta_attempts.get(attempt_id)
         if rec is None:
@@ -888,6 +1069,7 @@ class InMemoryStore:
         rec["status"] = "failed"
         rec["last_error"] = error
 
+    @emits("setup", "settings", "dashboard", result=True)
     def consume_attempt(self, attempt_id: str) -> dict | None:
         rec = self._meta_attempts.pop(attempt_id, None)
         return rec

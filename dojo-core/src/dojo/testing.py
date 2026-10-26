@@ -26,12 +26,11 @@ def complete_confirmed_package(
     """
     package = publishing.get_active_package()
     assert package is not None
-    path = publishing.media_root / package.folder_name / "manifest.json"
-    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest = publishing._load_manifest(package)
     manifest.setdefault("meta", {})["publication"] = {
         "status": "completed", "container_id": "fixture-container", "media_id": "fixture-media",
     }
-    path.write_text(json.dumps(manifest), encoding="utf-8")
+    publishing._write_manifest(package, manifest)
     return publishing.complete_active_package(requester=requester)
 
 

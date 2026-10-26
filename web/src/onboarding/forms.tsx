@@ -1,19 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ApiError } from "../api/client";
+import { MediaPreview, useFilePreview } from "../components/MediaPreview";
 import { tr } from "../i18n";
 import { useOnboarding } from "./useOnboarding";
+
+export const SetupActionTarget = createContext<HTMLElement | null>(null);
+export function StepActions({ children }: { children: ReactNode }) {
+  const target = useContext(SetupActionTarget);
+  return target ? createPortal(children, target) : <div className="step-actions">{children}</div>;
+}
 
 export function useDraft<T>(source: T | null, initial: T) {
   const [draft, setDraft] = useState(initial);
   const [dirty, setDirty] = useState(false);
   const [baseline, setBaseline] = useState("");
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
   const fingerprint = JSON.stringify(source);
   useEffect(() => {
-    if (source && !dirty) { setDraft(source); setBaseline(fingerprint); }
-  }, [fingerprint, dirty]);
+    if (source && !dirtyRef.current) { setDraft(source); setBaseline(fingerprint); }
+  }, [fingerprint]);
   return { draft, dirty, changed: dirty && baseline !== fingerprint,
     edit: (value: T) => { setDirty(true); setDraft(value); },
     reload: () => { if (source) { setDraft(source); setBaseline(fingerprint); setDirty(false); } },
+    markSaved: () => { setDirty(false); setBaseline(fingerprint); },
   };
 }
 
@@ -47,15 +58,28 @@ export function useFormSave(onSaved: () => void) {
 }
 
 export function ReloadDraft({ changed, reload }: { changed: boolean; reload: () => void }) {
-  return changed ? <div className="notice" role="status"><p>Başka bir cihaz ayarları değiştirdi. Taslağınız korunuyor.</p><button type="button" onClick={reload}>Sunucudaki değerleri yükle</button></div> : null;
+  return changed ? <div className="notice" role="status"><p>Başka bir cihaz ayarları değiştirdi. Taslağınız korunuyor.</p><StepActions><button type="button" onClick={reload}>Sunucudaki değerleri yükle</button></StepActions></div> : null;
 }
 
 export function imageError(file: File): string | null {
   return !["image/png", "image/jpeg"].includes(file.type) ? "PNG veya JPEG görsel seçin."
     : file.size > 10 * 1024**2 ? "Görsel en fazla 10 MiB olabilir." : null;
 }
-export function AssetPreview({ reference, label }: { reference: string | null; label: string }) {
+export function cardMediaError(file: File): string | null {
+  return !["image/png", "image/jpeg", "video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "video/x-msvideo"].includes(cardContentType(file))
+    ? "PNG/JPEG görsel veya MP4, MOV, WebM, MKV, AVI video seçin."
+    : file.size > 10 * 1024**2 ? "Kart medyası en fazla 10 MiB olabilir." : null;
+}
+function cardContentType(file: File): string {
+  const types: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", mkv: "video/x-matroska", avi: "video/x-msvideo" };
+  return file.type || types[file.name.split(".").pop()?.toLowerCase() ?? ""] || "";
+}
+export function AssetPreview({ reference, label, file = null }: { reference: string | null; label: string; file?: File | null }) {
+  const local = useFilePreview(file);
+  const selected = `Seçilen ${label.toLocaleLowerCase("tr")} önizlemesi`;
+  if (local && file) return <><p>{selected}</p><MediaPreview src={local} contentType={cardContentType(file)} label={selected} /></>;
   if (!reference) return null;
-  const generated = /^branding\/assets\/[0-9a-f]{32}\.(png|jpg)$/.test(reference);
-  return <><p>{label} tanımlı</p>{generated && <img className="branding-preview" src={`/api/settings/branding/assets/${reference.split("/").pop()}`} alt={`${label} önizlemesi`} />}</>;
+  const generated = /^branding\/assets\/[0-9a-f]{32}\.(png|jpg|mp4|mov|webm|mkv|avi)$/.test(reference);
+  const contentType = /\.(mp4|mov|webm|mkv|avi)$/.test(reference) ? "video/mp4" : "image/png";
+  return <><p>{label} tanımlı</p>{generated && <MediaPreview src={`/api/settings/branding/assets/${reference.split("/").pop()}`} contentType={contentType} label={`${label} önizlemesi`} />}</>;
 }

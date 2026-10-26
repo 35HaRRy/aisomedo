@@ -8,6 +8,9 @@ from dojo import (
     Client,
     DojoPublishing,
     LogoNotConfigured,
+    ManualPublishConflict,
+    OccurrenceChanged,
+    OccurrenceNotFound,
     PublicationInProgress,
     PublicationNotReady,
     RenderFailed,
@@ -18,10 +21,11 @@ from dojo import (
     SkipRequiresConfirmation,
 )
 from dojo.model import YayinIncelemesi
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -36,7 +40,9 @@ def _review_out(review: YayinIncelemesi) -> dict[str, object]:
 
 
 @router.get("/pending", response_model=dict[str, object])
+@versioned_snapshot("publication")
 def list_pending(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:
@@ -45,6 +51,62 @@ def list_pending(
 
 class ApproveIn(BaseModel):
     version: int
+
+
+class EmptySkipIn(BaseModel):
+    expected_folder_name: str
+    confirmed: bool = False
+
+
+class EmptyRescheduleIn(BaseModel):
+    expected_folder_name: str
+    new_due_at: datetime
+
+
+class OccurrenceDecisionOut(BaseModel):
+    occurrence_id: int
+    package_folder: str
+    status: str
+    next_regular_at: datetime | None
+    oneoff_occurrence_id: int | None
+    new_due_at: datetime | None
+
+
+@router.post("/occurrences/{occurrence_id}/skip", response_model=OccurrenceDecisionOut)
+def skip_empty_occurrence(
+    occurrence_id: int, body: EmptySkipIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.skip_empty_occurrence(
+            occurrence_id, body.expected_folder_name, confirmed=body.confirmed,
+            requester=str(client.id),
+        )
+    except OccurrenceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OccurrenceChanged, PublicationInProgress) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SkipRequiresConfirmation as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/occurrences/{occurrence_id}/reschedule", response_model=OccurrenceDecisionOut)
+def reschedule_empty_occurrence(
+    occurrence_id: int, body: EmptyRescheduleIn,
+    client: Client = Depends(get_current_client),
+    publishing: DojoPublishing = Depends(get_publishing),
+) -> dict[str, object]:
+    try:
+        return publishing.reschedule_empty_occurrence(
+            occurrence_id, body.expected_folder_name, body.new_due_at, requester=str(client.id),
+        )
+    except OccurrenceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OccurrenceChanged, PublicationInProgress, ManualPublishConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RescheduleTimeInvalid as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class ReviewOut(BaseModel):
@@ -56,6 +118,7 @@ class ReviewOut(BaseModel):
     status: str
     created_at: datetime
     version: int
+    instagram_fail_message: str | None = None
 
 
 class ReviewDetailOut(BaseModel):
@@ -66,7 +129,9 @@ class ReviewDetailOut(BaseModel):
 
 
 @router.get("/{review_id}", response_model=ReviewDetailOut)
+@versioned_snapshot("publication")
 def review_detail(
+    request: Request, response: Response,
     review_id: int,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
@@ -148,7 +213,7 @@ def reschedule_review(
         )
     except ReviewNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (ReviewStale, ReviewAlreadyHandled, PublicationInProgress) as exc:
+    except (ReviewStale, ReviewAlreadyHandled, PublicationInProgress, ManualPublishConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RescheduleTimeInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

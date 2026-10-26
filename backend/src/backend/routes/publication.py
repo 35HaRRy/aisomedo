@@ -6,17 +6,19 @@ from typing import Literal
 from dojo import (
     Client,
     DojoPublishing,
+    ManualPublishConflict,
     MediaNotFound,
     PublicationInProgress,
     PublicationNotReady,
     RescheduleTimeInvalid,
     SkipRequiresConfirmation,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -57,14 +59,16 @@ def recover_publication(
             body.action, confirmed=body.confirmed, new_due_at=body.new_due_at,
             requester=str(client.id),
         )}
-    except (PublicationInProgress, PublicationNotReady) as exc:
+    except (PublicationInProgress, PublicationNotReady, ManualPublishConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (RescheduleTimeInvalid, SkipRequiresConfirmation) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("", response_model=dict[str, object])
+@versioned_snapshot("publication")
 def publication_status(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> dict[str, object]:

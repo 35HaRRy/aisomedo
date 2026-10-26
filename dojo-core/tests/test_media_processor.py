@@ -10,7 +10,7 @@ from dojo.adapters.media import PillowFFmpegProcessor
 from dojo.exceptions import MediaValidationError
 from dojo.model import Upload
 from dojo.testing import FIXED_AT, render_test_clip
-from PIL import Image
+from PIL import Image, ImageDraw
 
 pillow_heif.register_heif_opener()
 
@@ -56,24 +56,68 @@ def test_jpeg_accepted_and_normalized(tmp_path: Path) -> None:
     assert out.content_type == "image/jpeg"
 
 
-def test_rgba_png_accepted(tmp_path: Path) -> None:
-    src = tmp_path / "rgba.png"
-    Image.new("RGBA", (100, 100), (255, 0, 0, 128)).save(src, format="PNG")
+@pytest.mark.parametrize("mode,extension", [
+    ("RGBA", "png"), ("LA", "png"), ("P", "png"), ("RGB", "png"), ("RGBA", "webp"),
+])
+def test_image_transparency_preserved(tmp_path: Path, mode: str, extension: str) -> None:
+    src = tmp_path / f"transparent.{extension}"
+    image = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    ImageDraw.Draw(image).rectangle((20, 20, 80, 80), fill=(255, 255, 255, 255))
+    ImageDraw.Draw(image).rectangle((40, 40, 60, 60), fill=(0, 0, 0, 0))
+    image.putpixel((20, 20), (255, 255, 255, 128))
+    image = image.convert(mode)
+    if mode == "RGB":
+        image.save(src, transparency=(0, 0, 0))
+    else:
+        image.save(src)
     processor = PillowFFmpegProcessor()
-    out = processor.process(make_upload("rgba.png", "image/png"), src, tmp_path)
+    out = processor.process(make_upload(src.name, f"image/{extension}"), src, tmp_path)
     with Image.open(out.processed_path) as img:
-        assert img.format == "JPEG"
-        assert img.mode == "RGB"
-    assert out.content_type == "image/jpeg"
+        assert img.convert("RGBA").getpixel((0, 0))[3] == 0
+        assert img.convert("RGBA").getpixel((50, 50))[3] == 0
+        assert img.convert("RGBA").getpixel((30, 30)) == (255, 255, 255, 255)
+        if mode != "RGB":
+            assert img.convert("RGBA").getpixel((20, 20))[3] == 128
+        assert img.format == "PNG"
+    assert out.content_type == "image/png"
+    assert out.processed_path.suffix == ".png"
 
 
-def test_dimension_cap_applied(tmp_path: Path) -> None:
+@pytest.mark.skipif(not _ffmpeg_available(), reason="ffmpeg unavailable")
+def test_transparent_logo_render_ignores_hidden_rgb(tmp_path: Path) -> None:
+    from dojo.adapters.render import FfmpegReelRenderer
+
+    src = tmp_path / "logo.png"
+    image = Image.new("RGBA", (108, 192), (255, 0, 255, 0))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((10, 10, 98, 182), fill=(255, 255, 255, 255))
+    draw.rectangle((25, 25, 83, 167), fill=(255, 0, 255, 0))
+    image.save(src)
+    out = PillowFFmpegProcessor().process(make_upload(src.name, "image/png"), src, tmp_path)
+    segment = FfmpegReelRenderer()._render_segment(
+        out.processed_path, is_video=False, duration=0.12,
+        logo_asset=None, work_dir=tmp_path, name="transparent",
+    )
+    frame = tmp_path / "frame.png"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(segment),
+         "-frames:v", "1", str(frame)], check=True, capture_output=True,
+    )
+    with Image.open(frame) as rendered:
+        assert max(rendered.getpixel((540, 960))) < 10
+        assert min(rendered.getpixel((150, 960))) > 245
+
+
+@pytest.mark.parametrize("mode", ["RGB", "RGBA"])
+def test_dimension_cap_applied(tmp_path: Path, mode: str) -> None:
     src = tmp_path / "big.png"
-    Image.new("RGB", (8000, 1000), "blue").save(src, format="PNG")
+    Image.new(mode, (8000, 1000), (0, 0, 255, 128) if mode == "RGBA" else "blue").save(src)
     processor = PillowFFmpegProcessor()
     out = processor.process(make_upload("big.png", "image/png"), src, tmp_path)
     with Image.open(out.processed_path) as img:
         assert max(img.size) <= 4000
+        if mode == "RGBA":
+            assert img.getpixel((0, 0))[3] == 128
 
 
 def test_heic_accepted(tmp_path: Path) -> None:

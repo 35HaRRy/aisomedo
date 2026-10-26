@@ -1,12 +1,13 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
+import { invalidateLive } from "../test/live";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 it("renders seven ordered steps and backend-selected heading", async () => {
-  vi.stubGlobal("fetch", async (url: string) => new Response(JSON.stringify(url.endsWith("/me") ? client : setupState("schedule"))));
+  vi.stubGlobal("fetch", async (url: string) => new Response(JSON.stringify(url.endsWith("/me") ? client : url === "/api/settings/plan" ? { anchor_date: null, anchor_time: null, enabled: false, timezone: "Europe/Istanbul" } : setupState("schedule"))));
   render(<SessionProvider><OnboardingProvider><OnboardingWizard /></OnboardingProvider></SessionProvider>);
   await screen.findByRole("heading", { name: "Dojo Yayın Planı" });
   expect(screen.getByRole("list", { name: "Kurulum adımları" }).children).toHaveLength(7);
@@ -19,7 +20,7 @@ it("keeps dirty current form when another device completes its checklist step", 
   await waitFor(() => expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("Old"));
   fireEvent.change(screen.getByLabelText("Açıklama şablonu"), { target: { value: "My draft" } });
   setup = setupState();
-  await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise(done => setTimeout(done, 20)); });
+  await act(async () => { invalidateLive(); await new Promise(done => setTimeout(done, 20)); });
   expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("My draft");
 });
 
@@ -39,6 +40,10 @@ it("required readiness offers optional cards, focus and explicit finish", async 
   expect(heading).toHaveFocus();
   expect(screen.getByRole("button", { name: /İsteğe bağlı kartlar İsteğe bağlı/ })).toHaveAttribute("aria-current", "step");
   expect(screen.getByRole("link", { name: "Kurulumu bitir" })).toHaveAttribute("href", "#/dashboard");
+  expect(screen.queryByRole("link", { name: "Kuruluma sonra devam et" })).not.toBeInTheDocument();
+  const actions = screen.getByRole("group", { name: "Kurulum işlemleri" });
+  expect(within(actions).getByRole("button", { name: "Kartları kaydet" })).toBeInTheDocument();
+  expect(within(actions).getByRole("link", { name: "Kurulumu bitir" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Kartları değiştirmeden devam et" }));
   await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
 });
@@ -49,7 +54,7 @@ it("announces failed setup refresh while preserving stale progress", async () =>
   render(<SessionProvider><OnboardingProvider><OnboardingWizard /></OnboardingProvider></SessionProvider>);
   await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
   failed = true;
-  await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise(done => setTimeout(done, 20)); });
+  await act(async () => { invalidateLive(); await new Promise(done => setTimeout(done, 20)); });
   expect(screen.getByRole("alert")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Kurulum tamamlandı" })).toBeInTheDocument();
 });

@@ -37,6 +37,8 @@ interface Options {
 }
 interface Entry { row: UploadRow; file?: File; verified: boolean; flight?: AbortController }
 
+const previewable = (file: File) => file.type.startsWith("image/") || file.type.startsWith("video/");
+
 function conflictTargetIds(row: UploadRow): Set<string> {
   return new Set(row.status?.conflicts?.map(target => target?.media_id)
     .filter((value): value is string => typeof value === "string" && !!value));
@@ -55,6 +57,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export function createUploadController(options: Options): UploadController {
   const { clientId, transport, storage, onUnauthorized, onPackageChanged } = options;
   const entries = new Map<string, Entry>();
+  const previews = new Map<string, string>();
   const pending = new Set<string>();
   const listeners = new Set<() => void>();
   const lifetime = new AbortController();
@@ -67,6 +70,24 @@ export function createUploadController(options: Options): UploadController {
   let snapshot: UploadSnapshot = { rows: [], limits: null, limitsError: false, storageAvailable: !!storage };
   const alive = () => !lifetime.signal.aborted;
   const valid = (entry: Entry, flight: AbortController) => alive() && entries.get(entry.row.id) === entry && entry.flight === flight && !flight.signal.aborted;
+  function releasePreview(id: string) {
+    const url = previews.get(id);
+    if (!url) return;
+    previews.delete(id);
+    URL.revokeObjectURL(url);
+  }
+  function attachPreview(id: string, file?: File) {
+    releasePreview(id);
+    const entry = entries.get(id);
+    if (!entry) return;
+    if (!file || !previewable(file) || typeof URL.createObjectURL !== "function") {
+      entry.row = { ...entry.row, previewUrl: undefined };
+      return;
+    }
+    const previewUrl = URL.createObjectURL(file);
+    previews.set(id, previewUrl);
+    entry.row = { ...entry.row, previewUrl };
+  }
 
   function emit(persist = true) {
     if (persist && storage && alive()) {
@@ -80,6 +101,7 @@ export function createUploadController(options: Options): UploadController {
     if (!alive()) return;
     lifetime.abort();
     entries.forEach(entry => entry.flight?.abort());
+    Array.from(previews.keys()).forEach(releasePreview);
     pending.clear(); entries.clear();
     snapshot = { ...snapshot, limits: null, resolvingId: null };
     emit(false);
@@ -112,6 +134,7 @@ export function createUploadController(options: Options): UploadController {
       diagnostic: value.status === "failed" ? value.error_reason ?? null : null };
     if (value.status === "finalized") {
       pending.delete(entry.row.id);
+      releasePreview(entry.row.id);
       entries.delete(entry.row.id);
       entry.file = undefined;
     }
@@ -199,6 +222,7 @@ export function createUploadController(options: Options): UploadController {
       entry.file = file; entry.verified = false;
       if (!entry.row.status && !entry.row.identity) entry.row = { ...entry.row, filename: file.name, size: file.size,
         contentType: file.type || "application/octet-stream", lastModified: file.lastModified };
+      attachPreview(id, file);
     }
     if (!entry.file) { entry.row = { ...entry.row, phase: "needs-file" }; emit(false); return; }
     entry.row = { ...entry.row, phase: "waiting", error: null }; emit(false);
@@ -249,7 +273,7 @@ export function createUploadController(options: Options): UploadController {
       for (const file of files) {
         const row: UploadRow = { id: globalThis.crypto?.randomUUID?.() ?? `row-${Date.now()}-${++sequence}`, filename: file.name, size: file.size, contentType: file.type || "application/octet-stream",
           lastModified: file.lastModified, identity: null, status: null, phase: "waiting", preparedBytes: 0, error: null, diagnostic: null };
-        const entry: Entry = { row, file, verified: false }; entries.set(row.id, entry);
+        const entry: Entry = { row, file, verified: false }; entries.set(row.id, entry); attachPreview(row.id, file);
         try { sizeCheck(file); pending.add(row.id); } catch (error) { failure(error, entry); }
       }
       emit(false); await pump();
@@ -272,6 +296,7 @@ export function createUploadController(options: Options): UploadController {
     },
     reset() {
       controller.pauseAll();
+      Array.from(previews.keys()).forEach(releasePreview);
       entries.clear();
       snapshot = { ...snapshot, resolvingId: null, limits: snapshot.limits ? { ...snapshot.limits, active_package_id: 0 } : null };
       emit();
@@ -369,7 +394,7 @@ export function createUploadController(options: Options): UploadController {
     },
     dismiss(id) {
       const entry = entries.get(id);
-      if (alive() && entry && !snapshot.resolvingId && ["finalized", "failed", "expired", "conflict", "skipped"].includes(entry.row.phase)) { entries.delete(id); emit(); }
+      if (alive() && entry && !snapshot.resolvingId && ["finalized", "failed", "expired", "conflict", "skipped"].includes(entry.row.phase)) { releasePreview(id); entries.delete(id); emit(); }
     },
     async refresh(signal) {
       if (!alive() || refreshFlight || initializeFlight || snapshot.resolvingId) return refreshFlight ?? undefined;

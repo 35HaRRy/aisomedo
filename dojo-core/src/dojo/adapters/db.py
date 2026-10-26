@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from typing import Any, cast, overload
 from uuid import uuid4
 
+import psycopg
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -25,12 +28,14 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.engine import Connection, CursorResult
+from sqlalchemy.engine import URL, Connection, CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from dojo.exceptions import ConsentPolicyChanged, NoConsentPolicy
+from dojo.live import ChangeEvent, PackageState, emits
 from dojo.model import (
     AuditEvent,
     Client,
@@ -89,6 +94,37 @@ class PackageRow(Base):
     folder_name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+
+
+class PackageStateRow(Base):
+    __tablename__ = "package_states"
+    __table_args__ = (
+        CheckConstraint("content_revision > 0 AND view_revision > 0",
+                        name="ck_package_states_revisions"),
+    )
+
+    package_id: Mapped[int] = mapped_column(
+        ForeignKey("packages.id", ondelete="CASCADE"), primary_key=True,
+    )
+    content_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    view_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    document: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class LiveResourceVersionRow(Base):
+    __tablename__ = "live_resource_versions"
+    __table_args__ = (CheckConstraint("version >= 0", name="ck_live_resource_version"),)
+
+    resource: Mapped[str] = mapped_column(String(255), primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class LiveChangeEventRow(Base):
+    __tablename__ = "live_change_events"
+
+    event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    versions: Mapped[dict[str, int]] = mapped_column(JSONB, nullable=False)
+    revoked_client_ids: Mapped[list[int]] = mapped_column(JSONB, nullable=False)
 
 
 class AuditRow(Base):
@@ -177,6 +213,13 @@ class JobRow(Base):
             text("(payload ->> 'digest')"), unique=True,
             postgresql_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
         ),
+        Index(
+            "uq_jobs_active_media_preview", "kind", text("(payload ->> 'package_id')"),
+            text("(payload ->> 'media_id')"), unique=True,
+            postgresql_where=text(
+                "kind IN ('section_preview', 'thumbnail') AND status IN ('queued', 'processing')"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -264,6 +307,10 @@ class YayinZamaniRow(Base):
         Index("ix_yayin_zamani_status_due", "status", "due_at"),
         Index("uq_yayin_zamani_regular_due", "due_at", unique=True,
               postgresql_where=text("kind = 'regular'")),
+        Index("uq_yayin_zamani_pending_regular", "kind", unique=True,
+              postgresql_where=text("kind = 'regular' AND status = 'pending'")),
+        Index("uq_yayin_zamani_pending_exception", "status", unique=True,
+              postgresql_where=text("kind IN ('manual', 'oneoff') AND status = 'pending'")),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -281,6 +328,8 @@ class YayinIncelemesiRow(Base):
             "occurrence_id", "revision_digest", name="uq_yayin_incelemesi_occ_rev"
         ),
         Index("ix_yayin_incelemesi_status", "status"),
+        Index("uq_yayin_incelemesi_actionable", text("(1)"), unique=True,
+              postgresql_where=text("status IN ('pending', 'failed', 'uncertain', 'publishing')")),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -288,6 +337,7 @@ class YayinIncelemesiRow(Base):
     package_folder: Mapped[str] = mapped_column(Text, nullable=False)
     revision_digest: Mapped[str] = mapped_column(Text, nullable=False)
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instagram_fail_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
@@ -350,6 +400,11 @@ class MetaOAuthAttemptRow(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+_read_connection: ContextVar[tuple[URL, Connection] | None] = ContextVar(
+    "read_connection", default=None,
+)
+
+
 class PostgresStore:
     def __init__(self, url: str) -> None:
         self._engine = create_engine(url)
@@ -360,6 +415,12 @@ class PostgresStore:
         self._package_locked: ContextVar[bool] = ContextVar("package_locked", default=False)
         self._package_connection: ContextVar[Connection | None] = ContextVar(
             "package_connection", default=None,
+        )
+        self._commit_callbacks: ContextVar[dict[str, Callable[[], None]] | None] = ContextVar(
+            "commit_callbacks", default=None,
+        )
+        self._pending_changes: ContextVar[tuple[set[str], set[int]] | None] = ContextVar(
+            "pending_changes", default=None,
         )
 
     @contextmanager
@@ -411,6 +472,7 @@ class PostgresStore:
             return ([self._upload_from_row(u) for u in uploads],
                     [self._job_from_row(j) for j in jobs])
 
+    @emits("dashboard", "completed", "publication", "activity")
     def delete_package_records(self, package: Package, media_ids: set[str]) -> None:
         with self._session() as session:
             uploads = list(session.scalars(
@@ -439,10 +501,16 @@ class PostgresStore:
             session.execute(delete(UploadRow).where(UploadRow.id.in_([u.id for u in uploads])))
             session.execute(delete(PackageRow).where(PackageRow.id == package.id))
             session.commit()
+        self.queue_change([f"package:{package.id}"])
 
     def _session(self) -> Session:
         connection = self._emission_connection.get()
         if connection is None:
+            snapshot = _read_connection.get()
+            if snapshot is not None and snapshot[0] == self._engine.url:
+                return self._session_factory(
+                    bind=snapshot[1], join_transaction_mode="rollback_only",
+                )
             package_connection = self._package_connection.get()
             return (self._session_factory(bind=package_connection)
                     if package_connection is not None else self._session_factory())
@@ -459,12 +527,49 @@ class PostgresStore:
         """
         if self._emission_connection.get() is not None:
             raise RuntimeError("nested emission transactions are not supported")
-        with self._engine.begin() as connection:
-            token = self._emission_connection.set(connection)
-            try:
-                yield
-            finally:
-                self._emission_connection.reset(token)
+        callbacks: dict[str, Callable[[], None]] = {}
+        callback_token = self._commit_callbacks.set(callbacks)
+        pending: tuple[set[str], set[int]] = (set(), set())
+        change_token = self._pending_changes.set(pending)
+        try:
+            borrowed = self._package_connection.get()
+            with (self._engine.connect() if borrowed is None else nullcontext(borrowed)) \
+                    as connection, connection.begin():
+                token = self._emission_connection.set(connection)
+                try:
+                    yield
+                    if pending[0]:
+                        self.record_change(
+                            sorted(pending[0]), revoked_client_ids=sorted(pending[1]),
+                        )
+                finally:
+                    self._emission_connection.reset(token)
+        finally:
+            self._commit_callbacks.reset(callback_token)
+            self._pending_changes.reset(change_token)
+        for callback in callbacks.values():
+            callback()
+
+    def after_commit(self, key: str, callback: Callable[[], None]) -> None:
+        callbacks = self._commit_callbacks.get()
+        if callbacks is None:
+            raise RuntimeError("after_commit requires a command transaction")
+        callbacks[key] = callback
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        existing = _read_connection.get()
+        if existing is not None and existing[0] == self._engine.url:
+            yield
+            return
+        with self._engine.connect().execution_options(isolation_level="REPEATABLE READ") as conn:
+            with conn.begin():
+                conn.execute(text("SET TRANSACTION READ ONLY"))
+                token = _read_connection.set((self._engine.url, conn))
+                try:
+                    yield
+                finally:
+                    _read_connection.reset(token)
 
     def try_advisory_xact_lock(self, key: int) -> bool:
         connection = self._emission_connection.get()
@@ -473,6 +578,109 @@ class PostgresStore:
         return bool(connection.execute(
             text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key},
         ).scalar_one())
+
+    @contextmanager
+    def command_transaction(self) -> Iterator[None]:
+        """Join a scheduler/command transaction, or own its outermost commit."""
+        if self._emission_connection.get() is not None:
+            yield
+        else:
+            with self.emission_transaction():
+                yield
+
+    def _require_command_transaction(self) -> None:
+        if self._emission_connection.get() is None:
+            raise RuntimeError("live state writes require a command transaction")
+
+    def read_package_state(
+        self, package_id: int, *, for_update: bool = False,
+    ) -> PackageState | None:
+        if for_update:
+            self._require_command_transaction()
+        with self._session() as session:
+            stmt = select(PackageStateRow).where(PackageStateRow.package_id == package_id)
+            row = session.scalar(stmt.with_for_update() if for_update else stmt)
+            return self._package_state_from_row(row) if row is not None else None
+
+    @staticmethod
+    def _package_state_from_row(row: PackageStateRow) -> PackageState:
+        return PackageState(row.package_id, row.content_revision, row.view_revision,
+                            deepcopy(row.document))
+
+    def write_package_state(
+        self, package_id: int, document: dict, *, content_changed: bool,
+    ) -> PackageState:
+        self._require_command_transaction()
+        with self._session() as session:
+            # Lock the parent too: the initial state row may not exist yet.
+            if session.scalar(select(PackageRow.id).where(
+                PackageRow.id == package_id,
+            ).with_for_update()) is None:
+                raise ValueError(f"package {package_id} not found")
+            row = session.get(PackageStateRow, package_id)
+            if row is None:
+                row = PackageStateRow(package_id=package_id, content_revision=1,
+                                      view_revision=1, document=deepcopy(document))
+                session.add(row)
+            else:
+                row.content_revision += int(content_changed)
+                row.view_revision += 1
+                row.document = deepcopy(document)
+            session.commit()
+            return self._package_state_from_row(row)
+
+    def record_change(
+        self, resources: list[str], *, revoked_client_ids: list[int] | None = None,
+    ) -> ChangeEvent:
+        self._require_command_transaction()
+        versions: dict[str, int] = {}
+        with self._session() as session:
+            for resource in sorted(set(resources)):
+                stmt = pg_insert(LiveResourceVersionRow).values(resource=resource, version=1)
+                increment = stmt.on_conflict_do_update(
+                    index_elements=[LiveResourceVersionRow.resource],
+                    set_={"version": LiveResourceVersionRow.version + 1},
+                ).returning(LiveResourceVersionRow.version)
+                versions[resource] = session.execute(increment).scalar_one()
+            row = LiveChangeEventRow(event_id=str(uuid4()), versions=versions,
+                                     revoked_client_ids=list(revoked_client_ids or []))
+            session.add(row)
+            session.flush()
+            session.execute(text("SELECT pg_notify('dojo_changes', :event_id)"),
+                            {"event_id": row.event_id})
+            session.commit()
+            return ChangeEvent(row.event_id, deepcopy(versions), list(row.revoked_client_ids))
+
+    def get_change(self, event_id: str) -> ChangeEvent | None:
+        with self._session() as session:
+            # Bound a stalled notification lookup so the listener can reconnect.
+            session.execute(text("SET LOCAL statement_timeout = 5000"))
+            row = session.get(LiveChangeEventRow, event_id)
+            return (ChangeEvent(row.event_id, deepcopy(row.versions), list(row.revoked_client_ids))
+                    if row is not None else None)
+
+    def get_resource_version(self, resource: str) -> int:
+        with self._session() as session:
+            row = session.get(LiveResourceVersionRow, resource)
+            return row.version if row is not None else 0
+
+    def open_change_listener(self) -> psycopg.Connection:
+        """Dedicated autocommit transport connection; never one per SSE client."""
+        url = self._engine.url
+        parameters = url.translate_connect_args(username="user", database="dbname")
+        parameters.update(url.query)
+        parameters.update(autocommit=True, connect_timeout=5, keepalives=1,
+                          keepalives_idle=15, keepalives_interval=5, keepalives_count=3)
+        return psycopg.connect(**parameters)
+
+    def queue_change(
+        self, resources: list[str], *, revoked_client_ids: list[int] | None = None,
+    ) -> None:
+        pending = self._pending_changes.get()
+        if pending is None:
+            raise RuntimeError("live changes require a command transaction")
+        pending[0].update(resources)
+        pending[1].update(revoked_client_ids or [])
 
     def create_all(self) -> None:
         Base.metadata.create_all(self._engine)
@@ -491,6 +699,7 @@ class PostgresStore:
     @overload
     def create(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
+    @emits(result=True)
     def create(
         self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
     ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
@@ -563,6 +772,7 @@ class PostgresStore:
             session.refresh(row)
             return self._job_from_row(row)
 
+    @emits(result=True)
     def create_job_once(
         self, job: Job, *, audit: AuditEvent | None = None,
     ) -> tuple[Job, bool]:
@@ -575,10 +785,22 @@ class PostgresStore:
         values.pop("id")
         stmt = pg_insert(JobRow).values(**values)
         active_render = job.kind == "render" and job.status in ("queued", "processing")
+        active_preview = job.kind in ("section_preview", "thumbnail") \
+            and job.status in ("queued", "processing")
+        fields = ("package", "digest") if active_render else ("package_id", "media_id")
         if active_render:
             stmt = stmt.on_conflict_do_nothing(
                 index_elements=[text("(payload ->> 'package')"), text("(payload ->> 'digest')")],
                 index_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
+            )
+        elif active_preview:
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=["kind", text("(payload ->> 'package_id')"),
+                                text("(payload ->> 'media_id')")],
+                index_where=text(
+                    "kind IN ('section_preview', 'thumbnail') "
+                    "AND status IN ('queued', 'processing')"
+                ),
             )
         with self._session() as session:
             while True:
@@ -588,10 +810,10 @@ class PostgresStore:
                     # A separate statement gets a fresh READ COMMITTED snapshot.
                     # Lock the winner against completion until our transaction ends.
                     row = session.scalar(select(JobRow).where(
-                        JobRow.kind == "render",
+                        JobRow.kind == job.kind,
                         JobRow.status.in_(("queued", "processing")),
-                        JobRow.payload["package"].as_string() == job.payload["package"],
-                        JobRow.payload["digest"].as_string() == job.payload["digest"],
+                        *(JobRow.payload[key].as_string() == str(job.payload[key])
+                          for key in fields),
                     ).with_for_update())
                 if row is not None:
                     if created and audit is not None:
@@ -666,6 +888,7 @@ class PostgresStore:
     @overload
     def update(self, obj: YayinIncelemesi) -> YayinIncelemesi: ...
 
+    @emits(result=True)
     def update(
         self, obj: Package | Upload | Job | YayinZamani | YayinIncelemesi
     ) -> Package | Upload | Job | YayinZamani | YayinIncelemesi:
@@ -688,6 +911,7 @@ class PostgresStore:
                     .where(YayinIncelemesiRow.id == review.id)
                     .values(
                         status=review.status,
+                        instagram_fail_message=review.instagram_fail_message,
                         version=review.version,
                         resolved_at=review.resolved_at,
                         resolved_by=review.resolved_by,
@@ -823,6 +1047,7 @@ class PostgresStore:
             session.commit()
             return job
 
+    @emits("activity")
     def append(self, event: AuditEvent) -> None:
         with self._session() as session:
             session.add(
@@ -905,6 +1130,7 @@ class PostgresStore:
             session.commit()
             return result.rowcount > 0
 
+    @emits(result=True)
     def create_client(self, client: Client, credential_hash: str) -> Client:
         with self._session() as session:
             row = ClientRow(
@@ -938,6 +1164,7 @@ class PostgresStore:
             rows = session.scalars(select(ClientRow).order_by(ClientRow.id)).all()
             return [self._client_from_row(row) for row in rows]
 
+    @emits("auth")
     def mark_client_revoked(self, client_id: int, at: datetime) -> None:
         with self._session() as session:
             session.execute(
@@ -946,6 +1173,7 @@ class PostgresStore:
                 .values(revoked_at=at)
             )
             session.commit()
+        self.queue_change(["auth"], revoked_client_ids=[client_id])
 
     def touch_client(self, client_id: int, at: datetime) -> None:
         with self._session() as session:
@@ -968,6 +1196,7 @@ class PostgresStore:
             revoked_at=row.revoked_at,
         )
 
+    @emits(result=True)
     def create_policy(
         self, *, version: int, text: str, created_by: str, created_at: datetime
     ) -> ConsentPolicy:
@@ -1017,6 +1246,7 @@ class PostgresStore:
             )
             return self._acceptance_from_row(row) if row is not None else None
 
+    @emits("setup", "settings", "dashboard", result=True)
     def record_acceptance(self, acceptance: ConsentAcceptance) -> bool:
         with self._session() as session:
             try:
@@ -1035,6 +1265,7 @@ class PostgresStore:
                 session.rollback()
                 return False
 
+    @emits("setup", "settings", "dashboard", result=True)
     def accept_policy_version(
         self, *, client: Client, version: int | None, accepted_at: datetime
     ) -> tuple[ConsentAcceptance, bool]:
@@ -1124,6 +1355,7 @@ class PostgresStore:
             row = session.scalar(select(JobRow).where(JobRow.upload_id == upload_pk))
             return self._job_from_row(row) if row is not None else None
 
+    @emits(result=True)
     def claim_next(self, claimed_at: datetime) -> Job | None:
         with self._session() as session:
             row = session.scalar(
@@ -1140,6 +1372,7 @@ class PostgresStore:
             session.commit()
             return self._job_from_row(row)
 
+    @emits("settings", "setup", "dashboard")
     def set(self, key: str, value: object, *, updated_at: datetime) -> None:
         with self._session() as session:
             stmt = pg_insert(SettingRow).values(key=key, value=value, updated_at=updated_at)
@@ -1150,6 +1383,44 @@ class PostgresStore:
             session.execute(stmt)
             session.commit()
 
+    @emits()
+    def cancel_media_jobs(
+        self, package_id: int, media_id: str | None, *, kinds: tuple[str, ...],
+        cancelled_at: datetime,
+    ) -> int:
+        stmt = update(JobRow).where(
+            JobRow.kind.in_(kinds), JobRow.status.in_(("queued", "processing")),
+            JobRow.payload["package_id"].as_string() == str(package_id),
+        )
+        if media_id is not None:
+            stmt = stmt.where(JobRow.payload["media_id"].as_string() == media_id)
+        with self._session() as session:
+            changed = list(session.scalars(stmt.values(
+                status="cancelled", finished_at=cancelled_at,
+            ).returning(JobRow.id)))
+            session.commit()
+        if changed:
+            self.queue_change(["dashboard", "publication", f"package:{package_id}"])
+        return len(changed)
+
+    @emits(result=True)
+    def finish_if_processing(
+        self, job_id: str, *, status: str, finished_at: datetime,
+        error_reason: str | None = None,
+    ) -> Job | None:
+        if status not in ("done", "failed", "cancelled"):
+            raise ValueError("job finish status must be terminal")
+        with self._session() as session:
+            row = session.scalar(select(JobRow).where(
+                JobRow.job_id == job_id, JobRow.status == "processing",
+            ).with_for_update())
+            if row is None:
+                return None
+            return self._update_job(replace(
+                self._job_from_row(row), status=status, finished_at=finished_at,
+                error_reason=error_reason,
+            ))
+
     def _create_occurrence(self, occ: YayinZamani) -> YayinZamani:
         # Regular due-time identity: repeated creation returns the existing row
         # (conflict-aware, preserves the enclosing emission transaction); one-off
@@ -1158,9 +1429,7 @@ class PostgresStore:
         values.pop("id")
         stmt = pg_insert(YayinZamaniRow).values(**values)
         if occ.kind == "regular":
-            stmt = stmt.on_conflict_do_nothing(
-                index_elements=[YayinZamaniRow.due_at], index_where=text("kind = 'regular'"),
-            )
+            stmt = stmt.on_conflict_do_nothing()
         with self._session() as session:
             while True:
                 row = session.scalar(stmt.returning(YayinZamaniRow))
@@ -1171,6 +1440,12 @@ class PostgresStore:
                 if row is not None:
                     session.commit()
                     return self._occ_from_row(row)
+                if session.scalar(select(YayinZamaniRow.id).where(
+                    YayinZamaniRow.kind == "regular", YayinZamaniRow.status == "pending",
+                )) is not None:
+                    raise IntegrityError(
+                        "schedule uniqueness", {}, Exception("pending regular exists"),
+                    )
 
     def max_regular_due_at(self) -> datetime | None:
         with self._session() as session:
@@ -1200,11 +1475,12 @@ class PostgresStore:
                 .limit(1)
             ) is not None
 
-    def has_pending_manual(self) -> bool:
+    def has_pending_exception(self) -> bool:
         with self._session() as session:
             return session.scalar(
                 select(YayinZamaniRow.id)
-                .where(YayinZamaniRow.kind == "manual", YayinZamaniRow.status == "pending")
+                .where(YayinZamaniRow.kind.in_(("manual", "oneoff")),
+                       YayinZamaniRow.status == "pending")
                 .limit(1)
             ) is not None
 
@@ -1212,10 +1488,16 @@ class PostgresStore:
         with self._session() as session:
             rows = session.scalars(
                 select(YayinZamaniRow)
-                .where(YayinZamaniRow.status == "pending", YayinZamaniRow.due_at <= now)
+                .where(YayinZamaniRow.status.in_(("pending", "due")), YayinZamaniRow.due_at <= now)
                 .order_by(YayinZamaniRow.id)
             ).all()
             return [self._occ_from_row(r) for r in rows]
+
+    def has_for_occurrence(self, occurrence_id: int) -> bool:
+        with self._session() as session:
+            return session.scalar(select(YayinIncelemesiRow.id).where(
+                YayinIncelemesiRow.occurrence_id == occurrence_id,
+            ).limit(1)) is not None
 
     def list_all(self) -> list[YayinZamani]:
         with self._session() as session:
@@ -1249,21 +1531,21 @@ class PostgresStore:
                 resolved_by=review.resolved_by,
                 oneoff_occurrence_id=review.oneoff_occurrence_id,
                 last_reminded_at=review.last_reminded_at,
+                instagram_fail_message=review.instagram_fail_message,
             )
             session.add(row)
             session.commit()
             session.refresh(row)
             return self._review_from_row(row)
 
+    @emits(result=True)
     def create_review_once(
         self, review: YayinIncelemesi, *, audit: AuditEvent | None = None,
     ) -> tuple[YayinIncelemesi, bool]:
         """Insert once per occurrence/revision; add review_id to a new row's audit."""
         values = asdict(review)
         values.pop("id")
-        stmt = pg_insert(YayinIncelemesiRow).values(**values).on_conflict_do_nothing(
-            constraint="uq_yayin_incelemesi_occ_rev",
-        )
+        stmt = pg_insert(YayinIncelemesiRow).values(**values).on_conflict_do_nothing()
         with self._session() as session:
             while True:
                 row = session.scalar(stmt.returning(YayinIncelemesiRow))
@@ -1280,6 +1562,12 @@ class PostgresStore:
                         ))
                     session.commit()
                     return self._review_from_row(row), created
+                if session.scalar(select(YayinIncelemesiRow.id).where(
+                    YayinIncelemesiRow.status.in_(("pending", "failed", "uncertain", "publishing")),
+                )) is not None:
+                    raise IntegrityError(
+                        "review uniqueness", {}, Exception("actionable review exists"),
+                    )
 
     def get_by_occurrence_revision(
         self, occurrence_id: int, revision_digest: str
@@ -1299,7 +1587,9 @@ class PostgresStore:
         with self._session() as session:
             rows = session.scalars(
                 select(YayinIncelemesiRow)
-                .where(YayinIncelemesiRow.status == "pending")
+                .where(YayinIncelemesiRow.status.in_(
+                    ("pending", "failed", "uncertain", "publishing")
+                ))
                 .order_by(YayinIncelemesiRow.id)
             ).all()
             return [self._review_from_row(r) for r in rows]
@@ -1319,7 +1609,10 @@ class PostgresStore:
                     update(YayinIncelemesiRow)
                     .where(
                         YayinIncelemesiRow.id == review_id,
-                        YayinIncelemesiRow.status == "pending",
+                        YayinIncelemesiRow.status.in_(
+                            ("pending", "failed", "uncertain", "publishing")
+                            if status == "approved" else ("pending", "failed", "uncertain")
+                        ),
                         YayinIncelemesiRow.version == version,
                     )
                     .values(
@@ -1352,6 +1645,7 @@ class PostgresStore:
             resolved_by=row.resolved_by,
             oneoff_occurrence_id=row.oneoff_occurrence_id,
             last_reminded_at=row.last_reminded_at,
+            instagram_fail_message=row.instagram_fail_message,
         )
 
     def register_token(self, client_id: int, token: str, at: datetime) -> PushRegistration:
@@ -1619,6 +1913,7 @@ class PostgresStore:
             )
             return status, row.encrypted_token
 
+    @emits(result=True)
     def upsert_active(
         self,
         *,
@@ -1685,6 +1980,7 @@ class PostgresStore:
                 return None
             return row.encrypted_token, row.token_expires_at
 
+    @emits(result=True)
     def update_health(
         self, health: str, last_checked_at: datetime | None, last_error: str | None,
         *, expected_encrypted_token: str | None = None,
@@ -1715,6 +2011,7 @@ class PostgresStore:
                 connection_type=row.connection_type,
             )
 
+    @emits(result=True)
     def update_token(
         self, encrypted_token: str, token_expires_at: datetime, last_refreshed_at: datetime,
         *, expected_encrypted_token: str | None = None,
@@ -1785,6 +2082,7 @@ class PostgresStore:
                 "last_error": row.last_error,
             }
 
+    @emits("setup", "settings", "dashboard", result=True)
     def create_attempt(self, attempt: dict) -> dict:
         with self._session() as session:
             row = MetaOAuthAttemptRow(
@@ -1804,6 +2102,7 @@ class PostgresStore:
             session.commit()
             return attempt
 
+    @emits("setup", "settings", "dashboard")
     def mark_attempt_completed(
         self,
         attempt_id: str,
@@ -1821,6 +2120,7 @@ class PostgresStore:
             row.temp_token_expires_at = temp_token_expires_at
             session.commit()
 
+    @emits("setup", "settings", "dashboard")
     def mark_attempt_failed(self, attempt_id: str, error: str) -> None:
         with self._session() as session:
             row = session.get(MetaOAuthAttemptRow, attempt_id)
@@ -1830,6 +2130,7 @@ class PostgresStore:
             row.last_error = error
             session.commit()
 
+    @emits("setup", "settings", "dashboard", result=True)
     def consume_attempt(self, attempt_id: str) -> dict | None:
         with self._session() as session:
             row = session.get(MetaOAuthAttemptRow, attempt_id)

@@ -10,7 +10,6 @@ from dojo import (
     RescheduleTimeInvalid,
     ReviewAlreadyHandled,
     ReviewNotFound,
-    ReviewStale,
     SchedulePlan,
     SkipRequiresConfirmation,
 )
@@ -63,6 +62,7 @@ def finalize_media(tmp_path, seam, *, filename="pic.jpg", content_type="image/jp
 
 
 def claim_render(seam):
+    seam.render_preview()  # Simulate opening the review screen.
     job = seam.claim_next_job()
     assert job is not None and job.kind == "render"
     seam.process_job(job.job_id)
@@ -158,7 +158,7 @@ def test_stale_review_action_rejected(tmp_path) -> None:
     seam.render_preview()
     claim_render(seam)
 
-    with pytest.raises(ReviewStale):
+    with pytest.raises(ReviewAlreadyHandled):
         seam.approve(review.id, review.version, requester="7")
 
 
@@ -210,7 +210,7 @@ def test_reschedule_requires_future_time(tmp_path) -> None:
         seam.reschedule(review.id, review.version, monday_dt())
 
 
-def test_reschedule_creates_oneoff_and_replaces_prior(tmp_path) -> None:
+def test_reschedule_creates_fresh_oneoff_and_resolves_prior(tmp_path) -> None:
     store, seam, _ = make_seam(tmp_path)
     store.set("branding.logo_asset", "logo.png", updated_at=FIXED_AT)
     review = create_due_review(tmp_path, seam)
@@ -249,10 +249,14 @@ def test_reschedule_creates_oneoff_and_replaces_prior(tmp_path) -> None:
         new_review.id, new_review.version, second_time, requester="6"
     )
     oneoff_after = [o for o in store.list_all() if o.kind == "oneoff"]
-    assert len(oneoff_after) == 1
+    assert len(oneoff_after) == 2
     assert oneoff_after[0].id == oneoff_id
-    assert oneoff_after[0].due_at == second_time
-    assert resolved2.oneoff_occurrence_id == oneoff_id
+    assert oneoff_after[0].status == "resolved"
+    assert oneoff_after[1].due_at == second_time
+    assert resolved2.oneoff_occurrence_id == oneoff_after[1].id
+    seam._clock = FakeClock(second_time)
+    seam.evaluate_due_work()
+    assert [r.occurrence_id for r in seam.list_pending_reviews()] == [oneoff_after[1].id]
 
 
 def test_reschedule_naive_time_treated_as_local_zone(tmp_path) -> None:

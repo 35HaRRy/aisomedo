@@ -1,13 +1,14 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../api/client";
+import { live } from "../live";
 import { SessionProvider } from "../session";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { InstagramStep } from "./InstagramStep";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-function mount(status = 200) {
+async function mount(status = 200) {
   const sent = vi.fn();
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     if (url.endsWith("/me")) return json(client);
@@ -17,11 +18,12 @@ function mount(status = 200) {
   });
   const onSaved = vi.fn();
   const view = render(<SessionProvider><OnboardingProvider><InstagramStep onSaved={onSaved} /></OnboardingProvider></SessionProvider>);
+  await waitFor(() => expect(live.getSnapshot()).toBe("live"));
   return { ...view, sent, onSaved };
 }
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 it.each([200, 422, 502, 503])("clears masked token without leaking secrets for status %i", async status => {
-  const { sent } = mount(status);
+  const { sent } = await mount(status);
   const input = screen.getByLabelText("Instagram erişim tokenı");
   expect(input).toHaveAttribute("type", "password");
   fireEvent.change(input, { target: { value: "private-token" } });
@@ -35,7 +37,7 @@ it.each([200, 422, 502, 503])("clears masked token without leaking secrets for s
   else await screen.findByRole("alert");
 });
 it("disables duplicate token submit and discards pending result on unmount", async () => {
-  const { unmount, onSaved } = mount();
+  const { unmount, onSaved } = await mount();
   let complete: (value: { health: string }) => void = () => {};
   const connect = vi.spyOn(api, "connectInstagramToken").mockImplementation(() => new Promise(done => { complete = done; }));
   fireEvent.change(screen.getByLabelText("Instagram erişim tokenı"), { target: { value: "secret" } });
@@ -45,7 +47,7 @@ it("disables duplicate token submit and discards pending result on unmount", asy
   expect(connect).toHaveBeenCalledTimes(1); expect(onSaved).not.toHaveBeenCalled();
 });
 it("opens explicit OAuth safely and requires candidate selection", async () => {
-  mount();
+  await mount();
   const open = vi.spyOn(window, "open").mockReturnValue(null);
   vi.spyOn(api, "startOAuth").mockResolvedValue({ auth_url: "https://www.facebook.com/dialog/oauth", attempt_id: "a1" });
   vi.spyOn(api, "oauthAttempt").mockResolvedValue({ id: "a1", status: "completed", candidates: [
@@ -62,7 +64,7 @@ it("opens explicit OAuth safely and requires candidate selection", async () => {
   await waitFor(() => expect(select).toHaveBeenCalledWith("a1", "2", expect.any(AbortSignal)));
 });
 it.each(["failed", "expired", "unknown"])("offers OAuth retry for %s", async status => {
-  mount(); vi.spyOn(window, "open").mockReturnValue(null);
+  await mount(); vi.spyOn(window, "open").mockReturnValue(null);
   vi.spyOn(api, "startOAuth").mockResolvedValue({ auth_url: "https://www.facebook.com/", attempt_id: "a1" });
   const poll = vi.spyOn(api, "oauthAttempt").mockResolvedValue({ id: "a1", status, candidates: [] });
   fireEvent.click(screen.getByRole("button", { name: "Instagram ile yetkilendir" }));
@@ -73,7 +75,7 @@ it.each(["failed", "expired", "unknown"])("offers OAuth retry for %s", async sta
 });
 
 it("stops foreground attempt polling after unmount", async () => {
-  const { unmount } = mount(); vi.spyOn(window, "open").mockReturnValue(null);
+  const { unmount } = await mount(); vi.spyOn(window, "open").mockReturnValue(null);
   vi.spyOn(api, "startOAuth").mockResolvedValue({ auth_url: "https://www.facebook.com/", attempt_id: "a1" });
   const poll = vi.spyOn(api, "oauthAttempt").mockResolvedValue({ id: "a1", status: "pending", candidates: [] });
   fireEvent.click(screen.getByRole("button", { name: "Instagram ile yetkilendir" }));

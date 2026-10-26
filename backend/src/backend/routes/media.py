@@ -17,12 +17,13 @@ from dojo import (
     UploadNotReceiving,
     UploadTooLarge,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -40,7 +41,9 @@ class UploadLimitsOut(BaseModel):
 
 
 @limits_router.get("/upload-limits", response_model=UploadLimitsOut)
+@versioned_snapshot("dashboard")
 def upload_limits(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> UploadLimitsOut:
@@ -123,7 +126,9 @@ async def append_range(
 
 
 @router.get("", response_model=list[UploadOut])
+@versioned_snapshot("dashboard")
 def list_uploads(
+    request: Request, response: Response,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> list[UploadOut]:
@@ -131,7 +136,9 @@ def list_uploads(
 
 
 @router.get("/{upload_id}", response_model=UploadOut)
+@versioned_snapshot("upload")
 def get_upload(
+    request: Request, response: Response,
     upload_id: str,
     client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),

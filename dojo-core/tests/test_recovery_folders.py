@@ -194,6 +194,7 @@ def test_bom_manifest_does_not_break_repair(tmp_path: Path) -> None:
 
 def test_bom_manifest_does_not_break_evaluate_due_work(tmp_path: Path) -> None:
     _, seam = make_seam(tmp_path)
+    seam.ensure_active_package()
     folder = write_bom_folder(tmp_path, "06-08-2026 14-30")
     seam.repair_open_folders()
 
@@ -291,16 +292,17 @@ def test_all_unparseable_newest_mtime_wins(tmp_path: Path) -> None:
     assert result["active"] == "scratch-new"
 
 
-def test_single_folder_db_mismatch_audited(tmp_path: Path) -> None:
+def test_newer_unknown_folder_is_quarantined_and_audited(tmp_path: Path) -> None:
     _, seam = make_seam(tmp_path)
     seam.ensure_active_package()
     write_open_folder(tmp_path, "07-08-2026 14-30")
 
     result = seam.repair_open_folders()
 
-    assert result["active"] == "07-08-2026 14-30"
+    assert result["active"] == "06-08-2026 14-30"
+    assert result["recovered"] == ["07-08-2026 14-30-recovered"]
     assert seam.get_active_package() is not None
-    assert seam.get_active_package().folder_name == "07-08-2026 14-30"
+    assert seam.get_active_package().folder_name == "06-08-2026 14-30"
     actions = [e.action for e in seam.list_audit()]
     assert "package.recovery" in actions
 

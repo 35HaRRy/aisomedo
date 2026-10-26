@@ -122,9 +122,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     else:
         _wire_setup_meta(app)
     _wire_setup_meta(app)
+    from dojo.adapters.db import PostgresStore
+
+    from backend.live import LiveHub
+
+    if not hasattr(app.state, "live_hub"):
+        store = app.state.publishing._packages
+        app.state.live_hub = LiveHub(store) if isinstance(store, PostgresStore) else None
+    hub = app.state.live_hub
+    if hub is not None:
+        await hub.start()
     try:
         yield
     finally:
+        if hub is not None:
+            await hub.close()
         if readiness_probe is not None:
             readiness_probe.close()
 
@@ -177,6 +189,9 @@ def create_app(
     app.state.version_policy = resolve_version_policy()
     app.add_middleware(ClientVersionMiddleware, policy=app.state.version_policy)
     app.include_router(health.router)
+    from backend.routes import events
+
+    app.include_router(events.router)
     app.include_router(compat_router.router)
     app.include_router(dashboard_router.router, dependencies=[Depends(get_current_client)])
     app.include_router(packages.router, dependencies=[Depends(get_current_client)])

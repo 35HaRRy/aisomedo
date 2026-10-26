@@ -135,7 +135,7 @@ def test_conflict_preview_rejects_manifest_path_escape(tmp_path, reference):
     manifest_path = tmp_path / package.folder_name / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["media"][0]["processed"]["path"] = reference
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(package, manifest)
     with pytest.raises(MediaNotFound):
         seam.get_conflict_preview(conflict.upload_id, target)
 
@@ -167,7 +167,7 @@ def test_conflict_preview_fails_closed_for_malformed_processed_metadata(tmp_path
     manifest_path = tmp_path / package.folder_name / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["media"][0]["processed"] = processed
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(package, manifest)
     with pytest.raises(MediaNotFound):
         seam.get_conflict_preview(conflict.upload_id, target)
 
@@ -179,7 +179,7 @@ def test_bulk_overwrite_honors_the_target_that_was_previewed(tmp_path):
     manifest_path = tmp_path / package.folder_name / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["media"].append({**manifest["media"][0], "media_id": "selected-target"})
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(package, manifest)
     first = seam.start_upload("photo.jpg", "image/jpeg", 100)
     second = seam.start_upload("PHOTO.JPG", "image/jpeg", 100)
     seam.resolve_conflict(

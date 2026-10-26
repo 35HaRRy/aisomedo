@@ -1,0 +1,9 @@
+FROM node:22-bookworm
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci && npx playwright install --with-deps chromium \
+    && apt-get update && apt-get install -y --no-install-recommends libnss3-tools \
+    && rm -rf /var/lib/apt/lists/*
+COPY web/ ./
+# Only this throwaway container trusts this invocation's CA.
+CMD ["sh", "-ec", "cp /certs/ca.crt /usr/local/share/ca-certificates/dojo-acceptance.crt; update-ca-certificates; mkdir -p /root/.pki/nssdb; certutil -N --empty-password -d sql:/root/.pki/nssdb; certutil -A -d sql:/root/.pki/nssdb -n dojo-acceptance -t C,, -i /certs/ca.crt; npm run test:acceptance"]

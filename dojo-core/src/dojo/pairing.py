@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from dojo.adapters.clock import SystemClock
 from dojo.adapters.secrets import RandomSecretGenerator, Sha256Hasher
@@ -125,6 +125,10 @@ class DojoPairing:
 
     def authenticate_session(self, session_id: str) -> Client | None:
         return self._verify_credential(self._hasher.hash(session_id))
+
+    def authorization_deadline(self, client: Client) -> datetime | None:
+        """Deadline for this authentication; no credential leaves the facade."""
+        return self._clock.now() + IDLE_TTL if client.kind == "browser" else None
 
     def _verify_credential(self, credential_hash: str) -> Client | None:
         now = self._clock.now()

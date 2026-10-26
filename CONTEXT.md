@@ -23,3 +23,7 @@ _Avoid_: Onay İsteği
 **Tamamlanmış Paket**:
 A Dojo Paylaşım Paketi whose Reel publication has been confirmed by Instagram. Skipped, rescheduled, failed, or cancelled packages are not completed.
 _Avoid_: Atlanmış Paket, yayınlanmamış arşiv
+
+**Video Bölüm Seçimi**:
+The time intervals of a video retained in the montage. An empty selection means the entire video is retained, not that the video is excluded from the package.
+_Avoid_: Kesilecek bölümler, çıkarılacak bölgeler

@@ -118,6 +118,13 @@ class PackageChanged(DojoError):
     pass
 
 
+class PackageEditConflict(PackageChanged):
+    def __init__(self, conflicts: list[dict], content_revision: int = 0) -> None:
+        super().__init__("package edit groups changed; resolve before saving")
+        self.conflicts = conflicts
+        self.content_revision = content_revision
+
+
 class LegacyTrimConflict(DojoError):
     pass
 
@@ -177,6 +184,14 @@ class ReviewAlreadyHandled(DojoError):
 
 
 class ReviewNotFound(DojoError):
+    pass
+
+
+class OccurrenceNotFound(DojoError):
+    pass
+
+
+class OccurrenceChanged(DojoError):
     pass
 
 

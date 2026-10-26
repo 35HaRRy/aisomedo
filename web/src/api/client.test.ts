@@ -1,6 +1,21 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { api, request } from "./client";
 
+it("olderResponseCannotReplaceNewerState", async () => {
+  const replies: ((response: Response) => void)[] = [];
+  vi.stubGlobal("fetch", () => new Promise<Response>(resolve => { replies.push(resolve); }));
+  const older = request<{ caption: string }>("/api/packages/active/editor");
+  const rejection = expect(older).rejects.toMatchObject({ superseded: true });
+  const newer = request<{ caption: string }>("/api/packages/active/editor");
+  const response = (caption: string, version: number) => new Response(JSON.stringify({ caption }), {
+    headers: { "X-Resource-Key": "package:99", "X-Resource-Version": String(version) },
+  });
+  replies[1](response("new", 8));
+  expect(await newer).toEqual({ caption: "new" });
+  replies[0](response("old", 7));
+  await rejection;
+});
+
 afterEach(() => vi.useRealTimers());
 
 it("pairs a browser with cookies and no stored token", async () => {
@@ -89,6 +104,13 @@ it("retains only textual JSON error detail", async () => {
   await expect(request("/api/media/uploads")).rejects.toMatchObject({ status: 400, detail: "chunk checksum mismatch" });
 });
 
+it("preserves typed edit conflicts without retaining unrelated error bodies", async () => {
+  const conflict = { code: "edit_conflict", content_revision: 7,
+    conflicts: [{ key: "video:a", current: { ranges: [{ start: 0, end: 5 }] } }] };
+  vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ detail: conflict }), { status: 409 }));
+  await expect(request("/api/packages/active/edits")).rejects.toMatchObject({ status: 409, conflict });
+});
+
 it("sends conflict resolution with cookies, encoded ID and explicit overwrite confirmation", async () => {
   const fetcher = vi.fn(async (_url: string, _init: RequestInit) => new Response("{}"));
   vi.stubGlobal("fetch", fetcher);
@@ -108,10 +130,11 @@ it("sends package editing and history through session-aware encoded URLs", async
   vi.stubGlobal("fetch", fetcher);
   const folder = "Çalışma 1";
   const selections = { a: [{ start: 0, end: 5 }, { start: 10, end: 15 }] };
+  const expected = { package: { id: 12 }, content_revision: 7 };
   await api.packageEditor();
-  await api.saveSelections({ expected_folder_name: folder, selections });
-  await api.saveOrder(["b", "a"], folder);
-  await api.removeMedia("id/1", folder); await api.restoreMedia("id/1", folder);
+  await api.saveSelections({ expected_folder_name: folder, selections }, expected);
+  await api.saveOrder(["b", "a"], folder, expected);
+  await api.removeMedia("id/1", folder, expected); await api.restoreMedia("id/1", folder, expected);
   await api.completedPackages(); await api.completedPackage(folder);
   const encoded = encodeURIComponent(folder);
   expect(fetcher.mock.calls.map(call => call[0])).toEqual([
@@ -122,5 +145,6 @@ it("sends package editing and history through session-aware encoded URLs", async
   ]);
   expect(JSON.parse(String(fetcher.mock.calls[1][1].body))).toEqual({ expected_folder_name: folder, selections });
   expect(JSON.parse(String(fetcher.mock.calls[2][1].body))).toEqual({ expected_folder_name: folder, order: ["b", "a"] });
+  expect(fetcher.mock.calls[1][1].headers).toHaveProperty("If-Match", '"12:7"');
   expect(fetcher.mock.calls.every(call => call[1].credentials === "same-origin" && call[1].cache === "no-store")).toBe(true);
 });

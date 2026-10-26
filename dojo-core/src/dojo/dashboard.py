@@ -12,6 +12,7 @@ from dojo.model import Package, SchedulePlan, YayinZamani
 class NextSlot:
     kind: str
     due_at: datetime
+    occurrence_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class PendingAction:
     due_at: datetime
     package_folder: str | None
     state: Literal["review_ready", "empty_package", "preparing"]
+    review_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,8 @@ class PublishingDashboard:
     next_slot: NextSlot | None
     pending_actions: list[PendingAction]
     plan: SchedulePlan
+    manual_review_allowed: bool
+    next_slots: list[NextSlot]
 
 
 def next_slot(

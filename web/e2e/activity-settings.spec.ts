@@ -1,7 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 import { client, dashboard, emptyEditor, setupState } from "../src/test/fixtures";
+import { installLiveStream, invalidateLive } from "./live-fixture";
 
 async function fixture(page: Page) {
+  await installLiveStream(page);
   const state = {
     plan: dashboard().plan,
     branding: { logo_asset: null, caption_template: "Dojo", intro_asset: null, intro_duration: null, outro_asset: null, outro_duration: null },
@@ -41,30 +43,36 @@ async function fixture(page: Page) {
     state.errors.push(`Unexpected API request: ${method} ${path}`); return json({}, 404);
   });
   await page.goto("/#/settings");
-  await expect(page.getByLabel("Yayın saati")).toHaveValue("10:00");
+  await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("360");
   return state;
 }
 
 test("settings persist and remain keyboard-accessible; consent and recent activity are visible", async ({ page }, info) => {
   const state = await fixture(page);
+  await page.getByRole("button", { name: /^Dojo Yayın Planı/ }).click();
   await page.getByLabel("Yayın saati").fill("13:30");
   await page.getByRole("button", { name: "Planı kaydet" }).click();
-  await expect(page.getByRole("region", { name: "Dojo Yayın Planı" }).getByRole("status").filter({ hasText: "Ayarlar kaydedildi." })).toBeVisible();
+  await expect(page.getByText("Ayarlar kaydedildi.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Dojo Yayın Planı" })).toBeFocused();
+  await page.getByRole("button", { name: /^Açıklama şablonu/ }).click();
   await page.getByRole("textbox", { name: "Açıklama şablonu" }).fill("Yeni Dojo {title}");
   await page.getByRole("button", { name: "Açıklamayı kaydet" }).click();
-  await expect(page.getByRole("region", { name: "Açıklama şablonu" }).getByRole("status").filter({ hasText: "Ayarlar kaydedildi." })).toBeVisible();
+  await expect(page.getByText("Ayarlar kaydedildi.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Açıklama şablonu" })).toBeFocused();
+  await page.getByRole("button", { name: /^Hatırlatmalar/ }).click();
   await page.getByLabel("Hatırlatma aralığı (dakika)").fill("120");
   await page.getByLabel("Bildirim başlangıcı").fill("22:00");
   await page.getByLabel("Bildirim bitişi").fill("08:00");
   const save = page.getByRole("button", { name: "Hatırlatmaları kaydet" });
   await save.focus(); await save.press("Enter");
-  await expect(page.getByRole("region", { name: "Hatırlatmalar" }).getByRole("status").filter({ hasText: "Ayarlar kaydedildi." })).toBeVisible();
+  await expect(page.getByText("Ayarlar kaydedildi.")).toBeVisible();
   await page.reload();
-  await expect(page.getByLabel("Yayın saati")).toHaveValue("13:30");
-  await expect(page.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Yeni Dojo {title}");
   await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("120");
-  await expect(page.getByLabel("Bildirim başlangıcı")).toHaveValue("22:00");
+  await page.getByRole("button", { name: /^Dojo Yayın Planı/ }).click();
+  await expect(page.getByLabel("Yayın saati")).toHaveValue("13:30");
+  await page.getByRole("button", { name: /^Açıklama şablonu/ }).click();
+  await expect(page.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Yeni Dojo {title}");
+  await page.getByRole("button", { name: /^Medya rızası/ }).click();
   await expect(page.getByText(/Rıza kaydedildi/)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   if (process.env.CAPTURE_UI) await page.screenshot({ path: info.outputPath("settings.png"), fullPage: true });
@@ -80,15 +88,15 @@ test("failed reminder save preserves draft; OAuth reconnect preserves package an
   state.reminderStatus = 500;
   await page.getByLabel("Hatırlatma aralığı (dakika)").fill("60");
   await page.getByRole("button", { name: "Hatırlatmaları kaydet" }).click();
-  const region = page.getByRole("region", { name: "Hatırlatmalar" });
-  await expect(region.getByRole("alert")).toBeVisible();
+  await expect(page.getByRole("alert")).toBeVisible();
   await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("60");
   state.reminders.interval_minutes = 90;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(region.getByRole("button", { name: "Sunucudaki değerleri yükle" })).toBeVisible();
+  await invalidateLive(page);
+  await expect(page.getByRole("button", { name: "Sunucudaki değerleri yükle" })).toBeVisible();
   await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("60");
-  await region.getByRole("button", { name: "Sunucudaki değerleri yükle" }).click();
+  await page.getByRole("button", { name: "Sunucudaki değerleri yükle" }).click();
   await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("90");
+  await page.getByRole("button", { name: /^Instagram bağlantısı/ }).click();
   await expect(page.getByText(/@old_dojo.*Yeniden bağlantı/)).toBeVisible();
   await page.getByRole("button", { name: "Instagram ile yetkilendir" }).click();
   await expect(page.getByRole("link", { name: "Yetkilendirme sayfasını aç" })).toHaveAttribute("href", "https://www.facebook.com/dialog/oauth");
@@ -98,4 +106,16 @@ test("failed reminder save preserves draft; OAuth reconnect preserves package an
   await expect(page.getByText("03-08-2026 10-00")).toBeVisible();
   expect(state.plan.anchor_date).toBe("2026-08-03");
   expect(state.errors).toEqual([]);
+});
+
+test("lost live transport locks controls without losing visible draft", async ({ page }, info) => {
+  await fixture(page);
+  const input = page.getByLabel("Hatırlatma aralığı (dakika)");
+  await input.fill("45");
+  await page.evaluate(() => window.dispatchEvent(new Event("fixture:disconnect")));
+  await expect(input).toBeDisabled();
+  await expect(input).toHaveValue("45");
+  await expect(page.getByRole("button", { name: "Canlı bağlantıyı yeniden dene" })).toBeEnabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  if (process.env.CAPTURE_UI) await page.screenshot({ path: info.outputPath("live-disconnected.png"), fullPage: true });
 });

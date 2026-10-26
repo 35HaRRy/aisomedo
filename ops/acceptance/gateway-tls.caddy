@@ -1,0 +1,8 @@
+{
+    auto_https off
+    admin off
+}
+https://dojo.acceptance.test {
+    tls /certs/server.crt /certs/server.key
+    reverse_proxy gateway:80
+}

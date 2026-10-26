@@ -21,7 +21,7 @@ export function dashboard(): DashboardOut {
 }
 
 export function emptyEditor(): ActiveEditorOut {
-  return { package: dashboard().package!, render_stale: true, media: [], montage: {
+  return { content_revision: 1, view_revision: 1, package: dashboard().package!, render_stale: true, media: [], montage: {
     order: [], trims: {}, selections: {}, clips: [], combined_duration: 0,
     max_duration_seconds: 90, over_limit: false, required_action: null,
     card_duration: 0, duration_complete: true,

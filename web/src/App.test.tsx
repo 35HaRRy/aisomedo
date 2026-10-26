@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { client, dashboard, emptyEditor, setupState } from "./test/fixtures";
+import { invalidateLive, liveResponse } from "./test/live";
+import { tr } from "./i18n";
 
 let paired = true;
 let snapshot = dashboard();
@@ -18,6 +20,7 @@ beforeEach(() => {
   setup = setupState(); setupStatus = 200;
   window.location.hash = "#/dashboard";
   vi.stubGlobal("fetch", async (url: string) => {
+    if (url === "/api/events") return liveResponse();
     if (url.endsWith("/compat")) return json({ api_version: "0.1.0" });
     if (url.endsWith("/me")) return paired ? json(client) : json({}, 401);
     if (url.endsWith("/validate")) { if (pairingStatus === 200) paired = true; return json({}, pairingStatus); }
@@ -51,7 +54,7 @@ it("opens onboarding directly without dashboard data and reopens from settings",
   window.location.hash = "#/onboarding"; dashboardStatus = 500;
   render(<App />);
   await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
-  expect(screen.getAllByRole("navigation")[0].querySelectorAll("a")).toHaveLength(4);
+   expect(screen.getAllByRole("navigation")[0].querySelectorAll("a")).toHaveLength(5);
 });
 
 it("shows initial setup error without inventing completion or redirect", async () => {
@@ -64,26 +67,121 @@ it("shows initial setup error without inventing completion or redirect", async (
   await screen.findByRole("heading", { name: "Dojo logosu" });
 });
 
-it("reopens from Settings and resumes after reload", async () => {
+it("hides setup access in Settings once setup is complete", async () => {
   window.location.hash = "#/settings";
-  const view = render(<App />);
-  fireEvent.click(await screen.findByRole("link", { name: "Kurulumu aç" }));
-  await screen.findByRole("heading", { name: "Kurulum tamamlandı" });
-  view.unmount(); setup = setupState("consent");
   render(<App />);
-  await screen.findByRole("heading", { name: "Medya rızası" });
+  await screen.findByRole("heading", { name: "Ayarlar" });
+  expect(screen.queryByRole("link", { name: "Kurulumu aç" })).not.toBeInTheDocument();
+});
+
+it("redirects incomplete setup away from Settings", async () => {
+  setup = setupState("instagram"); window.location.hash = "#/settings";
+  render(<App />);
+  await screen.findByRole("heading", { name: "Instagram bağlantısı" });
+  expect(window.location.hash).toBe("#/onboarding");
 });
 afterEach(() => vi.useRealTimers());
 
-it("shows four areas and all five dashboard categories", async () => {
+it("does not show routine sync notices in the shell when returning to the tab", async () => {
+  render(<App />);
+  await screen.findByText("03-08-2026 10-00");
+  await waitFor(() => expect(screen.getByRole("group", { name: tr.liveWorkspace })).not.toBeDisabled());
+  let hidden = false, release!: () => void;
+  vi.spyOn(document, "hidden", "get").mockImplementation(() => hidden);
+  const fetcher = globalThis.fetch;
+  vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+    if (url === "/api/dashboard") await new Promise<void>(resolve => { release = resolve; });
+    return fetcher(url, init);
+  });
+  await act(async () => { hidden = true; document.dispatchEvent(new Event("visibilitychange")); });
+  await act(async () => { hidden = false; document.dispatchEvent(new Event("visibilitychange")); });
+  await waitFor(() => expect(release).toBeTypeOf("function"));
+  expect(screen.getByRole("group", { name: tr.liveWorkspace })).toBeDisabled();
+  expect(screen.queryAllByText(tr.liveState.connecting)).toHaveLength(0);
+  expect(screen.queryAllByText(tr.liveState.syncing)).toHaveLength(0);
+  expect(screen.queryAllByText(tr.liveState.disconnected)).toHaveLength(0);
+  await act(async () => release());
+  await waitFor(() => expect(screen.getByRole("group", { name: tr.liveWorkspace })).not.toBeDisabled());
+});
+
+it("shows completed packages in navigation and hides empty pending actions", async () => {
   render(<App />);
   await screen.findByText("03-08-2026 10-00");
   const nav = screen.getByRole("navigation");
-  for (const name of ["Kontrol Paneli", "Güncel Paket", "Etkinlik", "Ayarlar"])
+  for (const name of ["Kontrol Paneli", "Güncel Paket", "Tamamlanmış paketler", "Etkinlik", "Ayarlar"])
     expect(within(nav).getByRole("link", { name })).toBeInTheDocument();
-  for (const name of ["Dojo Paylaşım Paketi", "Sonraki Yayın Zamanı", "Bekleyen işlem", "Instagram", "Worker"])
+  for (const name of ["Dojo Paylaşım Paketi", "Sonraki Yayın Zamanı", "Instagram", "Worker"])
     expect(screen.getByText(name)).toBeInTheDocument();
   expect(screen.getByText(/17 Ağustos 2026.*10:00/)).toBeInTheDocument();
+  expect(screen.queryByText(tr.live)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Son güncelleme:/)).not.toBeInTheDocument();
+  expect(screen.getByRole("main").firstElementChild).toBe(screen.getByRole("heading", { name: tr.dashboard }).closest("header"));
+  expect(screen.queryByRole("heading", { name: "Bekleyen işlem" })).not.toBeInTheDocument();
+  fireEvent.click(within(nav).getByRole("link", { name: "Tamamlanmış paketler" }));
+  await screen.findByText("Henüz tamamlanmış paket yok.");
+  expect(window.location.hash).toBe("#/completed");
+  expect(screen.getByRole("heading", { level: 1, name: "Tamamlanmış paketler" })).toBeInTheDocument();
+});
+
+it("package panels collapse independently", async () => {
+  window.location.hash = "#/package";
+  snapshot.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 1, state: "review_ready", package_folder: snapshot.package!.folder_name, due_at: snapshot.generated_at }];
+  render(<App />);
+  await screen.findByRole("heading", { name: "Aktif paket medyası" });
+  expect(screen.queryByRole("button", { name: "Tamamlanmış paketler" })).not.toBeInTheDocument();
+  const panel = screen.getByRole("region", { name: "Aktif paket medyası" });
+  fireEvent.click(within(panel).getByRole("button", { name: "Aktif paket medyası panelini kapat" }));
+  expect(within(panel).queryByRole("button", { name: "Paketi temizle" })).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Bekleyen işlem" })).toBeVisible();
+  fireEvent.click(within(panel).getByRole("button", { name: "Aktif paket medyası panelini aç" }));
+  expect(within(panel).getByRole("button", { name: "Paketi temizle" })).toBeVisible();
+});
+
+it("orders package panels and starts uploads collapsed", async () => {
+  window.location.hash = "#/package";
+  snapshot.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 1, state: "review_ready", package_folder: snapshot.package!.folder_name, due_at: snapshot.generated_at }];
+  render(<App />);
+  await screen.findByRole("heading", { name: "Aktif paket medyası" });
+  const titles = Array.from(document.querySelectorAll("main section[aria-labelledby]"))
+    .map(panel => panel.querySelector("h2")?.textContent ?? "");
+  expect(titles).toEqual([
+    snapshot.package!.folder_name,
+    "Fotoğraf ve video yükle",
+    "Aktif paket medyası",
+    expect.stringContaining("Kaydedilmiş Reel önizlemesi"),
+    "Bekleyen işlem",
+  ]);
+  expect(screen.getByRole("button", { name: "Fotoğraf ve video yükle panelini aç" })).toHaveAttribute("aria-expanded", "false");
+});
+
+it("reads dashboard and editor only on the pages that consume them", async () => {
+  window.location.hash = "#/activity";
+  const fetcher = vi.fn(globalThis.fetch); vi.stubGlobal("fetch", fetcher);
+  render(<App />);
+  await screen.findByText("Etkinlik kaydedildi");
+  await waitFor(() => expect(screen.getByRole("group", { name: tr.liveWorkspace })).not.toBeDisabled());
+  const reads = (url: string) => fetcher.mock.calls.filter(([path]) => path === url).length;
+  expect(reads("/api/dashboard")).toBe(0);
+  expect(reads("/api/packages/active/editor")).toBe(0);
+  expect(reads("/api/setup")).toBe(1); // Bootstrap still chooses the correct landing page.
+  await act(async () => invalidateLive());
+  expect(reads("/api/dashboard")).toBe(0);
+  expect(reads("/api/packages/active/editor")).toBe(0);
+  expect(reads("/api/setup")).toBe(1);
+  fireEvent.click(screen.getByRole("link", { name: "Kontrol Paneli" }));
+  await screen.findByText("03-08-2026 10-00");
+  expect(reads("/api/dashboard")).toBe(1);
+  expect(reads("/api/packages/active/editor")).toBe(0);
+  fireEvent.click(screen.getByRole("link", { name: "Güncel Paket" }));
+  await waitFor(() => expect(reads("/api/packages/active/editor")).toBe(1));
+  fireEvent.click(screen.getByRole("link", { name: "Etkinlik" }));
+  await screen.findByText("Etkinlik kaydedildi");
+  const dashboardReads = reads("/api/dashboard");
+  await act(async () => invalidateLive());
+  expect(reads("/api/dashboard")).toBe(dashboardReads);
+  expect(reads("/api/packages/active/editor")).toBe(1);
+  fireEvent.click(screen.getByRole("link", { name: "Güncel Paket" }));
+  await waitFor(() => expect(reads("/api/packages/active/editor")).toBe(2));
 });
 
 it("pairs a browser and explains invalid and throttled codes", async () => {
@@ -106,14 +204,14 @@ it("pairs a browser and explains invalid and throttled codes", async () => {
 it("refreshes review arrivals and other-device resolution without reload", async () => {
   vi.useFakeTimers();
   await act(async () => { render(<App />); });
-  expect(screen.getByText("Bekleyen işlem yok")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Bekleyen işlem" })).not.toBeInTheDocument();
   snapshot.pending_actions = [{ occurrence_id: 1, review_id: 2, version: 1, due_at: snapshot.generated_at, package_folder: "03-08-2026 10-00", state: "review_ready" }];
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   const link = screen.getByRole("link", { name: "İnceleme özeti" });
   expect(link).toHaveAttribute("href", "#/package?review=2");
   await act(async () => { window.location.hash = "#/package?review=2"; window.dispatchEvent(new Event("hashchange")); });
   snapshot.pending_actions = [];
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("Bu inceleme başka bir cihazda tamamlanmış veya artık mevcut değil.")).toBeInTheDocument();
 });
 
@@ -122,11 +220,11 @@ it("keeps old data visibly stale on error and clears it on revoked session", asy
   await act(async () => { render(<App />); });
   expect(screen.getByText("03-08-2026 10-00")).toBeInTheDocument();
   dashboardStatus = 500;
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("03-08-2026 10-00")).toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("Son bilgiler gösteriliyor");
   dashboardStatus = 401;
-  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.queryByText("03-08-2026 10-00")).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Tarayıcıyı eşleştir" })).toBeInTheDocument();
 });
@@ -147,7 +245,7 @@ it("activity uses safe translated fallback and independent errors", async () => 
   await screen.findByText("Etkinlik kaydedildi");
   expect(screen.queryByText("future.event")).not.toBeInTheDocument();
   vi.useFakeTimers(); activityStatus = 500;
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("Etkinlik kaydedildi")).toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("Son bilgiler gösteriliyor");
 });
@@ -157,7 +255,7 @@ it("distinguishes empty package and publishing states", async () => {
   render(<App />);
   await screen.findByText("Henüz aktif paket yok");
   vi.useFakeTimers(); snapshot = dashboard(); snapshot.package!.status = "publishing";
-  await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByText("Yayınlanıyor")).toBeInTheDocument();
 });
 

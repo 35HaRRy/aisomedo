@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 
+import pytest
 from dojo import DojoPublishing, InMemoryStore, Job
 from dojo.adapters.stubs import StubMediaProcessor
+from dojo.testing import FakeClock
 from worker.main import run_tick
 
 
@@ -66,19 +69,40 @@ def test_run_tick_sweeps_when_claims_exhausted() -> None:
 
 
 class RenderSpyPublishing(SpyPublishing):
+    kind = "render"
+
     def claim_next_job(self) -> Job | None:
         return Job(
             id=2,
             job_id="r-1",
             upload_id=None,
-            kind="render",
+            kind=self.kind,
             status="queued",
             payload={"package": "pkg", "digest": "d-1"},
             created_at=datetime.now(),
         )
 
 
-def test_run_tick_processes_render_job() -> None:
+@pytest.mark.parametrize("kind", ["render", "section_preview", "thumbnail"])
+def test_run_tick_processes_render_and_preview_jobs(kind) -> None:
     spy = RenderSpyPublishing()
+    spy.kind = kind
     run_tick(spy)
     assert spy.processed_jobs == ["r-1"]
+
+
+def test_worker_finalization_emits_package_and_upload_versions(tmp_path) -> None:
+    store = InMemoryStore()
+    publishing = DojoPublishing(packages=store, audit=store, uploads=store, jobs=store,
+                                settings=store, media_root=tmp_path, clock=FakeClock(),
+                                media=StubMediaProcessor())
+    upload = publishing.start_upload("photo.jpg", "image/jpeg", 4)
+    publishing.append_upload_range(upload.upload_id, 0, 4, hashlib.sha256(b"data").hexdigest(),
+                                   b"data")
+    publishing.complete_upload(upload.upload_id)
+    package = publishing.get_active_package()
+    before = store.get_resource_version(f"package:{package.id}")
+    run_tick(publishing)
+    assert publishing.get_upload_status(upload.upload_id).status == "finalized"
+    assert store.get_resource_version(f"package:{package.id}") > before
+    assert store.get_resource_version(f"upload:{upload.upload_id}") > 0

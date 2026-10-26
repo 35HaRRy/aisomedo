@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { SessionProvider } from "../session";
+import { invalidateLive } from "../test/live";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { BrandingStep } from "./BrandingStep";
@@ -28,6 +29,7 @@ it("uploads and installs only logo with authenticated preview", async () => {
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
   expect(document.body.textContent).not.toContain("legacy/logo.png");
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["image"], "logo.png", { type: "image/png" })] } });
+  expect(screen.getByRole("img", { name: "Seçilen logo önizlemesi" })).toHaveAttribute("src", expect.stringMatching(/^blob:/));
   fireEvent.click(screen.getByRole("button", { name: "Logoyu kaydet" }));
   await waitFor(() => expect(sent).toHaveBeenCalledWith({ logo_asset: "branding/assets/new.png" }));
 });
@@ -38,7 +40,7 @@ it("patches only caption, rejects whitespace and preserves dirty text", async ()
   fireEvent.click(screen.getByRole("button", { name: "Açıklamayı kaydet" }));
   await screen.findByRole("alert"); expect(sent).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText("Açıklama şablonu"), { target: { value: "Draft" } }); update();
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("Draft");
   fireEvent.click(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" }));
   expect(screen.getByLabelText("Açıklama şablonu")).toHaveValue("Fresh");
@@ -58,7 +60,7 @@ it("keeps old defaults after backend dimension rejection", async () => {
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["image"], "logo.png", { type: "image/png" })] } });
   fireEvent.click(screen.getByRole("button", { name: "Logoyu kaydet" }));
   await screen.findByRole("alert"); expect(sent).not.toHaveBeenCalled(); expect(saved).not.toHaveBeenCalled();
-  expect(screen.getByText(/Logo tanımlı/)).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Seçilen logo önizlemesi" })).toBeInTheDocument();
 });
 it("late upload cannot install after leaving step", async () => {
   const { leave, sent } = mount("logo");
@@ -75,7 +77,7 @@ it("detects image-only server change without replacing selected logo", async () 
   await screen.findByText(/Logo tanımlı/);
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["x"], "draft.png", { type: "image/png" })] } });
   updateLogo();
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByRole("button", { name: "Logoyu kaydet" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" }));
   expect(screen.getByRole("button", { name: "Logoyu kaydet" })).toBeDisabled();

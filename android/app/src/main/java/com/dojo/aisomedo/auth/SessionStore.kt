@@ -2,29 +2,38 @@ package com.dojo.aisomedo.auth
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.KeyStore
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class CredentialUnavailable : Exception("Credential storage unavailable")
+class SessionCredential(val bindingId: String, val token: String)
 
 class SessionStore(private val directory: File, private val keyProvider: () -> SecretKey) {
     private val originFile = File(directory, "server.txt")
     private val tokenFile = File(directory, "credential.bin")
+    private val changes = MutableStateFlow(0L)
+    val revision = changes.asStateFlow()
     val origin: String? get() = originFile.takeIf { it.exists() }?.readText()?.takeIf { it.isNotBlank() }
 
     @Synchronized fun setOrigin(value: String) {
         if (origin != value) clearToken()
         writeAtomically(originFile, value.toByteArray(Charsets.UTF_8))
+        changes.value++
     }
 
-    @Synchronized fun readToken(origin: String): String? {
+    @Synchronized fun readToken(origin: String): String? = readSession(origin)?.token
+
+    @Synchronized fun readSession(origin: String): SessionCredential? {
         if (origin != this.origin || !tokenFile.exists()) return null
         return try {
             val bytes = tokenFile.readBytes()
@@ -32,7 +41,8 @@ class SessionStore(private val directory: File, private val keyProvider: () -> S
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, keyProvider(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
             cipher.updateAAD(origin.toByteArray(Charsets.UTF_8))
-            cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8).also { require(it.isNotBlank()) }
+            val token = cipher.doFinal(bytes.copyOfRange(12, bytes.size)).toString(Charsets.UTF_8).also { require(it.isNotBlank()) }
+            SessionCredential(MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }, token)
         } catch (_: Exception) { throw CredentialUnavailable() }
     }
 
@@ -43,11 +53,20 @@ class SessionStore(private val directory: File, private val keyProvider: () -> S
             cipher.init(Cipher.ENCRYPT_MODE, keyProvider())
             cipher.updateAAD(origin.toByteArray(Charsets.UTF_8))
             writeAtomically(tokenFile, cipher.iv + cipher.doFinal(token.toByteArray(Charsets.UTF_8)))
+            changes.value++
         } catch (_: Exception) { throw CredentialUnavailable() }
     }
 
     @Synchronized fun clearToken() {
-        if (tokenFile.exists() && !tokenFile.delete()) throw CredentialUnavailable()
+        if (tokenFile.exists()) {
+            if (!tokenFile.delete()) throw CredentialUnavailable()
+            changes.value++
+        }
+    }
+    @Synchronized fun clearTokenIfBinding(origin: String, bindingId: String): Boolean {
+        if (readSession(origin)?.bindingId != bindingId) return false
+        clearToken()
+        return true
     }
 
     private fun writeAtomically(file: File, bytes: ByteArray) {

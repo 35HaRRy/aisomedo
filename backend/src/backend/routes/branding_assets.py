@@ -45,11 +45,11 @@ async def upload_branding_image(
     data = bytearray()
     async for chunk in request.stream():
         if len(data) + len(chunk) > MAX_BRANDING_BYTES:
-            raise HTTPException(status_code=413, detail="branding image exceeds 10 MiB")
+            raise HTTPException(status_code=413, detail="branding media exceeds 10 MiB")
         data.extend(chunk)
     try:
         asset = await run_in_threadpool(
-            BrandingAssets(publishing.media_root).save_image, bytes(data)
+            BrandingAssets(publishing.media_root).save_media, bytes(data)
         )
     except BrandingAssetTooLarge as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
@@ -72,6 +72,8 @@ def preview_branding_image(
         raise HTTPException(status_code=404, detail="branding asset not found") from exc
     return FileResponse(
         path,
-        media_type="image/png" if path.suffix == ".png" else "image/jpeg",
+        media_type={".png": "image/png", ".jpg": "image/jpeg", ".mp4": "video/mp4",
+                    ".mov": "video/quicktime", ".webm": "video/webm", ".mkv": "video/x-matroska",
+                    ".avi": "video/x-msvideo"}[path.suffix],
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )

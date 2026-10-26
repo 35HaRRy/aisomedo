@@ -4,13 +4,14 @@ import { FRAME_SECONDS, type VideoRange } from "./ranges";
 export interface RangeTimelineProps { duration: number; ranges: VideoRange[]; playhead: number; disabled: boolean; onChange(ranges: VideoRange[]): void; onSeek(seconds: number): void; }
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
 const precise = (value: number) => Math.round(value * 1000) / 1000;
+const bounded = (value: number, low: number, high: number) => value <= low ? low : value >= high ? high : clamp(precise(value), low, high);
 type Gesture = { pointer: number; x: number; start: number; before: VideoRange[]; index?: number; bound?: "start" | "end"; moved: boolean; low: number; high: number };
 export function RangeTimeline({ duration, ranges, playhead, disabled, onChange, onSeek }: RangeTimelineProps) {
   const track = useRef<HTMLDivElement>(null), gesture = useRef<Gesture | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const point = (x: number) => {
     const rect = track.current!.getBoundingClientRect();
-    return precise(clamp((x - rect.left) / (rect.width || 1) * duration, 0, duration));
+    return bounded((x - rect.left) / (rect.width || 1) * duration, 0, duration);
   };
   const begin = (event: ReactPointerEvent, index?: number, bound?: "start" | "end") => {
     event.stopPropagation();
@@ -35,7 +36,7 @@ export function RangeTimeline({ duration, ranges, playhead, disabled, onChange, 
     if (!current || current.pointer !== event.pointerId || disabled) return;
     if (Math.abs(event.clientX - current.x) >= 6) current.moved = true;
     if (!current.moved) return;
-    const time = precise(clamp(point(event.clientX), current.low, current.high));
+    const time = bounded(point(event.clientX), current.low, current.high);
     if (current.index !== undefined && current.bound) {
       onChange(current.before.map((r, index) => index === current.index ? { ...r, [current.bound!]: time } : r));
     } else {
@@ -64,7 +65,7 @@ export function RangeTimeline({ duration, ranges, playhead, disabled, onChange, 
     const high = bound === "end" ? ranges[index + 1]?.start ?? duration : ranges[index].end - FRAME_SECONDS;
     const delta = ["ArrowLeft", "ArrowDown"].includes(event.key) ? -1 : 1;
     const value = event.key === "Home" ? low : event.key === "End" ? high : ranges[index][bound] + delta * (event.shiftKey ? 1 : 0.1);
-    onChange(ranges.map((range, i) => i === index ? { ...range, [bound]: precise(clamp(value, low, high)) } : range));
+    onChange(ranges.map((range, i) => i === index ? { ...range, [bound]: bounded(value, low, high) } : range));
   };
   return <div className="range-timeline" onDragStart={event => { event.preventDefault(); event.stopPropagation(); }}>
     <div className="timeline-ruler" aria-hidden="true">{[0, 1, 2, 3, 4].map(i => <span key={i}>{(duration * i / 4).toFixed(1)} s</span>)}</div>

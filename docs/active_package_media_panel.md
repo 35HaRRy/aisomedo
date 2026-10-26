@@ -1,0 +1,129 @@
+## Confirmed decisions
+
+Shared requirements understanding, written technical specification, and implementation plan approved by the user. Native execution selected on branch `feature/active-package`.
+
+- Each photo card has its own save and discard icon buttons for its display duration. Changes are not saved automatically.
+- Saving or discarding one media card affects only that card; unsaved changes in other cards remain untouched.
+- Unsaved edits do not invalidate or remove the saved Reel preview. While unsaved edits exist, show a warning that the preview does not include them.
+- A persisted change to active package media invalidates and removes the saved Reel preview. Show `Kaydedilmiş montajı henüz render edilmedi.` until a new render is requested manually or automatically from Yayın İncelemesi for a due Yayın Zamanı. Güncel Paket never automatically requests a Reel, even when publication is due.
+- Saving a video with no selected sections includes the entire video in the montage. Hide its section preview and keep the source video available. Excluding a video requires the separate remove-media action.
+- When a newer video-section save supersedes an in-flight section-preview job for the same video, cancel the older job and queue a new job for the latest saved selection. Jobs for other videos are unaffected. A late result from a superseded job must never become the displayed preview, even if cancellation races with completion.
+- Explicit Reel rendering is allowed while other cards have unsaved edits, subject to validation of the saved montage. Render only persisted content; do not save, discard, or include drafts. Keep the warning that the preview does not include unsaved edits.
+- Validate a card save using that card's proposed values and every other card's persisted values, including the montage duration limit. Invalid or over-limit drafts in other cards do not block this save and remain untouched.
+- Section-preview generation failure does not roll back saved sections or restore the old preview. Show an error and a card-local retry icon. Retry uses the latest persisted selection, never subsequent unsaved edits.
+- Concatenate selected sections in chronological source-video order, regardless of selection order. The section preview and the Reel use the same saved sections in the same order.
+- Closing a video editor only collapses it; unsaved edits remain intact. The collapsed card shows an unsaved-changes indicator, and reopening restores the same draft. Discarding requires the card-local discard action.
+- Clearing all sections in an unsaved draft keeps the last saved section preview visible with a warning that it does not reflect unsaved edits. Only saving the empty selection removes that preview; the whole video then participates in the montage.
+- Collapsed photo and video cards share a fixed height. An expanded video editor spans the entire row and grows with its content; its section list and video players are not constrained to the collapsed height.
+- The saved Reel panel title displays the actual duration of the displayed rendered file, not a draft or calculated montage duration. When no render exists, show "Henüz render edilmedi" instead of a duration.
+- Removing media with unsaved edits requires confirmation. On successful removal, discard only that card's draft, cancel any section-preview job for that media, and exclude it from the montage. Other cards' drafts remain intact. Restoring the media uses its last persisted values, not the discarded draft.
+- Only while Yayın İncelemesi is open, automatically request the latest persisted montage when its Yayın Zamanı is due and no current ready render exists. Reuse an existing current render or equivalent active job. Scheduler ticks do not enqueue Reel renders; they still maintain due occurrences and create reviews from ready renders. Failed renders require explicit retry. Unsaved drafts are never included. Publication still requires user approval. This supersedes the earlier scheduler-driven automatic-render decision.
+
+## Approved technical design sections
+
+### 1. Persistence and state boundaries
+
+- Extend the existing edit-group API and durable job queue; do not introduce a separate preview service.
+- A card save submits only its `video:<id>` or `photo:<id>` edit group, retaining existing conflict detection and validating the resulting persisted montage.
+- Persist a changed video selection, invalidate its previous section preview, and enqueue its replacement in one command transaction. Empty selections enqueue no section-preview job.
+- Identify preview work independently per video. Unrelated card saves and montage reordering do not cancel that video's preview work.
+- Treat preview progress and output metadata as derived view state, not package content. Such updates must not invalidate the Reel or cause content-edit conflicts.
+- Extend Android's draft handling to cover photo display durations as well as video sections.
+
+### 2. Worker execution and cancellation
+
+- Add a `section_preview` job kind to the existing durable queue, bound to one video and its persisted selection.
+- Superseding saves cancel old jobs. Queued cancelled jobs are not claimed; running cancelled jobs must terminate their FFmpeg subprocess, not merely suppress the result.
+- Check cancellation periodically without holding the package lock during rendering.
+- Stage output in a job-private location and verify the current job identity and media eligibility immediately before publishing the result.
+- Cancellation is not a failure. Clean up job-private temporary files without affecting other media jobs.
+- Retry targets the latest saved selection and reuses an active equivalent job rather than enqueueing duplicates.
+- Immediate generation means enqueueing during the save transaction; execution depends on available worker capacity.
+
+### 3. Media access and client presentation
+
+- Expose original media, video thumbnail, and section preview separately through existing authenticated private-media access; do not introduce public URLs.
+- The fullscreen viewer plays the uploaded original video. Unsupported formats produce an explicit playback error rather than silently substituting another file.
+- Place the original video above the saved section preview in an expanded editor.
+- A section preview concatenates selected sections without intro, outro, or logo. It shares section ordering and time validation with Reel rendering.
+- Generate a reusable thumbnail in the worker; listing cards must not download every full video.
+- Reuse existing live-state invalidation and snapshot refresh for preview progress; add no separate client polling loop.
+- Provide accessible icon names, web tooltips, Android long-press explanations, and correct fullscreen focus and Escape/back behavior.
+
+### 4. Verification and scope
+
+- Use existing test infrastructure without adding a new framework.
+- Verify card-local save/discard isolation, including unrelated invalid drafts and persisted-montage limits.
+- Test actual FFmpeg subprocess cancellation, stale-result fencing, and independent video work.
+- Verify real encoded section order, cuts, audio, and duration with a distinguishable source video.
+- Cover exact timeline start/end selection and rounding bounds on both clients.
+- Verify that drafts retain the Reel, saved changes invalidate it, ordinary editing does not automatically regenerate it, and a due Yayın Zamanı does automatically request a current render for review.
+- Verify both clients' layout, original-media viewer, photo-duration editing, section-preview states, and retry behavior.
+- Exclude unrelated refactoring, new services, and a generic job-management subsystem.
+
+## Technical design workflow
+
+- [x] Inspect current package editing, render, worker, and client flows.
+- [x] Confirm the shared product requirements.
+- [x] Resolve contradictions discovered in the current implementation.
+- [x] Compare technical approaches and approve the sectioned design.
+- [x] Write and self-review the English technical specification.
+- [x] Obtain user review of the written specification.
+- [x] Write the implementation plan after specification approval.
+- [x] Obtain implementation plan approval and execution-method selection.
+
+Written specification: `docs/superpowers/specs/2026-10-24-active-package-media-panel-design.md`.
+
+Implementation plan: `docs/superpowers/plans/2026-10-24-active-package-media-panel.md`.
+
+## Implementation and acceptance status
+
+- [x] Implement server preview jobs, cancellation, private artifacts, and due-only Reel generation.
+- [x] Implement web and Android card-local editing, media viewers, timelines, and separate saved-Reel panels.
+- [x] Verify Python regression suites with PostgreSQL and real FFmpeg coverage.
+- [x] Verify web unit tests, production build, and desktop/mobile browser workflows.
+- [x] Verify Android unit tests, application build, lint, and instrumentation compilation.
+- [ ] Execute Android connected-device UI/playback/layout acceptance: no emulator or device is connected.
+- [x] Finish independent whole-branch review and resolve blocking findings with failing-then-passing regression tests.
+
+Implementation is on `feature/active-package`. Full acceptance is not complete while connected-device checks remain blocked. No push or merge has been performed.
+
+Final automated verification: core **921 passed, 2 skipped**; backend **305 passed**; worker **143 passed**; web **396 passed**; browser **53 passed, 1 skipped**; Android **307 unit tests passed**, application build/lint/instrumentation compilation passed. The two core skips require Windows symlink privileges; the browser skip is native mouse dragging on mobile, where button reordering is covered. Real PostgreSQL, FFmpeg encoding, and subprocess cancellation checks executed.
+
+Independent review found three Important issues, now fixed: captured Android cleanup remains retryable without an active editor and cannot cross package/session identity; confirmed lost removals reconcile only the target draft without replay; obsolete generated previews are pruned after commit, with locked-file retry through existing worker maintenance. Failed transactions preserve the prior output, and originals/current previews/immutable review artifacts remain intact.
+
+Deferred Minor: Android photo-conflict UI currently displays an unavailable-package message instead of the server's photo-duration value. Conflict detection and explicit resolution remain enforced; the misleading server-value description still needs correction.
+
+## Original requirements
+
+Android ve web uygulamasında "Güncel Paket" sayfasında "Aktif paket medyası" panelinde:
+	*	"Paketi yenile" ve "Paketi temizle" butonları olduğu konumda ikon butona dönüşmeli.
+	*	"Bölümleri kaydet" ve "Kaydedilmemiş değişiklikleri geri al" butonları sadece tek bir video özelinde çalışmalı ve her bir video kartı içerisinde o karta özel olmalı.
+	*	"Kaydedilecek değişiklik yok." metni kaldırılmalı.
+	*	Yüklü görsellerin kartları
+		*	Yüklü görsellerin listesi "Aktif paket medyası" panelinin hemen başında olmalı.
+		*	Kartların yükseklikleri sabit olmalı.
+		*	Kart başlığındaki görselin dosya ismi tek satır olmalı. Metin satıra sığmıyorsa "..." ile kesilmeli. Metnin tamamı title'ında gözükmeli.
+		*	"Görüntülenme süresi (saniye)" metni "Gösterilme süresi (sn)" olarak güncellenmeli.
+		*	Kart içeriği video ise kart içerisinde ön izleme görseli olmalı.
+		*	Kart içeriği görseline basılınca tam ekran popup açılmalı. Popup'da içerik video ise ham orjinal video oynatılmalı aksi halde görsel gösterilmeli.
+		*	Video düzenlemede:
+			*	Kart video düzenlemeye geçtiğinde bu bloğun solunda veya sağında herhangi bir kart olmamalı. Bu kart tüm satıra yayılmalı.
+			*	"Bölümleri kaydet" ve "Kaydedilmemiş değişiklikleri geri al" butonları
+				*	İlgili kartın kapatma butonunun hemen sağına ikon olarak yerleşmeliler.
+				*	İlgili kart özelinde sadece kart için çalışmalılar.
+				*	Sadece ilgili tek videonun seçili bölgeleri değiştirilirse bu butonlar enabled olmalı. Aksi halde değişiklik yoksa disabled kalmalılar.
+				*	Seçili bölümler ile montaj doğru çalışıyor mu emin olamadım.
+			*	"Bölümü kaldır" butonu satırın sağ üstünde ikon olarak gözükmeli.
+			*	Time-line'dan basıp çekerek zaman aralığı seçiminde videonun başlangıcı seçilebiliyor. Videonun sonu da seçilebilmeli.
+			*	Ham orjinal video gösterilmeye devam edilmeli. 
+			*	Bölümleri seçilmiş videonun ön gösterimi:
+				*	Ham orjinal videonun hemen altında gösterilmeli.
+				*	Ham orjinal videodan herhangi bir bölüm seçilmemişse gösterilmemeli.
+				*	Bölge seçimi değiştirilirse son ön gösterim video gösterilmeye devam edilmeli. 
+				*	"Bölümleri kaydet" dendiğinde varsa son ön gösterim kaldırılmalı ve worker tarafından hemen sadece bu içerik için seçilmiş bölümler ile yeni bir ön gösterim videosu oluşturulmalı. Yeni gösterim videosu oluşturulduğunda burada gösterilmeli.
+	*	"Kaydedilmiş Reel önizlemesi" bloğu:
+		*	Sayfanın sonunda ayrı bir panelde olmalı. 
+		*	Yeni panelin başlığında ilgili reel'in süre değeri de gözükmeli.
+		*	"Kaydedilmiş montajı render et" butonu ikon olarak yeni panelin sağ üstünde gözükmeli.
+		*	"Aktif paket medyası" nda her değişiklik olduğunda yeni bir reel önizlemesi oluşturulmamalı. Bu durumda eski render edilmiş video kaldırılmaya devam edilmeli fakat "Kaydedilmiş montajı henüz render edilmedi." uyarı metni gösterilmeli.

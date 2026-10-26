@@ -22,6 +22,7 @@ export interface SavedUpload {
 }
 export interface UploadRow extends Omit<SavedUpload, "identity"> {
   identity: FileIdentity | null;
+  previewUrl?: string;
   phase: UploadPhase;
   preparedBytes: number;
   error: UploadErrorCode | null;

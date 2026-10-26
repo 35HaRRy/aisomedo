@@ -43,6 +43,36 @@ class SelectionIn(BaseModel):
         return value
 
 
+class GroupEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str
+    base: dict[str, object]
+    proposed: dict[str, object]
+
+
+class PackageEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_package_id: Annotated[int, Field(strict=True, gt=0)]
+    expected_folder_name: str
+    base_content_revision: Annotated[int, Field(strict=True, gt=0)]
+    changes: list[GroupEditIn]
+
+
+class GroupConflictOut(BaseModel):
+    key: str
+    current: dict[str, object]
+
+
+class EditConflictOut(BaseModel):
+    code: Literal["edit_conflict"]
+    content_revision: int
+    conflicts: list[GroupConflictOut]
+
+
+class PackageEditConflictOut(BaseModel):
+    detail: EditConflictOut
+
+
 class RenderIn(BaseModel):
     expected_folder_name: str
     retry: bool = False
@@ -120,13 +150,32 @@ class CompletedMediaOut(MediaOut):
     artifacts: list[PackageArtifactOut]
 
 
+class SectionPreviewOut(BaseModel):
+    status: Literal["missing", "queued", "processing", "ready", "failed"] = "missing"
+    generation: str | None = None
+    url: str | None = None
+    duration: float | None = None
+
+
+class SectionPreviewRetryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_package_id: Annotated[int, Field(strict=True, gt=0)]
+    expected_folder_name: str
+    expected_generation: Annotated[str, Field(min_length=1, max_length=128)]
+
+
 class EditorMediaOut(CompletedMediaOut):
     is_video: bool
     source_duration: float | None
     effective_duration: float | None
+    original_url: str | None = None
+    thumbnail_url: str | None = None
+    section_preview: SectionPreviewOut | None = None
 
 
 class ActiveEditorOut(BaseModel):
+    content_revision: int
+    view_revision: int
     package: PackageOut
     render_stale: bool
     media: list[EditorMediaOut]
@@ -136,6 +185,7 @@ class ActiveEditorOut(BaseModel):
     ] = "missing"
     render_revision: str | None = None
     render_preview_url: str | None = None
+    render_duration: float | None = None
 
 
 class CompletedPackageOut(BaseModel):

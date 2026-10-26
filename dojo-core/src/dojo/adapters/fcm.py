@@ -179,18 +179,23 @@ class FcmNotifier:
         return self._parse_response(send(self._build(notification, tokens), app=self._app), tokens)
 
     def _build(self, notification: Notification, tokens: list[str]) -> Any:
+        actionable = notification.data.get("type") in {"review_required", "empty_package"}
+        data = {str(key): str(value) for key, value in notification.data.items()}
+        if actionable:
+            data.update(title=notification.title, body=notification.body)
         # ``tokens`` is deprecated in favour of Firebase installation IDs
         # (``fids``), but a registration token is what the Android client
         # stores and reports through the push registration store, so the
         # supported-but-deprecated field is the only correct one here.
         return self._messaging.MulticastMessage(
-            notification=self._messaging.Notification(
+            notification=None if actionable else self._messaging.Notification(
                 title=notification.title, body=notification.body
             ),
-            android=self._android_config(notification),
+            android=(self._messaging.AndroidConfig(priority="high") if actionable
+                     else self._android_config(notification)),
             # FCM rejects non-string data values, so they are normalized here
             # instead of failing a whole batch at the provider.
-            data={str(key): str(value) for key, value in notification.data.items()},
+            data=data,
             tokens=tokens,
         )
 

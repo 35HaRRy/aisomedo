@@ -132,6 +132,7 @@ def test_lifespan_installs_and_disposes_real_probe(
         setup=SimpleNamespace(_meta=object()),
         meta=object(),
     )
+    app.state.live_hub = None  # This fixture isolates readiness lifecycle, not transport startup.
     with TestClient(app) as client:
         assert len(created) == 1
         assert created[0].url == "postgresql+psycopg://u:p@db:5432/dojo"
@@ -154,5 +155,6 @@ def test_lifespan_keeps_injected_probe(monkeypatch: pytest.MonkeyPatch) -> None:
         meta=object(),
         readiness=lambda: False,
     )
+    app.state.live_hub = None
     with TestClient(app) as client:
         assert client.get("/ready").status_code == 503

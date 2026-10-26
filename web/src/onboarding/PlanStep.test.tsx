@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
+import { invalidateLive } from "../test/live";
 import { client, setupState } from "../test/fixtures";
 import { OnboardingProvider } from "./useOnboarding";
 import { PlanStep } from "./PlanStep";
@@ -45,7 +46,7 @@ it("does not replace dirty draft during foreground refresh", async () => {
   const { update } = mount();
   await waitFor(() => expect(screen.getByLabelText("İlk yayın tarihi")).toHaveValue("2026-10-05"));
   fireEvent.change(screen.getByLabelText("Yayın saati"), { target: { value: "13:30" } }); update();
-  vi.useFakeTimers(); await act(async () => { window.dispatchEvent(new Event("focus")); await vi.advanceTimersByTimeAsync(1); });
+  vi.useFakeTimers(); await act(async () => { invalidateLive(); await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByLabelText("Yayın saati")).toHaveValue("13:30");
   fireEvent.click(screen.getByRole("button", { name: "Sunucudaki değerleri yükle" }));
   expect(screen.getByLabelText("İlk yayın tarihi")).toHaveValue("2026-10-19");

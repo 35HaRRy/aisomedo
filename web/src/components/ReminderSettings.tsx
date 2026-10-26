@@ -4,11 +4,11 @@ import { ReloadDraft, useDraft, useFormSave } from "../onboarding/forms";
 import { useLiveData } from "../useLiveData";
 
 export function ReminderSettings({ onSaved }: { onSaved: () => void }) {
-  const snapshot = useLiveData(api.reminders);
+  const snapshot = useLiveData(api.reminders, true, ["settings"]);
   const state = useDraft(snapshot.data ? {
     interval: String(snapshot.data.interval_minutes), start: snapshot.data.delivery_start.slice(0, 5), end: snapshot.data.delivery_end.slice(0, 5),
   } : null, { interval: "", start: "", end: "" });
-  const form = useFormSave(onSaved);
+  const form = useFormSave(() => { state.markSaved(); onSaved(); });
   const copy = tr.settingsPage;
   function submit() {
     const interval = Number(state.draft.interval);

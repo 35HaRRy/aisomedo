@@ -44,7 +44,7 @@ def test_photo_duration_saved_removed_restored_and_rendered(tmp_path):
     assert seam.get_active_editor()["render_status"] == "ready"
     assert seam.get_render_preview(expected_folder_name=folder).path.read_bytes() == b"fake-reel"
     seam.set_selections({}, expected_folder_name=folder, photo_durations={mid: 6})
-    assert seam.get_active_editor()["render_status"] == "stale"
+    assert seam.get_active_editor()["render_status"] == "missing"
     with pytest.raises(MediaNotFound):
         seam.get_render_preview(expected_folder_name=folder)
 
@@ -118,7 +118,7 @@ def test_clear_identity_guard_preserves_files(tmp_path):
     assert (tmp_path / package.folder_name / "manifest.json").exists()
 
 
-def test_clear_serializes_with_running_renderer(tmp_path):
+def test_clear_during_render_does_not_restore_deleted_package_or_job(tmp_path):
     entered, release, cleared = Event(), Event(), Event()
 
     class SlowRenderer(StubReelRenderer):
@@ -131,19 +131,31 @@ def test_clear_serializes_with_running_renderer(tmp_path):
     folder = seam.get_active_package().folder_name
     seam.render_preview(expected_folder_name=folder)
     job = seam.claim_next_job()
-    thread = Thread(target=lambda: seam.process_job(job.job_id))
+    errors = []
+
+    def process():
+        try:
+            seam.process_job(job.job_id)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = Thread(target=process)
     thread.start()
     assert entered.wait(5)
     cleanup = Thread(target=lambda: (
         seam.clear_active_package(expected_folder_name=folder), cleared.set(),
     ))
     cleanup.start()
-    assert not cleared.wait(0.05)
-    release.set()
-    thread.join(5)
-    cleanup.join(5)
+    try:
+        assert cleared.wait(2), "cleanup must not wait for expensive rendering"
+    finally:
+        release.set()
+        thread.join(5)
+        cleanup.join(5)
     assert cleared.is_set()
+    assert not errors
     assert not (tmp_path / folder).exists()
+    assert not (tmp_path / "tmp" / f"render-{job.job_id}").exists()
 
 
 def test_failed_render_retry_never_replaces_last_complete_preview(tmp_path):
@@ -175,8 +187,9 @@ def test_clear_purge_failure_can_retry_original_identity_after_replacement(tmp_p
             seam.clear_active_package(expected_folder_name=package.folder_name,
                                       expected_package_id=package.id)
     replacement = seam.ensure_active_package()
-    result = seam.clear_active_package(expected_folder_name=package.folder_name,
-                                      expected_package_id=package.id)
+    with seam.conditional_package_operation(package.id, 1, allow_missing=True):
+        result = seam.clear_active_package(expected_folder_name=package.folder_name,
+                                          expected_package_id=package.id)
     assert result["folder_name"] == package.folder_name
     assert seam.get_active_package() == replacement
     assert not list(tmp_path.glob(".clearing-*"))

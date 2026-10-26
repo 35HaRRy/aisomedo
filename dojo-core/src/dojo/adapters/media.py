@@ -50,20 +50,20 @@ class PillowFFmpegProcessor:
         pillow_heif.register_heif_opener()
         from PIL import Image, ImageOps
 
-        processed_path = work_dir / "processed.jpg"
         try:
             with Image.open(original_path) as src:
                 if getattr(src, "n_frames", 1) > 1:
                     raise MediaValidationError("animated images are not supported")
                 img = ImageOps.exif_transpose(src)
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
+                has_alpha = "A" in img.getbands() or "transparency" in img.info
+                img = img.convert("RGBA" if has_alpha else "RGB")
+                processed_path = work_dir / ("processed.png" if has_alpha else "processed.jpg")
                 if max(img.size) > MAX_IMAGE_DIMENSION:
                     scale = MAX_IMAGE_DIMENSION / max(img.size)
                     img = img.resize(
                         (round(img.width * scale), round(img.height * scale))
                     )
-                img.save(processed_path, format="JPEG", quality=90)
+                img.save(processed_path, format="PNG" if has_alpha else "JPEG", quality=90)
         except MediaValidationError:
             raise
         except Exception as exc:
@@ -71,7 +71,7 @@ class PillowFFmpegProcessor:
         return ProcessedMedia(
             original_path=original_path,
             processed_path=processed_path,
-            content_type="image/jpeg",
+            content_type="image/png" if has_alpha else "image/jpeg",
             size_bytes=processed_path.stat().st_size,
         )
 

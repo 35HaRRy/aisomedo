@@ -39,6 +39,10 @@
       },
       "ActiveEditorOut": {
         "properties": {
+          "content_revision": {
+            "title": "Content Revision",
+            "type": "integer"
+          },
           "media": {
             "items": {
               "$ref": "#/components/schemas/EditorMediaOut"
@@ -51,6 +55,17 @@
           },
           "package": {
             "$ref": "#/components/schemas/PackageOut"
+          },
+          "render_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Duration"
           },
           "render_preview_url": {
             "anyOf": [
@@ -90,9 +105,15 @@
             ],
             "title": "Render Status",
             "type": "string"
+          },
+          "view_revision": {
+            "title": "View Revision",
+            "type": "integer"
           }
         },
         "required": [
+          "content_revision",
+          "view_revision",
           "package",
           "render_stale",
           "media",
@@ -255,6 +276,8 @@
           "intro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -288,6 +311,8 @@
           "outro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -422,6 +447,8 @@
           "intro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -455,6 +482,8 @@
           "outro_duration": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
+                "multipleOf": 1.0,
                 "type": "number"
               },
               {
@@ -858,6 +887,17 @@
             ],
             "title": "Review Id"
           },
+          "review_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Status"
+          },
           "state": {
             "enum": [
               "review_ready",
@@ -924,6 +964,11 @@
           "instagram": {
             "$ref": "#/components/schemas/DashboardInstagramOut"
           },
+          "manual_review_allowed": {
+            "default": true,
+            "title": "Manual Review Allowed",
+            "type": "boolean"
+          },
           "next_slot": {
             "anyOf": [
               {
@@ -933,6 +978,20 @@
                 "type": "null"
               }
             ]
+          },
+          "next_slots": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DashboardSlotOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Slots"
           },
           "package": {
             "anyOf": [
@@ -980,6 +1039,17 @@
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "occurrence_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurrence Id"
           }
         },
         "required": [
@@ -1050,6 +1120,33 @@
         "title": "DownloadOut",
         "type": "object"
       },
+      "EditConflictOut": {
+        "properties": {
+          "code": {
+            "const": "edit_conflict",
+            "title": "Code",
+            "type": "string"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/GroupConflictOut"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "content_revision": {
+            "title": "Content Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "content_revision",
+          "conflicts"
+        ],
+        "title": "EditConflictOut",
+        "type": "object"
+      },
       "EditorMediaOut": {
         "properties": {
           "artifacts": {
@@ -1086,6 +1183,17 @@
             "title": "Media Id",
             "type": "string"
           },
+          "original_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Url"
+          },
           "preview_url": {
             "anyOf": [
               {
@@ -1111,6 +1219,16 @@
             ],
             "title": "Removed Position"
           },
+          "section_preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SectionPreviewOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "size_bytes": {
             "title": "Size Bytes",
             "type": "integer"
@@ -1129,6 +1247,17 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "thumbnail_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Url"
           },
           "uploaded_at": {
             "format": "date-time",
@@ -1151,6 +1280,88 @@
           "effective_duration"
         ],
         "title": "EditorMediaOut",
+        "type": "object"
+      },
+      "EmptyRescheduleIn": {
+        "properties": {
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "new_due_at": {
+            "format": "date-time",
+            "title": "New Due At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_folder_name",
+          "new_due_at"
+        ],
+        "title": "EmptyRescheduleIn",
+        "type": "object"
+      },
+      "EmptySkipIn": {
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_folder_name"
+        ],
+        "title": "EmptySkipIn",
+        "type": "object"
+      },
+      "GroupConflictOut": {
+        "properties": {
+          "current": {
+            "additionalProperties": true,
+            "title": "Current",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "current"
+        ],
+        "title": "GroupConflictOut",
+        "type": "object"
+      },
+      "GroupEditIn": {
+        "additionalProperties": false,
+        "properties": {
+          "base": {
+            "additionalProperties": true,
+            "title": "Base",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "proposed": {
+            "additionalProperties": true,
+            "title": "Proposed",
+            "type": "object"
+          }
+        },
+        "required": [
+          "key",
+          "base",
+          "proposed"
+        ],
+        "title": "GroupEditIn",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1331,6 +1542,67 @@
         "title": "MontageOut",
         "type": "object"
       },
+      "OccurrenceDecisionOut": {
+        "properties": {
+          "new_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Due At"
+          },
+          "next_regular_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Regular At"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          },
+          "oneoff_occurrence_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oneoff Occurrence Id"
+          },
+          "package_folder": {
+            "title": "Package Folder",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "occurrence_id",
+          "package_folder",
+          "status",
+          "next_regular_at",
+          "oneoff_occurrence_id",
+          "new_due_at"
+        ],
+        "title": "OccurrenceDecisionOut",
+        "type": "object"
+      },
       "OccurrenceOut": {
         "properties": {
           "due_at": {
@@ -1357,6 +1629,90 @@
           "status"
         ],
         "title": "OccurrenceOut",
+        "type": "object"
+      },
+      "OneoffDateIn": {
+        "properties": {
+          "expected_due_at": {
+            "format": "date-time",
+            "title": "Expected Due At",
+            "type": "string"
+          },
+          "new_due_at": {
+            "format": "date-time",
+            "title": "New Due At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_due_at",
+          "new_due_at"
+        ],
+        "title": "OneoffDateIn",
+        "type": "object"
+      },
+      "OneoffDecisionIn": {
+        "properties": {
+          "action": {
+            "enum": [
+              "review",
+              "skip"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "expected_due_at": {
+            "format": "date-time",
+            "title": "Expected Due At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_due_at",
+          "action"
+        ],
+        "title": "OneoffDecisionIn",
+        "type": "object"
+      },
+      "OneoffDecisionOut": {
+        "properties": {
+          "due_at": {
+            "format": "date-time",
+            "title": "Due At",
+            "type": "string"
+          },
+          "occurrence_id": {
+            "title": "Occurrence Id",
+            "type": "integer"
+          },
+          "package_folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Folder"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "occurrence_id",
+          "due_at",
+          "status",
+          "package_folder"
+        ],
+        "title": "OneoffDecisionOut",
         "type": "object"
       },
       "OrderIn": {
@@ -1446,6 +1802,52 @@
           "preview_url"
         ],
         "title": "PackageArtifactOut",
+        "type": "object"
+      },
+      "PackageEditConflictOut": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/EditConflictOut"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "PackageEditConflictOut",
+        "type": "object"
+      },
+      "PackageEditIn": {
+        "additionalProperties": false,
+        "properties": {
+          "base_content_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Content Revision",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/GroupEditIn"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "expected_package_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Expected Package Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_package_id",
+          "expected_folder_name",
+          "base_content_revision",
+          "changes"
+        ],
+        "title": "PackageEditIn",
         "type": "object"
       },
       "PackageOut": {
@@ -1910,6 +2312,17 @@
             "title": "Id",
             "type": "integer"
           },
+          "instagram_fail_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instagram Fail Message"
+          },
           "occurrence_id": {
             "title": "Occurrence Id",
             "type": "integer"
@@ -1942,6 +2355,84 @@
           "version"
         ],
         "title": "ReviewOut",
+        "type": "object"
+      },
+      "SectionPreviewOut": {
+        "properties": {
+          "duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "status": {
+            "default": "missing",
+            "enum": [
+              "missing",
+              "queued",
+              "processing",
+              "ready",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "SectionPreviewOut",
+        "type": "object"
+      },
+      "SectionPreviewRetryIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "expected_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Generation",
+            "type": "string"
+          },
+          "expected_package_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Expected Package Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_package_id",
+          "expected_folder_name",
+          "expected_generation"
+        ],
+        "title": "SectionPreviewRetryIn",
         "type": "object"
       },
       "SelectIn": {
@@ -2550,6 +3041,124 @@
         "summary": "Dashboard",
         "tags": [
           "dashboard"
+        ]
+      }
+    },
+    "/api/dashboard/occurrences/{occurrence_id}": {
+      "patch": {
+        "operationId": "change_oneoff_date_api_dashboard_occurrences__occurrence_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OneoffDateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardSlotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Oneoff Date",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
+    "/api/dashboard/occurrences/{occurrence_id}/decision": {
+      "post": {
+        "operationId": "decide_oneoff_api_dashboard_occurrences__occurrence_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OneoffDecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OneoffDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Oneoff",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
+    "/api/events": {
+      "get": {
+        "operationId": "events_api_events_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Events",
+        "tags": [
+          "events"
         ]
       }
     },
@@ -3272,6 +3881,24 @@
       },
       "put": {
         "operationId": "set_branding_api_packages_active_branding_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3336,6 +3963,24 @@
       },
       "put": {
         "operationId": "set_caption_api_packages_active_caption_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3379,6 +4024,24 @@
     "/api/packages/active/clear": {
       "post": {
         "operationId": "clear_package_api_packages_active_clear_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3420,6 +4083,24 @@
     "/api/packages/active/complete": {
       "post": {
         "operationId": "complete_active_api_packages_active_complete_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -3430,6 +4111,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Complete Active",
@@ -3454,6 +4145,115 @@
           }
         },
         "summary": "Get Editor",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/edits": {
+      "put": {
+        "operationId": "apply_edits_api_packages_active_edits_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PackageEditIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveEditorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageEditConflictOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Edits",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/media/{media_id}/original": {
+      "get": {
+        "operationId": "original_media_api_packages_active_media__media_id__original_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_package_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Package Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Original Media",
         "tags": [
           "packages"
         ]
@@ -3536,6 +4336,22 @@
               ],
               "title": "Expected Folder Name"
             }
+          },
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
           }
         ],
         "responses": {
@@ -3598,6 +4414,22 @@
               ],
               "title": "Expected Folder Name"
             }
+          },
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
           }
         ],
         "responses": {
@@ -3632,6 +4464,199 @@
         ]
       }
     },
+    "/api/packages/active/media/{media_id}/sections/preview": {
+      "get": {
+        "operationId": "media_sections_preview_api_packages_active_media__media_id__sections_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_package_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Package Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "generation",
+            "required": true,
+            "schema": {
+              "title": "Generation",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Media Sections Preview",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/media/{media_id}/sections/retry": {
+      "post": {
+        "operationId": "retry_media_sections_preview_api_packages_active_media__media_id__sections_retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionPreviewRetryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveEditorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Media Sections Preview",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/media/{media_id}/thumbnail": {
+      "get": {
+        "operationId": "media_thumbnail_api_packages_active_media__media_id__thumbnail_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_package_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Package Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "generation",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Generation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Media Thumbnail",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/packages/active/montage": {
       "get": {
         "operationId": "get_montage_api_packages_active_montage_get",
@@ -3656,6 +4681,24 @@
     "/api/packages/active/order": {
       "put": {
         "operationId": "set_order_api_packages_active_order_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3832,6 +4875,24 @@
     "/api/packages/active/render": {
       "post": {
         "operationId": "render_active_api_packages_active_render_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3929,6 +4990,24 @@
     "/api/packages/active/selections": {
       "put": {
         "operationId": "set_selections_api_packages_active_selections_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3970,6 +5049,24 @@
     "/api/packages/active/trims": {
       "put": {
         "operationId": "set_trims_api_packages_active_trims_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -4491,6 +5588,110 @@
         "summary": "Validate",
         "tags": [
           "pairing"
+        ]
+      }
+    },
+    "/api/reviews/occurrences/{occurrence_id}/reschedule": {
+      "post": {
+        "operationId": "reschedule_empty_occurrence_api_reviews_occurrences__occurrence_id__reschedule_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRescheduleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OccurrenceDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reschedule Empty Occurrence",
+        "tags": [
+          "reviews"
+        ]
+      }
+    },
+    "/api/reviews/occurrences/{occurrence_id}/skip": {
+      "post": {
+        "operationId": "skip_empty_occurrence_api_reviews_occurrences__occurrence_id__skip_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "occurrence_id",
+            "required": true,
+            "schema": {
+              "title": "Occurrence Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptySkipIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OccurrenceDecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Skip Empty Occurrence",
+        "tags": [
+          "reviews"
         ]
       }
     },

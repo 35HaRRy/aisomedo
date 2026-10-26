@@ -364,6 +364,7 @@ class YayinIncelemesi:
     resolved_by: str | None = None
     oneoff_occurrence_id: int | None = None
     last_reminded_at: datetime | None = None
+    instagram_fail_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -402,6 +403,8 @@ class NotificationResult:
 
 
 REVIEW_REQUIRED_TITLE = "Yayın İncelemesi Bekliyor"
+EMPTY_PACKAGE_TITLE = "Dojo Paylaşım Paketi Boş"
+EMPTY_PACKAGE_BODY = "Yayın Zamanı geldi. Medya yükleyin, atlayın veya yeniden zamanlayın."
 REVIEW_REQUIRED_BODY = (
     "Paketiniz incelemeyi bekliyor. Lütfen onaylayın, atlayın veya yeniden planlayın."
 )

@@ -39,4 +39,14 @@ class OnboardingTest {
         compose.runOnIdle { active.value = false }
         compose.onNodeWithTag("instagram-token").assert(hasText("BACKGROUND").not())
     }
+    @Test fun offlineConsentAcknowledgementAndTokenInputsAreDisabled() {
+        compose.setContent { DojoTheme { androidx.compose.foundation.layout.Column {
+            ConsentStep(ConsentOut(null, "Politika", 1), false, {}, canMutate = false)
+            InstagramTokenForm(false, true, { Assert.fail("Offline token submission") }, canMutate = false)
+        } } }
+        compose.onNodeWithTag("consent-acknowledgement").assertIsNotEnabled()
+        compose.onNodeWithText("Bu sürümü kabul et").assertIsNotEnabled()
+        compose.onNodeWithTag("instagram-token").assertIsNotEnabled()
+        compose.onNodeWithText("Token ile bağlan").assertIsNotEnabled()
+    }
 }

@@ -84,7 +84,7 @@ def test_missing_processed_metadata_is_unavailable_not_server_error(tmp_path):
     seam, path, mid = make_package(tmp_path)
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["media"][0]["processed"] = {}
-    path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
     with pytest.raises(MediaNotFound):
         seam.get_media_preview(mid, expected_folder_name=seam.get_active_package().folder_name)
 
@@ -159,7 +159,7 @@ def test_snapshot_never_exposes_absolute_processed_paths(tmp_path):
     seam, path, _ = make_package(tmp_path)
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["media"][0]["processed"]["path"] = str(tmp_path / "private.dat")
-    path.write_text(json.dumps(manifest), encoding="utf-8")
+    seam._write_manifest(seam.get_active_package(), manifest)
     snapshot = seam.get_active_editor()
     assert str(tmp_path) not in json.dumps(snapshot, default=str)
     assert snapshot["media"][0]["preview_ref"] is None
@@ -173,7 +173,7 @@ def test_toggles_invalidate_render_and_keep_sections(tmp_path):
     for toggle in (seam.remove_media, seam.restore_media):
         manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest["render_revision"] = "old-render"
-        path.write_text(json.dumps(manifest), encoding="utf-8")
+        seam._write_manifest(seam.get_active_package(), manifest)
         toggle(mid, expected_folder_name=folder)
         snapshot = seam.get_active_editor()
         assert snapshot["render_stale"] is True

@@ -15,10 +15,11 @@ from dojo import (
     ReminderPolicyInvalid,
     SchedulePlan,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.deps import get_current_client
+from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
@@ -28,10 +29,17 @@ def get_publishing(request: Request) -> DojoPublishing:
 class BrandingDefaultsIn(BaseModel):
     logo_asset: str | None = None
     intro_asset: str | None = None
-    intro_duration: float | None = None
+    intro_duration: float | None = Field(default=None, gt=0, multiple_of=1, strict=True)
     outro_asset: str | None = None
-    outro_duration: float | None = None
+    outro_duration: float | None = Field(default=None, gt=0, multiple_of=1, strict=True)
     caption_template: str | None = None
+
+    @field_validator("logo_asset")
+    @classmethod
+    def image_logo(cls, value: str | None) -> str | None:
+        if value and value.rsplit(".", 1)[-1].lower() in {"mp4", "mov", "webm", "mkv", "avi"}:
+            raise ValueError("logo must be a PNG or JPEG image")
+        return value
 
 
 class BrandingDefaultsOut(BaseModel):
@@ -85,7 +93,9 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("/branding", response_model=BrandingDefaultsOut)
+@versioned_snapshot("settings")
 def get_branding_defaults(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> BrandingDefaultsOut:
@@ -99,7 +109,8 @@ def set_branding_defaults(
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> BrandingDefaultsOut:
     config = publishing.set_branding_defaults(
-        BrandingConfig(**body.model_dump()), requester=str(client.id)
+        BrandingConfig(**body.model_dump()), requester=str(client.id),
+        apply_to_draft=True,
     )
     return BrandingDefaultsOut(**config.to_dict())
 
@@ -118,18 +129,24 @@ def patch_branding_defaults(
             if not isinstance(value, str) or not value.startswith("branding/assets/"):
                 raise HTTPException(status_code=422, detail="upload a branding image first")
             try:
-                assets.resolve(value.removeprefix("branding/assets/"))
+                path = assets.resolve(value.removeprefix("branding/assets/"))
+                if key == "logo_asset" and path.suffix not in {".png", ".jpg"}:
+                    raise HTTPException(status_code=422, detail="logo must be a PNG or JPEG image")
             except BrandingAssetNotFound as exc:
                 raise HTTPException(status_code=422, detail="branding image not found") from exc
     try:
-        result = publishing.patch_branding_defaults(changes, requester=str(client.id))
+        result = publishing.patch_branding_defaults(
+            changes, requester=str(client.id), apply_to_draft=True,
+        )
     except BrandingInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return BrandingDefaultsOut(**result.to_dict())
 
 
 @router.get("/plan", response_model=PlanOut)
+@versioned_snapshot("settings")
 def get_plan(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> PlanOut:
@@ -172,7 +189,9 @@ def manual_publish(
 
 
 @router.get("/reminders", response_model=ReminderPolicyOut)
+@versioned_snapshot("settings")
 def get_reminders(
+    request: Request, response: Response,
     _client: Client = Depends(get_current_client),
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> ReminderPolicyOut:

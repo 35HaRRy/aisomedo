@@ -101,7 +101,7 @@ def test_configuration_failure_fails_startup_instead_of_falling_back(
 ) -> None:
     monkeypatch.setenv("FCM_ENABLED", "true")
     monkeypatch.setenv("SKIP_CREATE_ALL", "1")
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://127.0.0.1:1/unreachable")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://127.0.0.1:1/unreachable?connect_timeout=1")
     monkeypatch.setenv("MEDIA_ROOT", str(tmp_path / "media"))
     monkeypatch.delenv("META_TOKEN_ENCRYPTION_KEY", raising=False)
     monkeypatch.delenv("SIGNED_URL_SECRET", raising=False)
@@ -117,7 +117,7 @@ def test_publishing_sends_through_the_real_notifier(
 ) -> None:
     monkeypatch.setenv("FCM_ENABLED", "true")
     monkeypatch.setenv("SKIP_CREATE_ALL", "1")
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://127.0.0.1:1/unreachable")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://127.0.0.1:1/unreachable?connect_timeout=1")
     monkeypatch.setenv("MEDIA_ROOT", str(tmp_path / "media"))
     monkeypatch.delenv("META_TOKEN_ENCRYPTION_KEY", raising=False)
     monkeypatch.delenv("SIGNED_URL_SECRET", raising=False)

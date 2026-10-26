@@ -14,6 +14,7 @@ from dojo.adapters.stubs import (
 )
 from dojo.testing import FIXED_AT, ISTANBUL, FakeClock
 from fastapi.testclient import TestClient
+from live_helpers import include_displayed_revision
 
 from backend.main import create_app
 
@@ -39,6 +40,7 @@ def make_app(tmp_path: Path):
     activity = DojoActivity(audit=store, pairing=store)
     setup = DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock())
     client = TestClient(create_app(publishing, pairing, activity, setup, cookie_secure=False))
+    include_displayed_revision(client, publishing)
     return client, publishing, pairing, store
 
 
@@ -79,6 +81,7 @@ def prepare_approved(tmp_path: Path, publishing: DojoPublishing):
     publishing.process_job(job.job_id)
     publishing.set_caption("hello")
     publishing.evaluate_due_work()
+    publishing.render_preview()
     job = publishing.claim_next_job()
     assert job is not None
     publishing.process_job(job.job_id)
@@ -159,8 +162,7 @@ def test_retry_blocked_while_publishing_409(tmp_path: Path):
     assert resp.status_code == 409
 
 
-def test_reconcile_poll_error_keeps_publishing_via_api(tmp_path: Path):
-    # Issue #19: reconcile polling errors keep -publishing via the endpoint.
+def test_reconcile_poll_error_opens_uncertain_review_via_api(tmp_path: Path):
     from dojo.adapters.stubs import StubMetaPublisher
 
     client, publishing, pairing, _ = make_app(tmp_path)
@@ -194,8 +196,9 @@ def test_reconcile_poll_error_keeps_publishing_via_api(tmp_path: Path):
     assert resp.status_code == 200
     body = resp.json()["publication"]
     assert body["status"] == "uncertain"
-    assert body["allowed_actions"] == ["reconcile"]
-    assert publishing._packages.get_publishing() is not None
+    assert body["allowed_actions"] == ["retry", "review", "skip", "reschedule"]
+    assert publishing._packages.get_publishing() is None
+    assert publishing.list_pending_reviews()[0].status == "uncertain"
     assert publishing._packages.list_completed() == []
 
 

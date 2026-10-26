@@ -46,8 +46,11 @@ from dojo.exceptions import (
     MontageTrimInvalid,
     NoActivePackage,
     NoConsentPolicy,
+    OccurrenceChanged,
+    OccurrenceNotFound,
     PackageChanged,
     PackageCompleted,
+    PackageEditConflict,
     PackageLimitExceeded,
     PairingCodeConsumed,
     PairingCodeExpired,
@@ -128,11 +131,14 @@ from dojo.publishing import DojoPublishing
 from dojo.setup import DojoSetup
 
 __all__ = [
+    "OccurrenceChanged",
+    "OccurrenceNotFound",
     "PackageArtifact",
     "VideoRange",
     "VideoSelections",
     "REEL_FPS",
     "PackageChanged",
+    "PackageEditConflict",
     "LegacyTrimConflict",
     "NextSlot",
     "PendingAction",
