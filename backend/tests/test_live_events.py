@@ -10,7 +10,7 @@ from backend.live import LiveHub
 
 
 @pytest.fixture(scope="module")
-def live_store():
+def live_database():
     with PostgresContainer("postgres:18") as pg:
         store = PostgresStore(pg.get_connection_url().replace(
             "postgresql+psycopg2://", "postgresql+psycopg://",
@@ -18,6 +18,19 @@ def live_store():
         store.create_all()
         yield store
         store.dispose()
+
+
+@pytest.fixture
+def live_store(live_database):
+    with live_database._engine.begin() as connection:
+        connection.execute(text(
+            "TRUNCATE TABLE live_change_events, live_resource_versions, package_states, "
+            "operational_deliveries, operational_alerts, monitoring_incidents, "
+            "push_registrations, consent_acceptances, consent_policies, pairing_codes, "
+            "clients, audit_events, packages, uploads, jobs, settings, yayin_zamani, "
+            "yayin_incelemesi RESTART IDENTITY CASCADE",
+        ))
+    return live_database
 
 
 async def change(store, resources=None, revoked=None):
@@ -289,6 +302,7 @@ def test_real_http_stream_renews_cookie_and_delivers_commit_then_revocation(tmp_
     from test_package_editor_api import app
 
     paired, _, pairing, client_id, _ = app(tmp_path)
+    paired.app.state.meta = None  # Keep real HTTP startup independent of installation settings.
     hub = LiveHub(live_store, now=pairing._clock.now)
     paired.app.state.live_hub = hub
     listener = socket.socket()

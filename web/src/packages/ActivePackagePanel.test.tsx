@@ -108,7 +108,9 @@ async function setup(configure?: (server: ReturnType<typeof editorServer>) => vo
   window.location.hash = "#/package";
   const server = editorServer(); configure?.(server); vi.stubGlobal("fetch", server.fetcher);
   const view = render(<SessionProvider><PackageEditorProvider><UploadProvider onPackageChanged={() => {}}><ActivePackagePanel /></UploadProvider></PackageEditorProvider></SessionProvider>);
-  await screen.findByText("a.mp4"); return { server, ...view };
+  await screen.findByText("a.mp4");
+  await waitFor(() => expect(screen.getByRole("button", { name: "a.mp4 sırasını sürükle" })).toBeEnabled());
+  return { server, ...view };
 }
 
 function addPhoto(server: ReturnType<typeof editorServer>) {

@@ -75,6 +75,13 @@ test("live profiles merge drafts and recover without polling through the gateway
     await first.setOffline(false); await a.reload();
     await a.getByRole("button", { name: "live-a.mp4 bölümlerini düzenle" }).click();
     await expect(a.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("");
+    // An idle worker may still have queued jobs between ticks. Wait for every
+    // thumbnail and saved section preview, not just the current worker phase.
+    await expect.poll(async () => {
+      const snapshot = await (await first.request.get("/api/packages/active/editor")).json() as ActiveEditorOut;
+      return snapshot.media.length === 2 && snapshot.media.every(media =>
+        !!media.thumbnail_url && media.section_preview?.status === "ready");
+    }, { timeout: 60_000 }).toBe(true);
     await expect.poll(async () => (await (await fixtures.get("/worker-health")).json()).phase).toBe("idle");
     await expect(a.getByRole("button", { name: "live-a.mp4 sırasını sürükle" })).toBeEnabled();
     let idleReads = 0, lastReadAt = Date.now();

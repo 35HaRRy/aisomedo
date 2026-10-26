@@ -5,7 +5,7 @@ from dojo.adapters.db import PostgresStore
 from dojo.live import PackageState
 from dojo.model import Package
 from dojo.testing import FIXED_AT
-from test_live_events import live_store  # noqa: F401 - share the real database fixture
+from test_live_events import live_database, live_store  # noqa: F401
 from test_package_editor_api import app
 
 

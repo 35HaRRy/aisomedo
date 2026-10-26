@@ -6,6 +6,7 @@ import multiprocessing
 import socket
 import time
 from contextlib import ExitStack, contextmanager
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -15,7 +16,7 @@ from dojo.adapters.stubs import StubMediaProcessor, StubReelRenderer
 from dojo.model import YayinZamani
 from dojo.testing import FakeClock
 from sqlalchemy import text
-from test_live_events import live_store  # noqa: F401
+from test_live_events import live_database, live_store  # noqa: F401
 
 
 def publishing(store, root):
@@ -38,6 +39,7 @@ def serve(url, root, pipe):
         DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock()),
         cookie_secure=False, readiness=lambda: True,
     )
+    app.state.meta = None  # This fixture never connects to the installation's Meta database.
 
     def connect():
         connection = store.open_change_listener()
@@ -52,10 +54,12 @@ def serve(url, root, pipe):
         uvicorn.Server(uvicorn.Config(app, log_level="error")).run(sockets=[listener])
 
 
-def worker(url, root, captions, previews=False):
+def worker(url, root, captions, previews=False, now=None):
     store = PostgresStore(url)
     try:
         domain = publishing(store, root)
+        if now is not None:
+            domain._clock = FakeClock(now)
         if previews:
             domain._renderer = StubReelRenderer()
             domain.evaluate_due_work()
@@ -184,16 +188,18 @@ def test_saved_section_worker_updates_are_view_only_and_reels_wait_for_due_time(
             assert not [job for job in store.package_work(package)[1] if job.kind == "render"]
             now = domain._clock.now()
             store.set("branding.logo_asset", "logo.png", updated_at=now)
-            store.create(YayinZamani(0, "oneoff", now, "pending", now))
+            store.create(YayinZamani(
+                0, "oneoff", now + timedelta(minutes=1), "pending", now,
+            ))
             domain.evaluate_due_work()
             assert not [job for job in store.package_work(package)[1] if job.kind == "render"]
-            editor = client.get("/api/packages/active/editor").json()
-            assert client.post("/api/packages/active/render", json={
-                "expected_folder_name": package.folder_name,
-            }, headers={
-                "If-Match": f'"{package.id}:{editor["content_revision"]}"',
-            }).status_code == 200
-            process = context.Process(target=worker, args=(url, str(tmp_path), [], True))
+            domain._clock = FakeClock(now + timedelta(minutes=1))
+            domain.evaluate_due_work()
+            renders = [job for job in store.package_work(package)[1] if job.kind == "render"]
+            assert len(renders) == 1 and renders[0].status == "queued"
+            process = context.Process(
+                target=worker, args=(url, str(tmp_path), [], True, domain._clock.now()),
+            )
             process.start()
             process.join(15)
             if process.is_alive():
