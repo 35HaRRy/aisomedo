@@ -213,6 +213,13 @@ class JobRow(Base):
             text("(payload ->> 'digest')"), unique=True,
             postgresql_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
         ),
+        Index(
+            "uq_jobs_active_media_preview", "kind", text("(payload ->> 'package_id')"),
+            text("(payload ->> 'media_id')"), unique=True,
+            postgresql_where=text(
+                "kind IN ('section_preview', 'thumbnail') AND status IN ('queued', 'processing')"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -778,10 +785,22 @@ class PostgresStore:
         values.pop("id")
         stmt = pg_insert(JobRow).values(**values)
         active_render = job.kind == "render" and job.status in ("queued", "processing")
+        active_preview = job.kind in ("section_preview", "thumbnail") \
+            and job.status in ("queued", "processing")
+        fields = ("package", "digest") if active_render else ("package_id", "media_id")
         if active_render:
             stmt = stmt.on_conflict_do_nothing(
                 index_elements=[text("(payload ->> 'package')"), text("(payload ->> 'digest')")],
                 index_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
+            )
+        elif active_preview:
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=["kind", text("(payload ->> 'package_id')"),
+                                text("(payload ->> 'media_id')")],
+                index_where=text(
+                    "kind IN ('section_preview', 'thumbnail') "
+                    "AND status IN ('queued', 'processing')"
+                ),
             )
         with self._session() as session:
             while True:
@@ -791,10 +810,10 @@ class PostgresStore:
                     # A separate statement gets a fresh READ COMMITTED snapshot.
                     # Lock the winner against completion until our transaction ends.
                     row = session.scalar(select(JobRow).where(
-                        JobRow.kind == "render",
+                        JobRow.kind == job.kind,
                         JobRow.status.in_(("queued", "processing")),
-                        JobRow.payload["package"].as_string() == job.payload["package"],
-                        JobRow.payload["digest"].as_string() == job.payload["digest"],
+                        *(JobRow.payload[key].as_string() == str(job.payload[key])
+                          for key in fields),
                     ).with_for_update())
                 if row is not None:
                     if created and audit is not None:
@@ -1363,6 +1382,44 @@ class PostgresStore:
             )
             session.execute(stmt)
             session.commit()
+
+    @emits()
+    def cancel_media_jobs(
+        self, package_id: int, media_id: str | None, *, kinds: tuple[str, ...],
+        cancelled_at: datetime,
+    ) -> int:
+        stmt = update(JobRow).where(
+            JobRow.kind.in_(kinds), JobRow.status.in_(("queued", "processing")),
+            JobRow.payload["package_id"].as_string() == str(package_id),
+        )
+        if media_id is not None:
+            stmt = stmt.where(JobRow.payload["media_id"].as_string() == media_id)
+        with self._session() as session:
+            changed = list(session.scalars(stmt.values(
+                status="cancelled", finished_at=cancelled_at,
+            ).returning(JobRow.id)))
+            session.commit()
+        if changed:
+            self.queue_change(["dashboard", "publication", f"package:{package_id}"])
+        return len(changed)
+
+    @emits(result=True)
+    def finish_if_processing(
+        self, job_id: str, *, status: str, finished_at: datetime,
+        error_reason: str | None = None,
+    ) -> Job | None:
+        if status not in ("done", "failed", "cancelled"):
+            raise ValueError("job finish status must be terminal")
+        with self._session() as session:
+            row = session.scalar(select(JobRow).where(
+                JobRow.job_id == job_id, JobRow.status == "processing",
+            ).with_for_update())
+            if row is None:
+                return None
+            return self._update_job(replace(
+                self._job_from_row(row), status=status, finished_at=finished_at,
+                error_reason=error_reason,
+            ))
 
     def _create_occurrence(self, occ: YayinZamani) -> YayinZamani:
         # Regular due-time identity: repeated creation returns the existing row

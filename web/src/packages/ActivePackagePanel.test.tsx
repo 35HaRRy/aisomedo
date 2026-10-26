@@ -11,13 +11,24 @@ import { editorServer } from "./testFixtures";
 
 beforeEach(() => { localStorage.clear(); Object.defineProperty(navigator, "onLine", { value: true, configurable: true }); });
 
+const saveButton = (filename = "a.mp4") => within(screen.getByRole("heading", { name: filename }).closest("li")!).getByRole("button", { name: "Bölümleri kaydet" });
+
+it("collapsed list mounts thumbnails only and omits unchanged save reasons", async () => {
+  const { container } = await setup();
+  expect(container.querySelector("video")).toBeNull();
+  expect(screen.getByRole("img", { name: "a.mp4 önizlemesi" })).toHaveAttribute("src", expect.stringContaining("/thumbnail?"));
+  fireEvent.error(screen.getByRole("img", { name: "a.mp4 önizlemesi" }));
+  expect(screen.getByRole("button", { name: "a.mp4 tam ekran görüntüle" })).toHaveTextContent("Önizleme dosyası mevcut değil.");
+  expect(screen.queryByText("Kaydedilecek değişiklik yok.")).not.toBeInTheDocument();
+});
+
 it("failed local storage warns that draft is not recoverable after closing", async () => {
   const { server } = await setup();
   draftMemory.failWrites();
   fireEvent.click(screen.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   fireEvent.click(screen.getByRole("button", { name: "Bölüm ekle" }));
   await screen.findByText(/Taslak bu cihaza kaydedilemedi/);
-  expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeDisabled();
+  expect(saveButton()).toBeDisabled();
   expect(screen.getByRole("button", { name: "Taslak kaydını yeniden dene" })).toBeEnabled();
   expect(server.writes).toHaveLength(0);
 });
@@ -30,7 +41,7 @@ it("conflicting video offers explicit local or server choice without writing", a
   await act(async () => invalidateLive());
   const conflict = await screen.findByRole("region", { name: "video:a çakışması" });
   fireEvent.click(within(conflict).getByRole("button", { name: "Benim değişikliğimi kullan" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeEnabled());
+  await waitFor(() => expect(saveButton()).toBeEnabled());
   expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("1");
   expect(server.writes).toHaveLength(0);
 });
@@ -55,16 +66,16 @@ it("photo duration edits save and discard; disabled save explains unchanged stat
     server.snapshot.montage.order.push("photo");
     server.snapshot.render_stale = true;
   });
-  expect(screen.getByText("Kaydedilecek değişiklik yok.")).toBeInTheDocument();
-  const duration = screen.getByRole("spinbutton", { name: "photo.jpg görüntülenme süresi (saniye)" });
+  expect(screen.queryByText("Kaydedilecek değişiklik yok.")).not.toBeInTheDocument();
+  const duration = screen.getByRole("spinbutton", { name: "photo.jpg Gösterilme süresi (sn)" });
   expect(duration).toHaveValue(3);
   fireEvent.change(duration, { target: { value: "4.5" } });
-  expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeEnabled();
-  fireEvent.click(screen.getByRole("button", { name: "Bölümleri kaydet" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeDisabled());
+  expect(saveButton("photo.jpg")).toBeEnabled();
+  fireEvent.click(saveButton("photo.jpg"));
+  await waitFor(() => expect(saveButton("photo.jpg")).toBeDisabled());
   expect(server.snapshot.media.find(m => m.media_id === "photo")?.effective_duration).toBe(4.5);
   fireEvent.change(duration, { target: { value: "6" } });
-  fireEvent.click(screen.getByRole("button", { name: "Kaydedilmemiş değişiklikleri geri al" }));
+  fireEvent.click(within(duration.closest("li")!).getByRole("button", { name: "Kaydedilmemiş değişiklikleri geri al" }));
   expect(duration).toHaveValue(4.5); expect(server.writes).toHaveLength(1);
 });
 
@@ -81,18 +92,17 @@ it("clear warns, cancellation writes nothing, confirmation removes package and u
   expect(server.writes[0].body).toEqual({ expected_folder_name: "02-10-2026 13-00", expected_package_id: 1, confirmed: true });
 });
 
-it("saved reel preview shows rendered artifact and render action keeps unsaved section drafts", async () => {
+it("active media panel does not mount the separate saved Reel panel", async () => {
   const { server, container } = await setup(server => {
     server.snapshot.render_status = "ready"; server.snapshot.render_preview_url = "/api/packages/active/render/preview?revision=saved";
   });
-  expect(screen.getByLabelText("Kaydedilmiş Reel önizlemesi", { selector: "video" })).toHaveAttribute("src", "/api/packages/active/render/preview?revision=saved");
+  expect(screen.queryByLabelText("Kaydedilmiş Reel önizlemesi", { selector: "video" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   fireEvent.click(screen.getByRole("button", { name: "Bölüm ekle" }));
-  fireEvent.click(screen.getByRole("button", { name: "Kaydedilmiş montajı render et" }));
-  await waitFor(() => expect(server.writes).toHaveLength(1));
-  expect(server.writes[0].url).toBe("/api/packages/active/render");
+  expect(screen.queryByRole("button", { name: "Kaydedilmiş montajı render et" })).not.toBeInTheDocument();
+  expect(server.writes).toHaveLength(0);
   expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("1");
-  expect(container.querySelector(".saved-reel-preview")).toBeInTheDocument();
+  expect(container.querySelector(".saved-reel-preview")).not.toBeInTheDocument();
 });
 async function setup(configure?: (server: ReturnType<typeof editorServer>) => void) {
   window.location.hash = "#/package";
@@ -116,10 +126,10 @@ function dragAt(type: "dragOver" | "drop", row: HTMLElement, dataTransfer: Retur
 it("media actions use labelled SVG icons with drag handle last", async () => {
   await setup();
   const row = screen.getByText("a.mp4").closest("li")!;
-  const buttons = within(row).getAllByRole("button");
+  const buttons = within(row.querySelector<HTMLElement>(".package-media-actions")!).getAllByRole("button");
   for (const button of buttons) {
     expect(button.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
-    expect(button).toHaveAttribute("title", button.getAttribute("aria-label"));
+    expect(button).toHaveAttribute("title", button.getAttribute("aria-label") === "Kaydedilmemiş değişiklikleri geri al" ? expect.stringContaining("geri alır") : button.getAttribute("aria-label"));
     expect(button.textContent).toBe("");
   }
   expect(buttons[buttons.length - 1]).toHaveAccessibleName("a.mp4 sırasını sürükle");
@@ -240,19 +250,6 @@ it("removed photos stay out of active order even when snapshot order still conta
   expect(within(screen.getByRole("list", { name: "Montaj sırası" })).queryByText("c.jpg")).not.toBeInTheDocument();
 });
 
-it("keyboard ordering persists identity and rejected reorder never changes displayed order", async () => {
-  const { server } = await setup();
-  expect(screen.getByRole("button", { name: "a.mp4 dosyasını sola taşı" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "b.mp4 dosyasını sağa taşı" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "a.mp4 dosyasını sağa taşı" }));
-  await waitFor(() => expect(within(screen.getByRole("list", { name: "Montaj sırası" })).getAllByRole("heading")[0]).toHaveTextContent("b.mp4"));
-  expect(server.writes[0].body).toEqual({ order: ["b", "a"], expected_folder_name: "02-10-2026 13-00" });
-  server.writeStatus = 409;
-  fireEvent.click(screen.getByRole("button", { name: "a.mp4 dosyasını sola taşı" }));
-  await screen.findByText("Paket değişti veya işlem reddedildi. Taslakları kontrol ederek paketi yenileyin.");
-  expect(within(screen.getByRole("list", { name: "Montaj sırası" })).getAllByRole("heading")[0]).toHaveTextContent("b.mp4");
-});
-
 it("drag handles persist order, not timeline gestures", async () => {
   const { server } = await setup(); const values = new Map<string, string>();
   const transfer = { setData: (type: string, value: string) => values.set(type, value), getData: (type: string) => values.get(type) };
@@ -262,7 +259,7 @@ it("drag handles persist order, not timeline gestures", async () => {
   expect(server.writes[0].body).toEqual({ order: ["b", "a"], expected_folder_name: "02-10-2026 13-00" });
 });
 
-it("only one preview mounts while invalid inputs survive switching and all videos save together", async () => {
+it("only one editor mounts while invalid inputs survive switching and cards save independently", async () => {
   const { server, container } = await setup();
   fireEvent.click(screen.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   fireEvent.click(screen.getByRole("button", { name: "Bölüm ekle" }));
@@ -270,16 +267,16 @@ it("only one preview mounts while invalid inputs survive switching and all video
   fireEvent.click(screen.getByRole("button", { name: "b.mp4 bölümlerini düzenle" }));
   expect(container.querySelectorAll("video")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Bölüm ekle" }));
-  expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeDisabled();
+  expect(saveButton()).toBeDisabled();
+  expect(saveButton("b.mp4")).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("");
   fireEvent.change(screen.getByLabelText("1. bölüm bitişi (saniye)"), { target: { value: "5" } });
-  fireEvent.click(screen.getByRole("button", { name: "Bölümleri kaydet" }));
+  fireEvent.click(saveButton());
   await waitFor(() => expect(server.writes).toHaveLength(1));
   expect(server.writes[0].body).toEqual({ expected_folder_name: "02-10-2026 13-00", expected_package_id: 1, base_content_revision: 1,
     changes: [
       { key: "video:a", base: { ranges: [] }, proposed: { ranges: [{ start: 0, end: 5 }] } },
-      { key: "video:b", base: { ranges: [] }, proposed: { ranges: [{ start: 0, end: 1 }] } },
     ] });
 });
 
@@ -292,8 +289,8 @@ it("upload refresh appends media and merges untouched dirty inputs", async () =>
   act(() => invalidateLive());
   await screen.findByText("c.mp4");
   expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("1");
-  expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeEnabled();
-  fireEvent.click(screen.getByRole("button", { name: "Bölümleri kaydet" }));
+  expect(saveButton()).toBeEnabled();
+  fireEvent.click(saveButton());
   await waitFor(() => expect(server.writes).toHaveLength(1));
   expect(server.writes[0].body).toEqual({ expected_folder_name: "02-10-2026 13-00", expected_package_id: 1, base_content_revision: 1,
     changes: [{ key: "video:a", base: { ranges: [] }, proposed: { ranges: [{ start: 0, end: 1 }] } }] });
@@ -303,13 +300,13 @@ it("remount shows persisted ranges rather than previous local input state", asyn
   const { server, unmount } = await setup();
   fireEvent.click(screen.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   fireEvent.click(screen.getByRole("button", { name: "Bölüm ekle" }));
-  fireEvent.click(screen.getByRole("button", { name: "Bölümleri kaydet" }));
+  fireEvent.click(saveButton());
   await waitFor(() => expect(server.writes).toHaveLength(1));
   await screen.findByText("Bölümler kaydedildi."); unmount();
   render(<SessionProvider><PackageEditorProvider><UploadProvider onPackageChanged={() => {}}><ActivePackagePanel /></UploadProvider></PackageEditorProvider></SessionProvider>);
   fireEvent.click(await screen.findByRole("button", { name: "a.mp4 bölümlerini düzenle" }));
   expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("1");
-  expect(screen.getByRole("button", { name: "Bölümleri kaydet" })).toBeDisabled();
+  expect(saveButton()).toBeDisabled();
 });
 
 it("known over-limit total differs from unknown source duration", async () => {
@@ -328,6 +325,6 @@ it("removing a numerically moved row removes displayed section, not its sorted n
   fireEvent.click(screen.getByRole("button", { name: "1. bölümü kaldır" }));
   expect(screen.getByLabelText("1. bölüm başlangıcı (saniye)")).toHaveValue("10");
   expect(screen.getByLabelText("1. bölüm bitişi (saniye)")).toHaveValue("15");
-  fireEvent.click(screen.getByRole("button", { name: "Bölümleri kaydet" }));
+  fireEvent.click(saveButton());
   await waitFor(() => expect(server.snapshot.montage.selections.a).toEqual([{ start: 10, end: 15 }]));
 });

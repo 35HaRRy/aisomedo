@@ -50,6 +50,7 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
     canMutate: Boolean = true,
     selectionContext: String? = "local",
     runningSinceMillis: Map<String, Long> = emptyMap(),
+    defaultExpanded: Boolean = true,
 ) {
     val currentSelectionContext by rememberUpdatedState(selectionContext)
     val context = LocalContext.current
@@ -89,7 +90,7 @@ fun uploadIssueLabel(issue: UploadIssue): Int = when (issue) {
             else pickerIssue = UploadIssue.PACKAGE_CHANGED
         }
     }
-    CollapsiblePanel(stringResource(R.string.upload_title), Modifier.widthIn(max = 640.dp)) {
+    CollapsiblePanel(stringResource(R.string.upload_title), Modifier.widthIn(max = 640.dp), initiallyExpanded = defaultExpanded) {
         Button(enabled = canMutate && resolvingId == null && selectionEnabled && pendingUris.isEmpty() && !permissionPending, onClick = {
             pickerPackageId = selectionPackageId
             pickerContext = selectionContext

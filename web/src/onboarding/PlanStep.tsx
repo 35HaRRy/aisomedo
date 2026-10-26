@@ -6,9 +6,9 @@ import { ReloadDraft, StepActions, useDraft, useFormSave } from "./forms";
 export function PlanStep({ onSaved }: { onSaved: () => void }) {
   const formId = useId();
   const snapshot = useLiveData(api.plan, true, ["settings"]);
-  const form = useFormSave(onSaved);
   const state = useDraft(snapshot.data ? { anchor_date: snapshot.data.anchor_date ?? "", anchor_time: snapshot.data.anchor_time?.slice(0, 5) ?? "", enabled: snapshot.data.enabled } : null,
     { anchor_date: "", anchor_time: "", enabled: false });
+  const form = useFormSave(() => { state.markSaved(); onSaved(); });
   const { draft, edit } = state;
   function submit() {
     const date = new Date(`${draft.anchor_date}T12:00:00Z`);

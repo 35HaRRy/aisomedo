@@ -39,6 +39,7 @@ media/
 .DS_Store
 
 .gradle/
+.kotlin/
 .idea/
 gradle/
 gradlew

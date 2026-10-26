@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
+
+from dojo.model import ReelBuild, ReelClip
 
 
 class StubReelRenderer:
     def __init__(self, *, fail_reason: str | None = None) -> None:
         self.calls: list[tuple[object, Path]] = []
         self.fail_reason = fail_reason
+        self.section_calls: list[tuple[list[ReelClip], Path]] = []
+        self.thumbnail_calls: list[tuple[Path, Path]] = []
+        self._durations: dict[Path, float] = {}
 
     def render(self, build: object, work_dir: Path, out_path: Path) -> Path:
         from dojo.exceptions import RenderFailed
@@ -17,7 +23,53 @@ class StubReelRenderer:
             raise RenderFailed(self.fail_reason)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"fake-reel")
+        if isinstance(build, ReelBuild):
+            self._durations[out_path] = sum(c.duration for c in build.clips) + sum(
+                duration or build.photo_duration for asset, duration in (
+                    (build.intro_asset, build.intro_duration),
+                    (build.outro_asset, build.outro_duration),
+                ) if asset is not None
+            )
         return out_path
+
+    def render_sections(
+        self, clips: list[ReelClip], work_dir: Path, out_path: Path, *,
+        cancelled: Callable[[], bool],
+    ) -> Path:
+        from dojo.adapters.preview_process import PreviewCancelled
+        from dojo.exceptions import RenderFailed
+
+        if cancelled():
+            raise PreviewCancelled()
+        self.section_calls.append((clips, out_path))
+        if self.fail_reason:
+            raise RenderFailed(self.fail_reason)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"fake-section-preview")
+        self._durations[out_path] = sum(c.duration for c in clips)
+        return out_path
+
+    def render_thumbnail(
+        self, source: Path, out_path: Path, *, cancelled: Callable[[], bool],
+    ) -> Path:
+        from dojo.adapters.preview_process import PreviewCancelled
+        from dojo.exceptions import RenderFailed
+
+        if cancelled():
+            raise PreviewCancelled()
+        self.thumbnail_calls.append((source, out_path))
+        if self.fail_reason:
+            raise RenderFailed(self.fail_reason)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"fake-thumbnail")
+        return out_path
+
+    def probe_duration(self, path: Path, *, cancelled: Callable[[], bool]) -> float:
+        from dojo.adapters.preview_process import PreviewCancelled
+
+        if cancelled():
+            raise PreviewCancelled()
+        return self._durations[path]
 
 
 class StubMetaPublisher:

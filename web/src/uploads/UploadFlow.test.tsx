@@ -52,7 +52,12 @@ function fixture({ fileLimit = 100000000, holdFirst = false, loseFirst = false, 
   return { fetcher, offsets, first, initializations: () => initializations,
     current: () => current!, set: (value: UploadOut) => { current = value; } };
 }
+async function expandUploads() {
+  const toggle = await screen.findByRole("button", { name: /Fotoğraf ve video yükle panelini/ });
+  if (toggle.getAttribute("aria-expanded") === "false") fireEvent.click(toggle);
+}
 async function select(file: File) {
+  await expandUploads();
   await waitFor(() => expect(screen.getByLabelText("Fotoğraf ve video seç")).toBeEnabled());
   fireEvent.change(screen.getByLabelText("Fotoğraf ve video seç"), { target: { files: [file] } });
 }
@@ -67,6 +72,7 @@ it("actual API flow preserves File through navigation and resumes paused accepte
   fireEvent.click(screen.getByRole("link", { name: "Ayarlar" }));
   await screen.findByRole("heading", { name: "Ayarlar" });
   fireEvent.click(screen.getByRole("link", { name: "Güncel Paket" }));
+  await expandUploads();
   await screen.findByText("Duraklatıldı");
   f.first.resolve(json(f.current()));
   fireEvent.click(screen.getByRole("button", { name: "Devam et" }));
@@ -83,6 +89,7 @@ it("actual API reload rejects wrong file and shows authoritative worker outcomes
   await screen.findByText("Yükleme kesildi");
   view.unmount();
   render(<App />);
+  await expandUploads();
   const reselect = await screen.findByLabelText("Orijinal dosyayı yeniden seç: dojo.jpg");
   fireEvent.change(reselect, { target: { files: [new File(["abd"], "dojo.jpg")] } });
   await screen.findByText("Seçilen dosya orijinal dosyayla eşleşmiyor. Aynı içeriğe sahip orijinal dosyayı seçin.");
@@ -142,6 +149,7 @@ it("completed browsing leaves active upload File and accepted offsets intact", a
   await screen.findByText("Henüz tamamlanmış paket yok.");
   expect(screen.queryByLabelText("Fotoğraf ve video seç")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Aktif pakete dön" }));
+  await expandUploads();
   await screen.findByText("Duraklatıldı"); f.first.resolve(json(f.current()));
   fireEvent.click(screen.getByRole("button", { name: "Devam et" }));
   await screen.findByText("İşlem sırasına alındı");

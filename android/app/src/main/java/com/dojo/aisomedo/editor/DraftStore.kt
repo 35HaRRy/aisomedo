@@ -20,6 +20,7 @@ import java.security.MessageDigest
     val groups: Map<String, DraftGroup> = emptyMap(),
     val inputs: Map<String, List<RangeInput>> = emptyMap(),
     val uncertain: Boolean = false,
+    val pendingRemovals: Set<String> = emptySet(),
 )
 enum class DraftIssue { STORAGE, CORRUPT }
 class DraftFailure(val issue: DraftIssue) : Exception("Draft recovery unavailable: $issue")
@@ -77,6 +78,7 @@ class DraftStore(private val directory: File) {
     }
     private fun validate(draft: StoredDraft) {
         require(draft.schemaVersion == 1 && draft.localRevision >= 0 && draft.folderName.isNotBlank() && draft.baseContentRevision > 0)
+        require(draft.pendingRemovals.all { it.isNotBlank() && it.length <= 128 })
         for ((key, group) in draft.groups) {
             val field = when {
                 key.startsWith("video:") && key.length > 6 -> "ranges"

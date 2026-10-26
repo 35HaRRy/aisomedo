@@ -46,9 +46,9 @@ function UploadItem({ row }: { row: UploadRow }) {
   </li>;
 }
 
-export function UploadPanel() {
+export function UploadPanel({ defaultExpanded = true }: { defaultExpanded?: boolean } = {}) {
   const { snapshot, controller } = useUploads();
-  return <CollapsiblePanel className="summary-sheet upload-panel" title={tr.upload.title}>
+  return <CollapsiblePanel className="summary-sheet upload-panel" title={tr.upload.title} defaultExpanded={defaultExpanded} stateKey="package-upload">
     <p>{tr.upload.intro}</p>
     <div className="upload-picker"><label htmlFor="upload-files">{tr.upload.choose}</label>
       <input id="upload-files" type="file" multiple accept={formats} disabled={!snapshot.limits || snapshot.limitsError}

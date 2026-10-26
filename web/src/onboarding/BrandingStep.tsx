@@ -8,7 +8,7 @@ export function BrandingStep({ kind, onSaved }: { kind: "logo" | "caption_templa
   const formId = useId();
   const snapshot = useLiveData(api.branding, true, ["settings"]);
   const state = useDraft(snapshot.data ? { caption: snapshot.data.caption_template ?? "", logo: snapshot.data.logo_asset ?? null } : null, { caption: "", logo: null as string | null });
-  const form = useFormSave(onSaved);
+  const form = useFormSave(() => { state.markSaved(); onSaved(); });
   const [file, setFile] = useState<File | null>(null);
   const [fileKey, setFileKey] = useState(0);
   const [stage, setStage] = useState<"upload" | "install">("upload");

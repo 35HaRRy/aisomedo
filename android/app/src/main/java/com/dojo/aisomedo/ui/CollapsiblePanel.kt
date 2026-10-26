@@ -18,8 +18,8 @@ import androidx.compose.ui.unit.dp
 import com.dojo.aisomedo.R
 
 @Composable fun CollapsiblePanel(title: String, modifier: Modifier = Modifier,
-    actions: @Composable RowScope.() -> Unit = {}, content: @Composable ColumnScope.() -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(true) }
+    actions: @Composable RowScope.() -> Unit = {}, initiallyExpanded: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
     val holder = rememberSaveableStateHolder()
     val state = stringResource(if (expanded) R.string.panel_expanded else R.string.panel_collapsed)
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {

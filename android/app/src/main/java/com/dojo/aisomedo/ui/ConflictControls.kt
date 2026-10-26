@@ -183,11 +183,12 @@ data class ConflictSelection(
     }
 }
 
-@Composable internal fun NativeVideo(file: File, label: String, onReady: () -> Unit, onError: () -> Unit) {
+@Composable internal fun NativeVideo(file: File, label: String, onReady: () -> Unit, onError: () -> Unit, onDuration: (Double) -> Unit = {}, modifier: Modifier = Modifier.fillMaxWidth().height(240.dp)) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var player: VideoView? by remember { mutableStateOf(null) }
     val ready by rememberUpdatedState(onReady)
     val error by rememberUpdatedState(onError)
+    val duration by rememberUpdatedState(onDuration)
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) player?.pause() }
         lifecycle.addObserver(observer)
@@ -198,10 +199,10 @@ data class ConflictSelection(
         contentDescription = label
         val view = this
         setMediaController(MediaController(context).apply { setAnchorView(view) })
-        setOnPreparedListener { seekTo(1); ready() }
+        setOnPreparedListener { media -> seekTo(1); if (media.duration > 0) duration(media.duration / 1000.0); ready() }
         setOnErrorListener { _, _, _ -> stopPlayback(); error(); true }
         setVideoPath(file.absolutePath)
-    } }, modifier = Modifier.fillMaxWidth().height(240.dp), onRelease = {
+    } }, modifier = modifier, onRelease = {
         it.setOnPreparedListener(null); it.setOnErrorListener(null); it.stopPlayback(); player = null
     })
 }

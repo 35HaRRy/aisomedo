@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -12,8 +13,15 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -22,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -48,17 +57,23 @@ import java.util.Locale
 private data class DropTarget(val id: String, val after: Boolean)
 private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable fun MediaEditorPanel(
     editor: MediaEditorState, busy: Boolean, scroll: ScrollState, viewport: Rect,
-    onRefresh: () -> Unit, onReorder: (List<String>) -> Unit, onRemove: (String) -> Unit, onRestore: (String) -> Unit,
-    onEditRanges: (String, List<RangeInput>) -> Unit, onSave: () -> Unit, onDiscard: () -> Unit,
+    onRefresh: () -> Unit, onReorder: (List<String>) -> Unit, onRemove: (String, Boolean) -> Unit, onRestore: (String) -> Unit,
+    onEditRanges: (String, List<RangeInput>) -> Unit, onSave: (String) -> Unit, onDiscard: (String) -> Unit,
     canMutate: Boolean = true,
     onPreview: suspend (String, File) -> Unit = { _, _ -> },
     previewEnabled: Boolean = true,
     canResolve: Boolean = canMutate,
     onResolveConflict: (String, Boolean) -> Unit = { _, _ -> },
     onRetryPersistence: () -> Unit = {},
+    onPhotoDuration: (String, String) -> Unit = { _, _ -> },
+    onRetryPreview: (String) -> Unit = {},
+    onClear: (Boolean) -> Unit = {},
+    onDiscardReplaced: () -> Unit = {},
+    canClear: Boolean = canMutate,
+    pendingClearFolder: String? = null,
 ) {
     val snapshot = editor.snapshot
     val blocked = !canMutate || busy || editor.readRequired || editor.persistenceIssue != null || snapshot?.`package`?.status == "completed"
@@ -71,6 +86,8 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
     var target by remember { mutableStateOf<DropTarget?>(null) }
     var opened by rememberSaveable(snapshot?.`package`?.folderName) { mutableStateOf<String?>(null) }
     var previewed by rememberSaveable(snapshot?.`package`?.folderName) { mutableStateOf<String?>(null) }
+    var removing by remember { mutableStateOf<String?>(null) }
+    var clearing by remember { mutableStateOf(false) }
     val currentViewport by rememberUpdatedState(viewport)
     val currentOrder by rememberUpdatedState(order)
     val currentReorder by rememberUpdatedState(onReorder)
@@ -86,6 +103,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         return DropTarget(row.first, pointer.y > row.second.center.y).takeIf { it.id != dragged }
     }
     BackHandler(dragged != null) { clearDrag() }
+    LaunchedEffect(snapshot?.`package`?.id, snapshot?.contentRevision, previewEnabled) { previewed = null }
     LaunchedEffect(blocked, snapshot?.`package`?.folderName, order) { clearDrag() }
     LaunchedEffect(dragged) {
         while (dragged != null) {
@@ -102,8 +120,10 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
             delay(16)
         }
     }
-    CollapsiblePanel(stringResource(R.string.media_management), Modifier.widthIn(max = 640.dp)) {
-        OutlinedButton(onClick = onRefresh, enabled = !busy) { Text(stringResource(R.string.refresh)) }
+    CollapsiblePanel(stringResource(R.string.media_management), actions = {
+        MediaIconAction(stringResource(R.string.refresh), Icons.Default.Refresh, !busy, onClick = onRefresh)
+        MediaIconAction(stringResource(if (pendingClearFolder == null) R.string.media_clear else R.string.media_retry_clear), Icons.Default.Delete, !busy && canClear, onClick = { clearing = true })
+    }) {
         editor.persistenceIssue?.let { issue ->
             Text(stringResource(if (issue == DraftIssue.STORAGE) R.string.draft_storage_failed else R.string.draft_corrupt),
                 color = MaterialTheme.colorScheme.error,
@@ -113,6 +133,7 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         }
         if (editor.storedDraft != null && (snapshot == null || editor.storedDraft.folderName != snapshot.`package`.folderName || snapshot.`package`.status != "active")) {
             Text(stringResource(R.string.draft_inapplicable, editor.storedDraft.folderName), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            TextButton(onClick = onDiscardReplaced, enabled = canResolve && !busy) { Text(stringResource(R.string.media_discard)) }
         }
         for ((key, server) in editor.conflicts) {
             val id = key.substringAfter(':')
@@ -137,24 +158,13 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         if (snapshot == null) Text(stringResource(if (busy) R.string.loading else R.string.media_no_active))
         else {
             val total = editor.proposedTotal
-            Text(stringResource(R.string.media_total, total?.let(::seconds) ?: stringResource(R.string.media_unknown_duration), seconds(snapshot.montage.maxDurationSeconds)),
-                modifier = Modifier.testTag("media-duration").semantics { liveRegion = LiveRegionMode.Polite })
-            if (total == null) Text(stringResource(R.string.media_duration_help), color = MaterialTheme.colorScheme.error)
-            if (total != null && total > snapshot.montage.maxDurationSeconds) Text(
-                stringResource(R.string.media_limit_help, seconds(total - snapshot.montage.maxDurationSeconds)), color = MaterialTheme.colorScheme.error)
-            if (snapshot.renderStale) Text(stringResource(R.string.media_render_stale), style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(if (editor.dirty) R.string.media_unsaved else R.string.media_saved), style = MaterialTheme.typography.bodySmall)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onSave, enabled = !blocked && editor.canSave, modifier = Modifier.testTag("media-save")) { Text(stringResource(R.string.media_save)) }
-                TextButton(onClick = onDiscard, enabled = canResolve && !busy && editor.dirty && !(editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN))) { Text(stringResource(R.string.media_discard)) }
-            }
             Text(stringResource(R.string.media_drag_help), style = MaterialTheme.typography.bodySmall)
             ordered.forEachIndexed { index, media -> key(media.mediaId) {
                 val id = media.mediaId
                 var handle by remember { mutableStateOf<LayoutCoordinates?>(null) }
                 val before = target == DropTarget(id, false)
                 val after = target == DropTarget(id, true)
-                Column(Modifier.fillMaxWidth().testTag("media-row-$id")
+                Column(Modifier.fillMaxWidth().then(if (opened == id) Modifier else Modifier.height(480.dp)).testTag("media-row-$id")
                     .onGloballyPositioned { coordinates ->
                         bounds[id] = Rect(coordinates.localToRoot(Offset.Zero), coordinates.localToRoot(Offset(coordinates.size.width.toFloat(), coordinates.size.height.toFloat())))
                     }.background(if (dragged == id) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface),
@@ -182,7 +192,11 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                             }, contentAlignment = Alignment.Center) {
                             Icon(Icons.Default.Menu, contentDescription = stringResource(R.string.media_drag_label, media.filename), tint = if (blocked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
                         }
-                        Text(stringResource(R.string.media_position, index + 1, media.filename), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(), tooltip = { PlainTooltip { Text(media.filename) } },
+                            state = rememberTooltipState(), modifier = Modifier.weight(1f)) {
+                            Text(stringResource(R.string.media_position, index + 1, media.filename), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { contentDescription = media.filename })
+                        }
                         IconButton(onClick = { onReorder(moveMedia(order, id, order[index - 1], false)) }, enabled = !blocked && index > 0, modifier = Modifier.testTag("media-up-$id")) {
                             Icon(Icons.Default.KeyboardArrowUp, contentDescription = stringResource(R.string.media_move_up, media.filename))
                         }
@@ -190,21 +204,53 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                             Icon(Icons.Default.KeyboardArrowDown, contentDescription = stringResource(R.string.media_move_down, media.filename))
                         }
                     }
-                    Text(stringResource(R.string.media_clip_duration, media.effectiveDuration?.let(::seconds) ?: stringResource(R.string.media_unknown_duration)), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.media_clip_duration, media.effectiveDuration?.let(::seconds) ?: stringResource(R.string.media_unknown_duration)) +
+                        if (editor.isDirty(id)) " · ${stringResource(R.string.media_card_draft)}" else "", style = MaterialTheme.typography.bodySmall)
                     if (!previewEnabled) Text(stringResource(R.string.offline_media), style = MaterialTheme.typography.bodySmall)
-                    else if (media.previewUrl == null) Text(stringResource(R.string.media_preview_missing), style = MaterialTheme.typography.bodySmall)
-                    else {
-                        OutlinedButton(onClick = { previewed = if (previewed == id) null else id },
-                            modifier = Modifier.testTag("media-preview-$id")) {
-                            Text(stringResource(if (previewed == id) R.string.media_preview_hide else R.string.media_preview_show))
+                    else if (opened != id) {
+                        Box(Modifier.fillMaxWidth().height(112.dp).testTag("media-preview-$id")
+                            .clickable { previewed = id }.semantics { contentDescription = media.filename }, contentAlignment = Alignment.Center) {
+                            val thumbnail = if (media.isVideo) media.thumbnailUrl else media.previewUrl
+                            if (thumbnail == null) Text(stringResource(R.string.media_preview_missing))
+                            else key(thumbnail) { RemoteMediaPreview(thumbnail, false, media.filename, onPreview) }
                         }
-                        if (previewed == id) key(media.mediaId, media.previewUrl) { MediaPreview(media, onPreview) }
                     }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (media.isVideo) OutlinedButton(onClick = { opened = if (opened == id) null else id }, enabled = !busy, modifier = Modifier.testTag("media-edit-$id")) { Text(stringResource(R.string.media_edit_trim)) }
-                        TextButton(onClick = { onRemove(id) }, enabled = !blocked, modifier = Modifier.testTag("media-remove-$id")) { Text(stringResource(R.string.media_remove)) }
+                        if (media.isVideo) MediaIconAction(stringResource(R.string.media_edit_trim), if (opened == id) Icons.Default.Close else Icons.Default.Edit, !busy, Modifier.testTag("media-edit-$id")) { opened = if (opened == id) null else id }
+                        MediaIconAction(stringResource(R.string.media_save), Icons.Default.Check, !blocked && editor.canSave(id), Modifier.testTag("media-save-$id")) { onSave(id) }
+                        MediaIconAction(stringResource(R.string.media_discard), Icons.Default.Refresh, canResolve && !busy && editor.isDirty(id) && !(editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)), Modifier.testTag("media-discard-$id")) { onDiscard(id) }
+                        MediaIconAction(stringResource(R.string.media_remove), Icons.Default.Delete, !blocked, Modifier.testTag("media-remove-$id")) { if (editor.isDirty(id)) removing = id else onRemove(id, false) }
                     }
-                    if (opened == id) VideoRangeFields(media, editor.inputs[id].orEmpty(), blocked) { onEditRanges(id, it) }
+                    if (opened == id) {
+                        if (previewEnabled && media.originalUrl != null) key(media.originalUrl) {
+                            RemoteMediaPreview(media.originalUrl, true, media.filename, onPreview, contentType = media.contentType)
+                        }
+                        media.sectionPreview?.takeUnless { it.status == "missing" }?.let { preview ->
+                            Text(stringResource(R.string.media_section_preview), style = MaterialTheme.typography.titleSmall)
+                            if (editor.isDirty(id)) Text(stringResource(R.string.media_preview_draft_warning))
+                            Text(stringResource(when (preview.status) {
+                                "ready" -> R.string.media_render_ready
+                                "queued" -> R.string.media_render_queued
+                                "processing" -> R.string.media_render_processing
+                                else -> R.string.media_render_failed
+                            }), modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                            if (preview.status == "ready" && preview.url != null && previewEnabled) key(preview.generation) {
+                                RemoteMediaPreview(preview.url, true, stringResource(R.string.media_section_preview), onPreview)
+                            }
+                            if (preview.status == "failed") MediaIconAction(stringResource(R.string.retry), Icons.Default.Refresh, !blocked) { onRetryPreview(id) }
+                        }
+                        val rows = editor.inputs[id].orEmpty()
+                        val ranges = parseRanges(rows, media.sourceDuration)
+                        if (media.sourceDuration != null && ranges != null) MediaRangeTimeline(media.sourceDuration, ranges, blocked) { changed ->
+                            onEditRanges(id, changed.map { RangeInput(it.start.toString(), it.end.toString()) })
+                        }
+                        VideoRangeFields(media, rows, blocked) { onEditRanges(id, it) }
+                    }
+                    if (!media.isVideo) OutlinedTextField(editor.inputs[id]?.firstOrNull()?.end.orEmpty(), { onPhotoDuration(id, it) },
+                        label = { Text(stringResource(R.string.media_photo_duration)) }, singleLine = true, enabled = !blocked,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.testTag("photo-duration-$id"))
+                    if (editor.isDirty(id) && !editor.canSave(id)) Text(stringResource(if (editor.readRequired) R.string.media_changed else R.string.media_invalid),
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                     if (after) HorizontalDivider(thickness = 3.dp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("media-insertion-$id-after"))
                 }
             } }
@@ -218,39 +264,68 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
                     OutlinedButton(onClick = { onRestore(media.mediaId) }, enabled = !blocked, modifier = Modifier.testTag("media-restore-${media.mediaId}")) { Text(stringResource(R.string.media_restore)) }
                 }
             }
+            Text(stringResource(R.string.media_total, total?.let(::seconds) ?: stringResource(R.string.media_unknown_duration), seconds(snapshot.montage.maxDurationSeconds)),
+                modifier = Modifier.testTag("media-duration").semantics { liveRegion = LiveRegionMode.Polite })
+            if (total == null) Text(stringResource(R.string.media_duration_help), color = MaterialTheme.colorScheme.error)
+            if (total != null && total > snapshot.montage.maxDurationSeconds) Text(stringResource(R.string.media_limit_help, seconds(total - snapshot.montage.maxDurationSeconds)), color = MaterialTheme.colorScheme.error)
+            if (snapshot.renderStale) Text(stringResource(R.string.media_render_stale), style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(if (editor.dirty) R.string.media_unsaved else R.string.media_saved), style = MaterialTheme.typography.bodySmall)
         }
     }
+    removing?.let { id -> AlertDialog(onDismissRequest = { removing = null },
+        title = { Text(stringResource(R.string.media_remove)) }, text = { Text(stringResource(R.string.media_remove_draft)) },
+        confirmButton = { TextButton(onClick = { removing = null; onRemove(id, true) }) { Text(stringResource(R.string.media_remove)) } },
+        dismissButton = { TextButton(onClick = { removing = null }) { Text(stringResource(R.string.cancel)) } }) }
+    if (clearing) AlertDialog(onDismissRequest = { clearing = false }, title = { Text(stringResource(R.string.media_clear)) },
+        text = { Text("${pendingClearFolder ?: snapshot?.`package`?.folderName.orEmpty()}\n${stringResource(R.string.media_clear_warning)}") },
+        confirmButton = { TextButton(onClick = { clearing = false; onClear(true) }) { Text(stringResource(R.string.media_clear)) } },
+        dismissButton = { TextButton(onClick = { clearing = false }) { Text(stringResource(R.string.cancel)) } })
+    if (previewEnabled) previewed?.let { id -> byId[id]?.let { media -> key(media.mediaId, snapshot?.contentRevision) {
+        MediaFullscreenDialog(media, { previewed = null }, onPreview)
+    } } }
 }
 
 @Composable private fun VideoRangeFields(media: EditorMediaOut, rows: List<RangeInput>, blocked: Boolean, onChange: (List<RangeInput>) -> Unit) {
     val duration = media.sourceDuration?.takeIf { it.isFinite() && it > 0 }
     if (duration == null) { Text(stringResource(R.string.media_duration_help)); return }
     val invalid = rows.isNotEmpty() && parseRanges(rows, duration) == null
+    val retained = if (rows.isEmpty()) duration else parseRanges(rows, duration)?.sumOf { it.end - it.start }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(stringResource(if (rows.isEmpty()) R.string.range_whole else R.string.range_selected))
         Text(stringResource(R.string.range_source, seconds(duration)), style = MaterialTheme.typography.bodySmall)
         rows.forEachIndexed { index, row ->
-            Text(stringResource(R.string.range_number, index + 1), style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.range_number, index + 1), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                MediaIconAction(stringResource(R.string.range_remove, index + 1), Icons.Default.Delete, !blocked) { onChange(rows.filterIndexed { i, _ -> i != index }) }
+            }
             OutlinedTextField(row.start, { value -> onChange(rows.mapIndexed { i, r -> if (i == index) r.copy(start = value) else r }) },
                 label = { Text(stringResource(R.string.range_start)) }, enabled = !blocked, isError = invalid, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth().testTag("range-start-${media.mediaId}-$index"))
             OutlinedTextField(row.end, { value -> onChange(rows.mapIndexed { i, r -> if (i == index) r.copy(end = value) else r }) },
                 label = { Text(stringResource(R.string.range_end)) }, enabled = !blocked, isError = invalid, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth().testTag("range-end-${media.mediaId}-$index"))
-            TextButton(onClick = { onChange(rows.filterIndexed { i, _ -> i != index }) }, enabled = !blocked) { Text(stringResource(R.string.range_remove, index + 1)) }
         }
         if (invalid) Text(stringResource(R.string.media_invalid), color = MaterialTheme.colorScheme.error,
             modifier = Modifier.testTag("range-error-${media.mediaId}").semantics { liveRegion = LiveRegionMode.Polite })
-        OutlinedButton(onClick = { onChange(rows + RangeInput("", "")) }, enabled = !blocked, modifier = Modifier.testTag("range-add-${media.mediaId}")) { Text(stringResource(R.string.range_add)) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.range_retained, retained?.let(::seconds) ?: "—"), style = MaterialTheme.typography.bodySmall)
+            MediaIconAction(stringResource(R.string.range_add), Icons.Default.Add, !blocked, Modifier.testTag("range-add-${media.mediaId}")) { onChange(rows + RangeInput("", "")) }
+        }
         TextButton(onClick = { onChange(emptyList()) }, enabled = !blocked && rows.isNotEmpty()) { Text(stringResource(R.string.range_reset)) }
     }
 }
 
-@Composable private fun MediaPreview(media: EditorMediaOut, load: suspend (String, File) -> Unit) {
-    RemoteMediaPreview(requireNotNull(media.previewUrl), media.isVideo, stringResource(R.string.image_preview, media.filename), load)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun MediaIconAction(label: String, image: ImageVector, enabled: Boolean,
+    modifier: Modifier = Modifier, onClick: () -> Unit) {
+    TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(label) } }, state = rememberTooltipState()) {
+        IconButton(onClick = onClick, enabled = enabled, modifier = modifier) { Icon(image, label) }
+    }
 }
 
-@Composable internal fun RemoteMediaPreview(previewUrl: String, isVideo: Boolean, label: String, load: suspend (String, File) -> Unit) {
+@Composable internal fun RemoteMediaPreview(previewUrl: String, isVideo: Boolean, label: String, load: suspend (String, File) -> Unit,
+    contentType: String? = null, onDuration: (Double) -> Unit = {}, mediaModifier: Modifier? = null) {
     val context = LocalContext.current
     val loader by rememberUpdatedState(load)
     var attempt by remember { mutableIntStateOf(0) }
@@ -268,7 +343,8 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
             val temporary = withContext(Dispatchers.IO) {
                 val directory = context.cacheDir.resolve("media-previews")
                 check(directory.isDirectory || directory.mkdirs())
-                File.createTempFile("media-", if (isVideo) ".mp4" else ".jpg", directory).also { file = it }
+                val suffix = if (!isVideo) ".jpg" else when (contentType) { "video/quicktime" -> ".mov"; "video/webm" -> ".webm"; else -> ".mp4" }
+                File.createTempFile("media-", suffix, directory).also { file = it }
             }
             loader(previewUrl, temporary)
             ensureActive()
@@ -293,9 +369,10 @@ private fun seconds(value: Double) = String.format(Locale.ROOT, "%.2f", value)
         catch (_: Exception) { failed = true; loading = false }
         finally { file?.delete() }
     }
-    image?.let { Image(it.asImageBitmap(), contentDescription = label, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)) }
+    image?.let { Image(it.asImageBitmap(), contentDescription = label, modifier = mediaModifier ?: Modifier.fillMaxWidth().heightIn(max = 240.dp)) }
     video?.let { file -> key(file) {
-        NativeVideo(file, label, { loading = false }, { file.delete(); failed = true; loading = false; video = null })
+        NativeVideo(file, label, { loading = false }, { file.delete(); failed = true; loading = false; video = null }, onDuration,
+            modifier = mediaModifier ?: Modifier.fillMaxWidth().height(240.dp))
     } }
     if (loading && !failed) Text(stringResource(R.string.media_preview_loading),
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })

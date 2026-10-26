@@ -81,6 +81,7 @@ def prepare_approved(tmp_path: Path, publishing: DojoPublishing):
     publishing.process_job(job.job_id)
     publishing.set_caption("hello")
     publishing.evaluate_due_work()
+    publishing.render_preview()
     job = publishing.claim_next_job()
     assert job is not None
     publishing.process_job(job.job_id)

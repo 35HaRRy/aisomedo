@@ -16,6 +16,35 @@ fun editorJson(folder: String = "active", order: String = "\"a\",\"b\",\"c\"", s
 
 class MediaEditorTest {
     private val snapshot = Json.decodeFromString<ActiveEditorOut>(editorJson())
+    @Test fun photoDraftUsesSecondsGroupAndSurvivesRehydration() {
+        val edited = MediaEditorState().accept(snapshot).edit("b", listOf(RangeInput("0", "4.5")))
+        assertEquals(setOf("photo:b"), edited.storedDraft!!.groups.keys)
+        val restored = MediaEditorState().restore(1, edited.storedDraft!!).accept(snapshot, explicit = true)
+        assertEquals(listOf(RangeInput("0", "4.5")), restored.inputs["b"])
+        assertEquals(listOf(RangeInput("0", "3.0")), restored.baseInputs["b"])
+        assertEquals(33.5, restored.proposedTotal!!, 0.001)
+    }
+    @Test fun chosenCardValidationIgnoresInvalidSiblingDraftAndDiscardIsLocal() {
+        for (end in listOf("", "Infinity", "100")) {
+            val editor = MediaEditorState().accept(snapshot).edit("a", listOf(RangeInput("0", "5")))
+                .edit("c", listOf(RangeInput("0", end)))
+            assertTrue(editor.canSave("a")); assertFalse(editor.canSave("c"))
+            val discarded = editor.discard("a")
+            assertFalse(discarded.isDirty("a")); assertTrue(discarded.isDirty("c"))
+            assertEquals(editor.inputs["c"], discarded.inputs["c"])
+        }
+        assertFalse(MediaEditorState().accept(snapshot).canSave("a"))
+    }
+    @Test fun independentPhotoSaveReconcilesOnlyItsGroup() {
+        val edited = MediaEditorState().accept(snapshot).editPhotoDuration("b", "4.5").edit("a", listOf(RangeInput("0", "")))
+        assertTrue(edited.canSave("b")); assertFalse(edited.canSave("a"))
+        val saved = snapshot.copy(contentRevision = 2, media = snapshot.media.map { if (it.mediaId == "b") it.copy(effectiveDuration = 4.5) else it })
+        val reconciled = edited.accept(saved, explicit = true)
+        assertFalse(reconciled.isDirty("b")); assertTrue(reconciled.isDirty("a"))
+        assertEquals(setOf("video:a"), reconciled.storedDraft!!.groups.keys)
+        val limited = edited.copy(snapshot = snapshot.copy(montage = snapshot.montage.copy(maxDurationSeconds = 10.0)))
+        assertFalse(limited.canSave("b"))
+    }
     @Test fun reopenRestoresReadOnlyAndIndependentChangesKeepOriginalBaseline() {
         val edited = MediaEditorState().accept(snapshot).edit("a", listOf(RangeInput("0", "")))
         val restored = MediaEditorState().restore(1, edited.storedDraft!!)

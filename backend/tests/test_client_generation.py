@@ -127,6 +127,13 @@ def test_android_editor_generation_emits_nested_selections_and_large_media(tmp_p
     typescript = module.WEB_TARGET.read_text(encoding="utf-8")
     assert "export type PackageEditIn =" in typescript
     assert "export type EditConflictOut =" in typescript
+    assert "export type SectionPreviewRetryIn =" in typescript
+    assert '"section_preview"?: SectionPreviewOut | null;' in typescript
+    assert "val sectionPreview: SectionPreviewOut? = null" in kotlin
+    assert 'val status: String = "missing"' in kotlin
+    assert "val renderDuration: Double? = null" in kotlin
+    assert "data class ClearPackageIn(" in kotlin
+    assert "data class ClearPackageOut(" in kotlin
 
 
 @pytest.mark.parametrize("bad", [

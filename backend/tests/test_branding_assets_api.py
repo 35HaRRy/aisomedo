@@ -109,6 +109,25 @@ def test_corrupt_video_is_rejected_and_temporary_files_are_removed(
     assert not list((publishing.media_root / "branding" / "assets").glob("*"))
 
 
+def test_card_upload_reaches_the_active_package(tmp_path: Path) -> None:
+    client, publishing, pairing, _ = make_app(tmp_path)
+    headers = bearer(pair_device(client, pairing))
+    client.get("/api/packages/active", headers=headers)  # create + seed draft
+    asset = client.post(
+        "/api/settings/branding/assets", headers=headers, content=png()
+    ).json()["asset"]
+
+    response = client.patch("/api/settings/branding", headers=headers,
+                            json={"intro_asset": asset, "intro_duration": 2})
+
+    assert response.status_code == 200
+    package = publishing.get_active_package()
+    manifest = publishing._load_manifest(package)
+    assert manifest["branding"]["intro_asset"] == asset
+    assert manifest["branding"]["intro_duration"] == 2
+    assert manifest["render_revision"] is None
+
+
 @pytest.mark.parametrize("duration", [0, -1, 1.5, True])
 def test_card_duration_requires_positive_integer(tmp_path: Path, duration: object) -> None:
     client, _, pairing, _ = make_app(tmp_path)

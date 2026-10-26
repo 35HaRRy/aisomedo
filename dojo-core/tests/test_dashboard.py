@@ -85,14 +85,14 @@ def test_due_review_refresh_retains_versions_and_resolves(tmp_path):
     action = seam.get_dashboard_summary().pending_actions[0]
     assert (action.review_id, action.version, action.state) == (review.id, 1, "review_ready")
     seam.set_caption("Changed after render")
-    assert seam.get_dashboard_summary().pending_actions == []
+    assert seam.get_dashboard_summary().pending_actions[0].state == "preparing"
     assert not seam.get_dashboard_summary().manual_review_allowed
     seam.skip(review.id, review.version, confirmed=True)
     assert seam.get_dashboard_summary().pending_actions == []
 
 
 @pytest.mark.parametrize("change", ["missing_reel", "removed_media", "other_package"])
-def test_dashboard_excludes_unavailable_reviews_without_replacing_them(tmp_path, change):
+def test_unavailable_active_reviews_remain_reachable_without_replacement(tmp_path, change):
     store, seam, _ = make_seam(tmp_path)
     set_logo(store, "logo.png")
     finalize_media(tmp_path, seam)
@@ -112,7 +112,13 @@ def test_dashboard_excludes_unavailable_reviews_without_replacing_them(tmp_path,
         seam.get_or_create_active_package()
 
     before = seam.list_audit()
-    assert seam.get_dashboard_summary().pending_actions == []
+    actions = seam.get_dashboard_summary().pending_actions
+    if change == "other_package":
+        assert actions == []
+    else:
+        assert len(actions) == 1
+        assert actions[0].review_id == review.id
+        assert actions[0].state == ("empty_package" if change == "removed_media" else "preparing")
     assert not seam.get_dashboard_summary().manual_review_allowed
     assert seam.list_pending_reviews() == [review]
     assert seam.list_audit() == before

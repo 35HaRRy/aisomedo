@@ -71,6 +71,8 @@ data class AppUiState(
     val completedFolder: String? = null,
     val completedDetail: CompletedPackageOut? = null,
     val completedError: Boolean = false,
+    val pendingClearFolder: String? = null,
+    val clearReadRequired: Boolean = false,
 ) {
     val showConnectionNotice get() = phase == Phase.READY &&
         (!networkConnected || livePhase == LivePhase.DISCONNECTED || !authoritative && issue != null)
@@ -104,6 +106,7 @@ class AppViewModel(
     private var prompted = false
     private var reviewJob: Job? = null
     private var reviewEpoch = 0
+    private var automaticReviewRender: String? = null
     private var oneoffEpoch = 0
     private var oneoffDecisionRevision = 0L
     private var pendingPushRefresh = false
@@ -192,7 +195,10 @@ class AppViewModel(
             { failure(it) }, snapshotVersions::observe)
         live = coordinator
         liveObservation = viewModelScope.launch {
-            coordinator.phase.collect { phase -> mutable.update { it.copy(livePhase = phase) } }
+            coordinator.phase.collect { phase ->
+                mutable.update { it.copy(livePhase = phase) }
+                if (phase == LivePhase.LIVE && state.value.review.target?.occurrenceId != null) refreshReviewOnInvalidation()
+            }
         }
         coordinator.setForeground(foreground && network.value.connected)
     }
@@ -253,6 +259,8 @@ class AppViewModel(
 
     init {
         mutable.update { it.copy(
+            pendingClearFolder = saved.get<String>("clear_package_folder"),
+            clearReadRequired = saved.get<Boolean>("clear_requires_read") ?: saved.contains("clear_package_id"),
             drafts = saved.keys().filter { key -> key.startsWith("draft_") }.associate { key -> key.removePrefix("draft_") to saved.get<String>(key).orEmpty() },
             dirtySteps = saved.get<ArrayList<String>>("dirty_steps")?.toSet().orEmpty(),
             pendingAssets = listOf("logo_asset", "intro_asset", "outro_asset").mapNotNull { field ->
@@ -357,6 +365,8 @@ class AppViewModel(
             mutable.update { AppUiState(origin = origin, busy = it.busy, networkConnected = network.value.connected) }
         }
         token = credential?.token; bindingId = credential?.bindingId; boundRevision = revision
+        if (saved.get<Int>("clear_package_id") != null &&
+            (saved.get<String>("clear_origin") != origin || saved.get<String>("clear_binding") != bindingId)) forgetClearTarget()
         mutable.update { it.copy(origin = origin, issue = if (storageIssue) UiIssue.STORAGE else it.issue) }
         cached?.let { value ->
             mutable.update { it.copy(compat = value.compat ?: it.compat, updateUrl = value.updateUrl ?: it.updateUrl) }
@@ -597,6 +607,7 @@ class AppViewModel(
     private fun clearSaved() { saved.keys().toList().forEach { saved.remove<Any>(it) } }
     fun navigate(destination: Destination) {
         if (state.value.phase != Phase.READY) return
+        if (destination == Destination.SETTINGS && state.value.setup?.ready == false) { openSetup(); return }
         oneoffEpoch++
         saved["destination"] = destination.name
         closeSetup(); mutable.update { it.copy(destination = destination,
@@ -612,6 +623,16 @@ class AppViewModel(
     fun openSetup() {
         if (state.value.phase != Phase.READY) return
         selectStep(state.value.setup?.checklist?.firstOrNull { it.required && !it.complete }?.key ?: "pairing")
+    }
+    fun removePairing() {
+        val id = state.value.client?.id ?: return
+        if (state.value.busy) return
+        val current = generation
+        mutable.update { it.copy(busy = true) }
+        viewModelScope.launch {
+            try { api().revokeClient(id) } catch (_: Exception) { /* Local removal must not depend on the network. */ }
+            if (generation == current && !cleared) changeServer()
+        }
     }
     fun closeSetup() { saved.remove<String>("step"); mutable.update { it.copy(step = null) } }
     fun selectStep(key: String) {
@@ -1029,6 +1050,7 @@ class AppViewModel(
                 return
             }
             val old = state.value.editor
+            reconcileClearRead(explicit)
             val accepted = old.accept(snapshot, explicit, expected, savedTrims)
             mutable.update { it.copy(editor = accepted, editorFetchedAt = now()) }
             if (old.storedDraft != accepted.storedDraft && draftStore != null) {
@@ -1041,6 +1063,7 @@ class AppViewModel(
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = true, issue = EditorIssue.READ)) }
                 throw e
             }
+            reconcileClearRead(explicit)
             mutable.update { it.copy(editor = if (it.editor.dirty) it.editor.copy(snapshot = null, readRequired = true, issue = EditorIssue.CONFLICT) else MediaEditorState(), editorFetchedAt = now()) }
             persistState(current)
         } catch (e: CancellationException) { throw e }
@@ -1055,16 +1078,23 @@ class AppViewModel(
         if (state.value.editor.snapshot?.media?.none { it.mediaId == id && it.isVideo && it.status == "finalized" } != false) return
         persistEditor(state.value.editor.edit(id, ranges))
     }
-    fun discardMediaTrims() {
+    fun editPhotoDuration(id: String, value: String) {
+        if (!admit(media = true) || state.value.editor.persistenceIssue != null) return
+        if (state.value.editor.snapshot?.media?.none { it.mediaId == id && !it.isVideo && it.status == "finalized" } != false) return
+        persistEditor(state.value.editor.editPhotoDuration(id, value))
+    }
+    fun discardMedia(id: String) {
+        val editor = state.value.editor
+        if (!admit() || editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)) return
+        persistEditor(editor.discard(id))
+    }
+    fun discardReplacedMediaDraft() {
         val editor = state.value.editor
         if (!admit() || editor.readRequired && editor.issue in setOf(EditorIssue.READ, EditorIssue.UNCERTAIN)) return
         val clean = editor.discard()
         val oldPackage = editor.draftPackageId
         val packageId = editor.snapshot?.`package`?.id
-        if (oldPackage == null || packageId == null || oldPackage == packageId) {
-            persistEditor(clean)
-            return
-        }
+        if (oldPackage == null || packageId == null || oldPackage == packageId) return
         val current = generation
         viewModelScope.launch {
             // Remove the replaced package's draft before binding this editor to the new package.
@@ -1075,7 +1105,8 @@ class AppViewModel(
             }
         }
     }
-    private fun mediaMutation(expected: ActiveEditorOut, savedTrims: Boolean = false, action: suspend (DojoApi, String) -> Unit) {
+    private fun mediaMutation(expected: ActiveEditorOut, savedTrims: Boolean = false, discardId: String? = null,
+        refreshOnConflict: Boolean = false, action: suspend (DojoApi, String) -> Any?) {
         val editor = state.value.editor
         if (!admit(media = true) || editor.snapshot == null || editor.persistenceIssue != null) return
         val epoch = network.value.epoch
@@ -1084,10 +1115,17 @@ class AppViewModel(
             try {
                 checkWrite(current, epoch, media = true)
                 val draft = editor.storedDraft ?: StoredDraft(folderName = folder, baseContentRevision = editor.snapshot.contentRevision)
-                if (!persistEditor(state.value.editor.copy(storedDraft = draft.copy(uncertain = true), draftPackageId = editor.draftPackageId ?: editor.snapshot.`package`.id)).await()) return@launch
+                if (!persistEditor(state.value.editor.copy(storedDraft = draft.copy(uncertain = true,
+                    pendingRemovals = if (discardId == null) draft.pendingRemovals else draft.pendingRemovals + discardId),
+                    draftPackageId = editor.draftPackageId ?: editor.snapshot.`package`.id)).await()) return@launch
                 checkWrite(current, epoch, media = true)
-                action(api(), folder)
+                val response = action(api(), folder)
                 checkSession(current)
+                if (discardId != null) persistEditor(state.value.editor.discard(discardId)).await()
+                if (response is ActiveEditorOut) {
+                    val accepted = state.value.editor.accept(response, expected = expected)
+                    persistEditor(accepted, editor.snapshot.`package`.id).await()
+                }
                 // A lost read must not let the next write reuse an unverified snapshot.
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = true)) }
                 loadEditor(current, explicit = true, expected = expected, savedTrims = savedTrims)
@@ -1104,8 +1142,10 @@ class AppViewModel(
                 mutable.update { it.copy(editor = it.editor.copy(readRequired = issue != EditorIssue.INVALID, issue = issue)) }
                 if (e is ApiFailure && e.status in setOf(404, 409, 422)) {
                     val retained = state.value.editor.storedDraft
-                    if (retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false))).await()
+                    if (retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false,
+                        pendingRemovals = if (discardId == null) retained.pendingRemovals else retained.pendingRemovals - discardId))).await()
                 }
+                if (refreshOnConflict && e is ApiFailure && e.status == 409) loadEditor(current, explicit = true)
             }
         }
     }
@@ -1114,12 +1154,13 @@ class AppViewModel(
         if (order == snapshot.montage.order || order.size != order.toSet().size || order.toSet() != snapshot.montage.order.toSet()) return
         mediaMutation(snapshot.copy(montage = snapshot.montage.copy(order = order))) { api, folder -> api.orderMedia(folder, order, snapshot.packageRevision()) }
     }
-    fun removeMedia(id: String) {
+    fun removeMedia(id: String, confirmedDiscard: Boolean = false) {
         val snapshot = state.value.editor.snapshot ?: return
+        if (state.value.editor.isDirty(id) && !confirmedDiscard) return
         if (snapshot.media.none { it.mediaId == id && it.status == "finalized" }) return
         val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "removed") else it },
             montage = snapshot.montage.copy(order = snapshot.montage.order.filter { it != id }))
-        mediaMutation(expected) { api, folder -> api.removeMedia(folder, id, snapshot.packageRevision()) }
+        mediaMutation(expected, discardId = id) { api, folder -> api.removeMedia(folder, id, snapshot.packageRevision()) }
     }
     fun restoreMedia(id: String) {
         val snapshot = state.value.editor.snapshot ?: return
@@ -1128,18 +1169,108 @@ class AppViewModel(
         val expected = snapshot.copy(media = snapshot.media.map { if (it.mediaId == id) it.copy(status = "finalized") else it }, montage = snapshot.montage.copy(order = order))
         mediaMutation(expected) { api, folder -> api.restoreMedia(folder, id, snapshot.packageRevision()) }
     }
-    fun saveMediaTrims() {
+    fun saveMedia(id: String) {
         val editor = state.value.editor
-        if (!editor.canSave) return
+        if (!editor.canSave(id)) return
         val snapshot = editor.snapshot ?: return
-        val selections = editor.selections ?: return
-        val removedSelections = snapshot.montage.selections.filterKeys { id -> snapshot.media.any { it.mediaId == id && it.status == "removed" } }
         val draft = editor.storedDraft ?: return
-        mediaMutation(snapshot.copy(montage = snapshot.montage.copy(selections = removedSelections + selections)), savedTrims = true) { api, folder ->
+        val media = snapshot.media.find { it.mediaId == id } ?: return
+        val key = "${if (media.isVideo) "video" else "photo"}:$id"
+        val group = draft.groups[key] ?: return
+        mediaMutation(snapshot, savedTrims = true) { api, folder ->
             api.savePackageEdits(PackageEditIn(baseContentRevision = draft.baseContentRevision,
-                changes = draft.groups.map { (key, group) -> GroupEditIn(base = group.base, key = key, proposed = group.proposed) },
+                changes = listOf(GroupEditIn(base = group.base, key = key, proposed = group.proposed)),
                 expectedFolderName = folder, expectedPackageId = snapshot.`package`.id))
         }
+    }
+    fun retrySectionPreview(id: String) {
+        val snapshot = state.value.editor.snapshot ?: return
+        val preview = snapshot.media.find { it.mediaId == id && it.status == "finalized" }?.sectionPreview ?: return
+        if (preview.status != "failed" || preview.generation == null) return
+        mediaMutation(snapshot, refreshOnConflict = true) { api, folder -> api.retrySectionPreview(id,
+            SectionPreviewRetryIn(expectedFolderName = folder, expectedPackageId = snapshot.`package`.id, expectedGeneration = preview.generation)) }
+    }
+    fun renderActivePackage() {
+        val snapshot = state.value.editor.snapshot ?: return
+        if (snapshot.renderStatus in setOf("queued", "processing") || snapshot.montage.order.isEmpty() || snapshot.montage.overLimit || !snapshot.montage.durationComplete) return
+        mediaMutation(snapshot) { api, folder -> api.renderPackage(folder, snapshot.packageRevision(), retry = snapshot.renderStatus == "failed") }
+    }
+    fun clearActivePackage(confirmed: Boolean) {
+        if (!confirmed || !admit() || state.value.editor.persistenceIssue != null) return
+        val editor = state.value.editor
+        val pending = saved.get<Int>("clear_package_id")
+        if (pending != null && (saved.get<String>("clear_origin") != state.value.origin || saved.get<String>("clear_binding") != bindingId)) {
+            forgetClearTarget(); return
+        }
+        if (pending == null && !admit(media = true) || pending != null && state.value.clearReadRequired) return
+        val snapshot = editor.snapshot
+        val id = pending ?: snapshot?.`package`?.id ?: return
+        val folder = saved.get<String>("clear_package_folder") ?: snapshot?.`package`?.folderName ?: return
+        val revision = saved.get<Long>("clear_package_revision") ?: snapshot?.contentRevision ?: return
+        val ownsDraft = (editor.draftPackageId ?: snapshot?.`package`?.id) == id
+        saved["clear_package_id"] = id; saved["clear_package_folder"] = folder; saved["clear_package_revision"] = revision
+        saved["clear_origin"] = state.value.origin; saved["clear_binding"] = bindingId
+        saved["clear_requires_read"] = true
+        mutable.update { it.copy(pendingClearFolder = folder, clearReadRequired = true) }
+        val epoch = network.value.epoch
+        launch { current ->
+            try {
+                checkWrite(current, epoch)
+                if (ownsDraft) {
+                    val draft = editor.storedDraft ?: StoredDraft(folderName = folder, baseContentRevision = revision)
+                    if (!persistEditor(editor.copy(storedDraft = draft.copy(uncertain = true), draftPackageId = id,
+                        readRequired = true, issue = EditorIssue.UNCERTAIN), id).await()) return@launch
+                }
+                checkWrite(current, epoch)
+                api().clearPackage(ClearPackageIn(confirmed = true, expectedFolderName = folder,
+                    expectedPackageId = id), PackageRevision(id, revision))
+                checkSession(current)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                checkSession(current)
+                if (error is ApiFailure && error.status in setOf(401, 426)) throw error
+                // A 404 after the identity-bound clear route checked its cleanup journal
+                // proves that neither the package nor unfinished cleanup remains.
+                if (error !is ApiFailure || error.status != 404) {
+                    val definite = error is ApiFailure && error.status in setOf(409, 422)
+                    mutable.update { it.copy(editor = it.editor.copy(readRequired = true,
+                        issue = if (definite) EditorIssue.CONFLICT else EditorIssue.UNCERTAIN)) }
+                    if (definite) {
+                        forgetClearTarget()
+                        val retained = state.value.editor.storedDraft
+                        if (ownsDraft && retained != null) persistEditor(state.value.editor.copy(storedDraft = retained.copy(uncertain = false)), id).await()
+                    }
+                    return@launch
+                }
+            }
+            if (ownsDraft) {
+                if (!persistEditor(MediaEditorState(draftPackageId = id), id).await()) return@launch
+            }
+            else clearCapturedDraft(current, id)
+            forgetClearTarget()
+            val dashboard = api().dashboard(); checkRead(current, epoch)
+            mutable.update { it.copy(dashboard = dashboard, dashboardFetchedAt = now()) }
+            loadEditor(current, explicit = true)
+        }
+    }
+    private fun forgetClearTarget() {
+        saved.remove<Int>("clear_package_id"); saved.remove<String>("clear_package_folder"); saved.remove<Long>("clear_package_revision")
+        saved.remove<Boolean>("clear_requires_read")
+        saved.remove<String>("clear_origin"); saved.remove<String>("clear_binding")
+        mutable.update { it.copy(pendingClearFolder = null, clearReadRequired = false) }
+    }
+    private suspend fun clearCapturedDraft(current: Int, id: Int) {
+        val origin = state.value.origin; val binding = bindingId ?: throw CancellationException("Session changed")
+        draftWrite?.await()
+        withContext(Dispatchers.IO) { synchronized(store) {
+            if (generation != current || store.readSession(origin)?.bindingId != binding) throw CancellationException("Session changed")
+            draftStore?.clear(origin, binding, id)
+        } }
+    }
+    private fun reconcileClearRead(explicit: Boolean) {
+        if (!explicit || saved.get<Int>("clear_package_id") == null) return
+        saved["clear_requires_read"] = false
+        mutable.update { it.copy(clearReadRequired = false) }
     }
     fun pickerFailed() { mutable.update { it.copy(issue = UiIssue.INVALID_INPUT) } }
     private fun clearNotificationSaved() { saved.keys().filter { it.startsWith("notification_") }.forEach { saved.remove<Any>(it) } }
@@ -1207,7 +1338,10 @@ class AppViewModel(
         if (target?.valid != true) { clearReviewSaved(); return }
         mutable.update { it.copy(review = ReviewState(target = target, continuing = saved.get<Boolean>("review_continuing") ?: false)) }
     }
-    private fun clearReviewSaved() { saved.keys().filter { it.startsWith("review_") }.forEach { saved.remove<Any>(it) } }
+    private fun clearReviewSaved() {
+        automaticReviewRender = null
+        saved.keys().filter { it.startsWith("review_") }.forEach { saved.remove<Any>(it) }
+    }
     fun openReview(target: ReviewTarget) {
         if (state.value.phase != Phase.READY || !target.valid) return
         oneoffEpoch++
@@ -1302,11 +1436,17 @@ class AppViewModel(
             require(detail.review.id > 0 && detail.review.version > 0 && detail.review.revisionDigest.isNotBlank() &&
                  detail.review.packageFolder.isNotBlank() && detail.review.status in setOf("pending", "failed", "uncertain", "publishing", "approved", "skipped", "rescheduled"))
             saved.get<Int>("review_source_occurrence")?.let { require(detail.review.occurrenceId == it) }
-            val source = saved.get<Int>("review_source_occurrence")
+            val source = saved.get<Int>("review_source_occurrence") ?: detail.review.occurrenceId.takeIf {
+                target.action == ReviewAction.REVIEW && detail.review.status == "pending" &&
+                    detail.review.id == target.reviewId &&
+                    (target.packageFolder == null || target.packageFolder == detail.review.packageFolder) &&
+                    (target.expectedVersion == null || target.expectedVersion == detail.review.version)
+            }
             if (source != null && detail.review.status in setOf("pending", "failed", "uncertain") && !detail.renderReady) {
-                val next = ReviewTarget(occurrenceId = source, packageFolder = target.packageFolder, action = ReviewAction.UPLOAD)
+                val next = ReviewTarget(occurrenceId = source, packageFolder = target.packageFolder ?: detail.review.packageFolder, action = ReviewAction.UPLOAD)
                 saveReviewTarget(next); saved["review_continuing"] = true
                 mutable.update { it.copy(review = ReviewState(target = next, busy = true, continuing = true)) }
+                navigate(Destination.PACKAGE)
                 loadReview(current, epoch); return
             }
             val issue = when {
@@ -1362,7 +1502,7 @@ class AppViewModel(
                     return
                 }
             }
-            if (target.action == ReviewAction.UPLOAD || state.value.review.continuing) {
+            if (target.action in setOf(ReviewAction.REVIEW, ReviewAction.UPLOAD) || state.value.review.continuing) {
                 val snapshot = transport.mediaEditor()
                 checkReview(current, epoch)
                 checkRead(current, networkEpoch)
@@ -1375,6 +1515,25 @@ class AppViewModel(
                         continuing = it.review.continuing && !failed)) }
                     persistState(current)
                     if (failed) saved["review_continuing"] = false
+                    val renderKey = "${target.occurrenceId}:${snapshot.`package`.id}:${snapshot.contentRevision}"
+                    if (!liveReading && pending?.state == "preparing" && java.time.OffsetDateTime.parse(pending.dueAt).toInstant() <= java.time.Instant.ofEpochMilli(now()) &&
+                        snapshot.renderStatus in setOf(null, "missing", "stale") &&
+                        snapshot.montage.order.isNotEmpty() && snapshot.montage.durationComplete && !snapshot.montage.overLimit &&
+                        automaticReviewRender != renderKey) {
+                        checkReview(current, epoch)
+                        checkWrite(current, networkEpoch)
+                        automaticReviewRender = renderKey
+                        try { transport.renderPackage(requireNotNull(target.packageFolder), snapshot.packageRevision(), false) }
+                        catch (e: ApiFailure) {
+                            if (e.status != 409) throw e
+                            checkReview(current, epoch)
+                            mutable.update { it.copy(review = it.review.copy(issue = ReviewIssue.PACKAGE_CHANGED, readRequired = true, continuing = false)) }
+                            return
+                        }
+                        checkReview(current, epoch)
+                        checkRead(current, networkEpoch)
+                        mutable.update { it.copy(editor = it.editor.copy(snapshot = snapshot.copy(renderStatus = "queued"))) }
+                    }
                 }
             }
         }

@@ -66,6 +66,7 @@ def finalize_media(
 
 
 def claim_render(seam):
+    seam.render_preview()  # Simulate opening the review screen.
     job = seam.claim_next_job()
     assert job is not None and job.kind == "render"
     seam.process_job(job.job_id)
@@ -594,6 +595,7 @@ def test_non_confirmed_packages_never_completed(tmp_path):
     finalize_media(second_root, seam2, filename="pic2.jpg", seed=b"y" * 100)
     seam2.set_caption("again")
     seam2.evaluate_due_work()
+    seam2.render_preview()
     job = seam2.claim_next_job()
     assert job is not None
     seam2.process_job(job.job_id)

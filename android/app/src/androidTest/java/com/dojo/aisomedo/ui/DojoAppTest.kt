@@ -194,6 +194,8 @@ class DojoAppTest {
         compose.onNodeWithText("Ayarlar", useUnmergedTree = true).performClick()
         compose.waitUntil(10000) { model.state.value.canConfigure("reminders") }
         Assert.assertNull(model.state.value.step)
+        compose.onNodeWithText("Kurulumu aç").assertDoesNotExist()
+        compose.onNodeWithText("Kaldır").performScrollTo().assertExists()
         compose.onNodeWithTag("settings-schedule").assertExists()
         compose.onNodeWithTag("reminder-interval").performScrollTo().assertTextContains("60")
         compose.onNodeWithTag("reminder-save").assertIsEnabled()

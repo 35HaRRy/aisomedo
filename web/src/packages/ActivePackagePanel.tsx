@@ -7,18 +7,19 @@ import { usePackageEditorContext } from "./PackageEditorProvider";
 import { VideoSectionEditor } from "./VideoSectionEditor";
 import { MediaActionIcon } from "./MediaActionIcon";
 import { CollapsiblePanel } from "../components/CollapsiblePanel";
+import { MediaFullscreenDialog } from "./MediaFullscreenDialog";
 
 export function ActivePackagePanel() {
   const editor = usePackageEditorContext(), copy = tr.packageManagement;
   const uploads = useUploads();
-  const [previewFailed, setPreviewFailed] = useState(false);
+  const [viewing, setViewing] = useState<EditorMediaOut | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
   const dragging = useRef<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [dragged, setDragged] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; position: "before" | "after" } | null>(null);
   const snapshot = editor.snapshot;
-  useEffect(() => { setPreviewFailed(false); }, [snapshot?.render_preview_url]);
+  useEffect(() => { setViewing(null); }, [snapshot?.package.id, snapshot?.content_revision]);
   const clearPackage = async () => {
     const target = editor.pendingClear ?? snapshot?.package;
     if (!target || !window.confirm(`${target.folder_name}\n\n${copy.clearWarning}`)) return;
@@ -61,9 +62,10 @@ export function ActivePackagePanel() {
   const canDrop = (event: DragEvent<HTMLLIElement>) => !!dragging.current && !blocked && !(event.target instanceof Element && event.target.closest(".video-section-editor"));
   const excess = snapshot && editor.proposedTotal !== null ? editor.proposedTotal - snapshot.montage.max_duration_seconds : null;
   return <>
+    <fieldset className="package-upload-controls" disabled={editor.busy || editor.offline || !!editor.pendingClear} aria-label={tr.upload.title}><UploadPanel defaultExpanded={false} /></fieldset>
     <CollapsiblePanel className="summary-sheet package-editor" title={copy.activeMedia} actions={<>
-      <button disabled={editor.busy || editor.offline} onClick={() => void editor.refresh()}>{copy.refresh}</button>
-      <button className="danger" disabled={editor.busy || editor.offline || !editor.pendingClear && (!snapshot || editor.loading || editor.stale)} onClick={() => void clearPackage()}>{editor.pendingClear ? copy.retryClear : copy.clear}</button></>}>
+      <button className="media-icon-button" aria-label={copy.refresh} title={copy.refresh} disabled={editor.busy || editor.offline} onClick={() => void editor.refresh()}><MediaActionIcon action="refresh" /></button>
+      <button className="media-icon-button danger" aria-label={editor.pendingClear ? copy.retryClear : copy.clear} title={editor.pendingClear ? copy.retryClear : copy.clear} disabled={editor.busy || editor.offline || !editor.pendingClear && (!snapshot || editor.loading || editor.stale)} onClick={() => void clearPackage()}><MediaActionIcon action="remove" /></button></>}>
       {editor.loading && !snapshot && <p role="status">{tr.loading}</p>}
       {editor.error && <p role="alert" className="notice">{copy.errors[editor.error]}</p>}
       {editor.offline && <p role="status" className="notice">{copy.offline}</p>}
@@ -78,24 +80,8 @@ export function ActivePackagePanel() {
       </section>)}
       {!snapshot && !editor.loading && !editor.error && <p>{copy.noActive}</p>}
       {snapshot && <>
-        <div className="montage-duration" aria-live="polite">
-          <p>{copy.total}: <strong>{editor.proposedTotal === null ? copy.unknownTotal : `${editor.proposedTotal.toFixed(2)} s`}</strong> / {snapshot.montage.max_duration_seconds.toFixed(2)} s</p>
-          {excess !== null && excess > 0 && <p className="upload-error">{copy.limitHelp} {excess.toFixed(2)} s</p>}
-          <p className="muted">{editor.dirty ? copy.unsaved : copy.saved}</p>
-          {snapshot.render_stale && <p className="muted">{copy.renderStale}</p>}
-        </div>
-        <div className="upload-actions package-save-actions"><button className="primary" disabled={!editor.canSave} aria-describedby="package-save-reason" onClick={() => void editor.save()}>{editor.busy ? copy.saving : copy.save}</button>
-          <button title={copy.discardHelp} disabled={!editor.dirty || editor.busy || editor.offline} onClick={() => editor.discard()}>{copy.discard}</button></div>
-        <p id="package-save-reason" className="muted" role="status">{editor.saveBlockedReason ? copy.saveReasons[editor.saveBlockedReason] : ""}</p>
-        <CollapsiblePanel className="saved-reel-preview" title={copy.savedPreview} level={3}>
-          <p className="muted">{copy.renderHelp}</p>
-          <p role="status">{copy.renderStates[snapshot.render_status ?? "missing"]}</p>
-          {snapshot.render_status === "ready" && snapshot.render_preview_url && <video key={snapshot.render_preview_url} src={snapshot.render_preview_url} controls playsInline preload="metadata" aria-label={copy.savedPreview} onError={() => setPreviewFailed(true)} />}
-          {previewFailed && <p role="alert" className="notice">{tr.editor.previewFailed}</p>}
-          <button disabled={blocked || !ordered.length || snapshot.montage.over_limit || !snapshot.montage.duration_complete || snapshot.render_status === "queued" || snapshot.render_status === "processing"} onClick={() => void editor.renderPreview()}>{copy.render}</button>
-        </CollapsiblePanel>
         {!ordered.length && <p>{copy.noMedia}</p>}
-        <ol aria-label={copy.order} className="package-media-list package-media-grid">{ordered.map((media, index) => <li key={media.media_id} data-editor-open={opened === media.media_id || undefined} data-selected={selected === media.media_id || undefined} data-dragging={dragged === media.media_id || undefined} data-drop-position={dropTarget?.id === media.media_id ? dropTarget.position : undefined}
+        <ol aria-label={copy.order} className="package-media-list package-media-grid">{ordered.map(media => <li key={media.media_id} data-editor-open={opened === media.media_id || undefined} data-selected={selected === media.media_id || undefined} data-dragging={dragged === media.media_id || undefined} data-drop-position={dropTarget?.id === media.media_id ? dropTarget.position : undefined}
           onDragOver={event => {
             if (!canDrop(event) || dragging.current === media.media_id) { setDropTarget(null); return; }
             event.preventDefault(); event.dataTransfer.dropEffect = "move";
@@ -105,12 +91,16 @@ export function ActivePackagePanel() {
             if (canDrop(event)) { event.preventDefault(); move(dragging.current!, media.media_id, dropPosition(event)); }
             clearDrag();
           }}>
-          <div className="package-media-heading"><div><h3>{media.filename}</h3><p className="muted">{media.is_video ? copy.video : copy.photo} · {media.effective_duration === null ? copy.unknownDuration : `${media.effective_duration.toFixed(2)} s`}</p></div>
+          <div className="package-media-heading"><div><h3 title={media.filename}>{media.filename}</h3>
+            <div className="package-media-meta"><p className="muted">{media.is_video ? copy.video : copy.photo} · {media.effective_duration === null ? copy.unknownDuration : `${media.effective_duration.toFixed(2)} s`}{editor.isDirty(media.media_id) && <> · <strong>{copy.cardDraft}</strong></>}</p>
+              {!media.is_video && <input className="photo-duration-input" type="number" min="0.04" step="0.01" disabled={blocked} aria-label={`${media.filename} ${copy.photoDuration}`} aria-invalid={!!editor.validationErrors[media.media_id]} value={editor.draftInputs[media.media_id]?.[0]?.end ?? "3"} onChange={event => editor.setPhotoDuration(media.media_id, event.target.value)} />}
+            </div>
+            {editor.validationErrors[media.media_id] && <span role="alert" className="photo-duration-error">{copy.photoDurationHelp}</span>}
+          </div>
             <div className="package-media-actions">
               {media.is_video && <button className="media-icon-button" aria-label={`${media.filename} ${copy.editLabel}`} title={`${media.filename} ${copy.editLabel}`} aria-expanded={opened === media.media_id} onClick={() => setOpened(opened === media.media_id ? null : media.media_id)}><MediaActionIcon action={opened === media.media_id ? "close" : "edit"} /></button>}
+              <CardSaveActions id={media.media_id} />
               <button className="media-icon-button" disabled={blocked} aria-label={`${media.filename} ${copy.removeLabel}`} title={`${media.filename} ${copy.removeLabel}`} onClick={() => void editor.remove(media.media_id)}><MediaActionIcon action="remove" /></button>
-               <button className="media-icon-button" disabled={blocked || index === 0} aria-label={`${media.filename} ${copy.leftLabel}`} title={`${media.filename} ${copy.leftLabel}`} onClick={() => move(media.media_id, ordered[index - 1].media_id)}><MediaActionIcon action="left" /></button>
-               <button className="media-icon-button" disabled={blocked || index === ordered.length - 1} aria-label={`${media.filename} ${copy.rightLabel}`} title={`${media.filename} ${copy.rightLabel}`} onClick={() => move(media.media_id, ordered[index + 1].media_id)}><MediaActionIcon action="right" /></button>
               <button className="media-icon-button media-drag-handle" draggable={!blocked} disabled={blocked} aria-label={`${media.filename} ${copy.dragLabel}`} title={`${media.filename} ${copy.dragLabel}`}
                 onPointerDown={() => { if (!blocked) setSelected(media.media_id); }}
                 onDragStart={event => {
@@ -122,17 +112,39 @@ export function ActivePackagePanel() {
                   event.dataTransfer.setDragImage?.(row, Math.max(0, event.clientX - rect.left), Math.max(0, event.clientY - rect.top));
                 }} onDragEnd={clearDrag}><MediaActionIcon action="drag" /></button>
             </div></div>
-          {!media.is_video && media.preview_url && <img className="package-photo-preview" src={media.preview_url} alt={`${media.filename} ${copy.preview}`} loading="lazy" />}
-          {!media.is_video && <label className="photo-duration-control">Görüntülenme süresi (saniye)
-            <input type="number" min="0.04" step="0.01" disabled={blocked} aria-label={`${media.filename} ${copy.photoDuration}`} aria-invalid={!!editor.validationErrors[media.media_id]} value={editor.draftInputs[media.media_id]?.[0]?.end ?? "3"} onChange={event => editor.setPhotoDuration(media.media_id, event.target.value)} />
-            {editor.validationErrors[media.media_id] && <span role="alert">{copy.photoDurationHelp}</span>}
-          </label>}
-          {opened === media.media_id && media.is_video && <VideoSectionEditor key={media.media_id} media={media} ranges={editor.draft[media.media_id] ?? []} inputs={editor.draftInputs[media.media_id] ?? []} validationError={editor.validationErrors[media.media_id] ?? null} disabled={blocked}
+          {opened !== media.media_id && <button className="media-image-button" aria-label={`${media.filename} ${tr.editor.viewOriginal}`} onClick={() => setViewing(media)}>
+            <MediaThumbnail key={`${media.media_id}:${media.thumbnail_url}:${media.preview_url}`} media={media} />
+          </button>}
+          {opened === media.media_id && media.is_video && <VideoSectionEditor key={media.media_id} media={media} ranges={editor.draft[media.media_id] ?? []} inputs={editor.draftInputs[media.media_id] ?? []} validationError={editor.validationErrors[media.media_id] ?? null} disabled={blocked} dirty={editor.isDirty(media.media_id)} onRetryPreview={() => void editor.retrySectionPreview(media.media_id)}
             onChange={ranges => editor.setRanges(media.media_id, ranges)} onInputChange={(i, bound, value) => editor.setInput(media.media_id, i, bound, value)} />}
+          {editor.saveBlockedReasonFor(media.media_id) && editor.saveBlockedReasonFor(media.media_id) !== "unchanged" && <p id={`save-reason-${media.media_id}`} className="muted card-save-reason" role="status">{copy.saveReasons[editor.saveBlockedReasonFor(media.media_id)!]}</p>}
         </li>)}</ol>
         {!!removed.length && <CollapsiblePanel className="removed-media" title={copy.removed} level={3}><p className="muted">{copy.removedHelp}</p><ul className="package-media-list">{removed.map(media => <li key={media.media_id} className="package-media-heading"><h3>{media.filename}</h3>
           <button className="media-icon-button" disabled={blocked} aria-label={`${media.filename} ${copy.restoreLabel}`} title={`${media.filename} ${copy.restoreLabel}`} onClick={() => void editor.restore(media.media_id)}><MediaActionIcon action="restore" /></button></li>)}</ul></CollapsiblePanel>}
+        <div className="montage-duration" aria-live="polite">
+          <p>{copy.total}: <strong>{editor.proposedTotal === null ? copy.unknownTotal : `${editor.proposedTotal.toFixed(2)} s`}</strong> / {snapshot.montage.max_duration_seconds.toFixed(2)} s</p>
+          {excess !== null && excess > 0 && <p className="upload-error">{copy.limitHelp} {excess.toFixed(2)} s</p>}
+          <p className="muted">{editor.dirty ? copy.unsaved : copy.saved}</p>
+          {snapshot.render_stale && <p className="muted">{copy.renderStale}</p>}
+        </div>
       </>}
-    </CollapsiblePanel><fieldset className="package-upload-controls" disabled={editor.busy || editor.offline || !!editor.pendingClear} aria-label={tr.upload.title}><UploadPanel /></fieldset>
+    </CollapsiblePanel>
+    {viewing && <MediaFullscreenDialog key={viewing.media_id} media={viewing} onClose={() => setViewing(null)} />}
   </>;
+}
+
+function CardSaveActions({ id }: { id: string }) {
+  const editor = usePackageEditorContext(), copy = tr.packageManagement;
+  const reason = editor.saveBlockedReasonFor(id);
+  return <div className="upload-actions package-save-actions">
+    <button className="media-icon-button primary" aria-label={copy.save} title={copy.save} disabled={!editor.canSaveMedia(id)} aria-describedby={reason && reason !== "unchanged" ? `save-reason-${id}` : undefined} onClick={() => void editor.save(id)}><MediaActionIcon action="save" /></button>
+    <button className="media-icon-button" aria-label={copy.discard} title={copy.discardHelp} disabled={!editor.isDirty(id) || editor.busy || editor.offline} onClick={() => editor.discard(id)}><MediaActionIcon action="discard" /></button>
+  </div>;
+}
+
+function MediaThumbnail({ media }: { media: EditorMediaOut }) {
+  const [failed, setFailed] = useState(false);
+  const source = media.is_video ? media.thumbnail_url : media.preview_url;
+  return source && !failed ? <img className="package-photo-preview" src={source} alt={`${media.filename} ${tr.packageManagement.preview}`} loading="lazy" onError={() => setFailed(true)} />
+    : <span>{tr.editor.previewMissing}</span>;
 }

@@ -322,12 +322,15 @@ class InMemoryStore:
         self, job: Job, *, audit: AuditEvent | None = None,
     ) -> tuple[Job, bool]:
         with self._creation_lock:
-            if job.kind == "render" and job.status in ("queued", "processing"):
+            if job.kind in ("render", "section_preview", "thumbnail") \
+                    and job.status in ("queued", "processing"):
+                fields = (("package", "digest") if job.kind == "render"
+                          else ("package_id", "media_id"))
                 for existing in self._jobs:
-                    if (existing.kind == "render"
+                    if (existing.kind == job.kind
                             and existing.status in ("queued", "processing")
-                            and existing.payload.get("package") == job.payload.get("package")
-                            and existing.payload.get("digest") == job.payload.get("digest")):
+                            and all(existing.payload.get(key) == job.payload.get(key)
+                                    for key in fields)):
                         return existing, False
             created = replace(job, id=self._next_job_id)
             if audit is not None:
@@ -633,6 +636,37 @@ class InMemoryStore:
     @emits("settings", "setup", "dashboard")
     def set(self, key: str, value: object, *, updated_at: datetime) -> None:
         self._settings[key] = value
+
+    @emits()
+    def cancel_media_jobs(
+        self, package_id: int, media_id: str | None, *, kinds: tuple[str, ...],
+        cancelled_at: datetime,
+    ) -> int:
+        count = 0
+        with self._creation_lock:
+            for index, job in enumerate(self._jobs):
+                if job.kind in kinds and job.status in ("queued", "processing") \
+                        and job.payload.get("package_id") == package_id \
+                        and (media_id is None or job.payload.get("media_id") == media_id):
+                    self._jobs[index] = replace(job, status="cancelled", finished_at=cancelled_at)
+                    count += 1
+        if count:
+            self.queue_change(["dashboard", "publication", f"package:{package_id}"])
+        return count
+
+    @emits(result=True)
+    def finish_if_processing(
+        self, job_id: str, *, status: str, finished_at: datetime,
+        error_reason: str | None = None,
+    ) -> Job | None:
+        if status not in ("done", "failed", "cancelled"):
+            raise ValueError("job finish status must be terminal")
+        with self._creation_lock:
+            job = self.get(job_id)
+            if not isinstance(job, Job) or job.status != "processing":
+                return None
+            return self.update(replace(job, status=status, finished_at=finished_at,
+                                       error_reason=error_reason))
 
     def max_regular_due_at(self) -> datetime | None:
         dates = [o.due_at for o in self._occurrences if o.kind == "regular"]

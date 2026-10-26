@@ -109,7 +109,8 @@ def set_branding_defaults(
     publishing: DojoPublishing = Depends(get_publishing),
 ) -> BrandingDefaultsOut:
     config = publishing.set_branding_defaults(
-        BrandingConfig(**body.model_dump()), requester=str(client.id)
+        BrandingConfig(**body.model_dump()), requester=str(client.id),
+        apply_to_draft=True,
     )
     return BrandingDefaultsOut(**config.to_dict())
 
@@ -134,7 +135,9 @@ def patch_branding_defaults(
             except BrandingAssetNotFound as exc:
                 raise HTTPException(status_code=422, detail="branding image not found") from exc
     try:
-        result = publishing.patch_branding_defaults(changes, requester=str(client.id))
+        result = publishing.patch_branding_defaults(
+            changes, requester=str(client.id), apply_to_draft=True,
+        )
     except BrandingInvalid as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return BrandingDefaultsOut(**result.to_dict())

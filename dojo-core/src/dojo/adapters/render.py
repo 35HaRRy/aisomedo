@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+from collections.abc import Callable
+from math import isfinite
 from pathlib import Path
 
 from dojo.exceptions import RenderFailed
-from dojo.model import ReelBuild
+from dojo.model import ReelBuild, ReelClip
 from dojo.montage import REEL_FPS
+
+from .preview_process import run_preview_process
 
 logger = logging.getLogger("render: ")
 
@@ -17,8 +21,16 @@ FPS = REEL_FPS
 AUDIO_RATE = 44100
 
 
-def _probe_has_audio(path: Path) -> bool:
-    result = subprocess.run(
+def _run_command(
+    args: list[str], cancelled: Callable[[], bool] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if cancelled is None:
+        return subprocess.run(args, capture_output=True, text=True)
+    return subprocess.CompletedProcess(args, 0, run_preview_process(args, cancelled=cancelled), "")
+
+
+def _probe_has_audio(path: Path, cancelled: Callable[[], bool] | None = None) -> bool:
+    result = _run_command(
         [
             "ffprobe",
             "-v",
@@ -31,8 +43,7 @@ def _probe_has_audio(path: Path) -> bool:
             "csv=p=0",
             str(path),
         ],
-        capture_output=True,
-        text=True,
+        cancelled,
     )
     return bool(result.stdout.strip())
 
@@ -111,6 +122,45 @@ class FfmpegReelRenderer:
             raise RenderFailed(f"reel render failed: {exc}") from exc
         return out_path
 
+    def render_sections(
+        self, clips: list[ReelClip], work_dir: Path, out_path: Path, *,
+        cancelled: Callable[[], bool],
+    ) -> Path:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        segments = [self._render_segment(
+            clip.path, is_video=True, duration=clip.duration, logo_asset=None,
+            work_dir=work_dir, name=f"{index}-{clip.media_id}",
+            trim_start=clip.trim_start, trim_end=clip.trim_end, cancelled=cancelled,
+        ) for index, clip in enumerate(clips)]
+        self._concat(segments, out_path, cancelled=cancelled)
+        return out_path
+
+    def render_thumbnail(
+        self, source: Path, out_path: Path, *, cancelled: Callable[[], bool],
+    ) -> Path:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        run_preview_process([
+            "ffmpeg", "-v", "error", "-y", "-i", str(source), "-frames:v", "1",
+            "-vf", "scale=640:640:force_original_aspect_ratio=decrease", str(out_path),
+        ], cancelled=cancelled)
+        if not out_path.is_file():
+            raise RenderFailed("thumbnail output missing")
+        return out_path
+
+    def probe_duration(self, path: Path, *, cancelled: Callable[[], bool]) -> float:
+        value = run_preview_process([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        ], cancelled=cancelled)
+        try:
+            duration = float(value.strip())
+        except ValueError as exc:
+            raise RenderFailed("render duration unavailable") from exc
+        if not isfinite(duration) or duration <= 0:
+            raise RenderFailed("render duration must be finite and positive")
+        return duration
+
     def _render_segment(
         self,
         source: Path,
@@ -122,6 +172,7 @@ class FfmpegReelRenderer:
         name: str,
         trim_start: float = 0.0,
         trim_end: float | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Path:
         if not source.is_file():
             raise RenderFailed(f"render source missing: {source}")
@@ -134,7 +185,7 @@ class FfmpegReelRenderer:
             # Seek only the source input, never the generated silent audio input.
             input_args += ["-ss", f"{trim_start:.9f}"]
 
-        has_audio = _probe_has_audio(source)
+        has_audio = _probe_has_audio(source, cancelled)
         audio_map: list[str] = []
         if has_audio:
             audio_map = ["-map", "0:a"]
@@ -146,8 +197,12 @@ class FfmpegReelRenderer:
             duration = trim_end - trim_start
         duration_args = ["-t", f"{duration:.9f}"]
 
+        # Composite before blur so invisible RGB values cannot tint the background.
         filter_complex = (
-            f"[0:v]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,crop={CANVAS_W}:{CANVAS_H},"
+            f"[0:v]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,"
+            f"crop={CANVAS_W}:{CANVAS_H}[bg_source];"
+            f"color=c=black:s={CANVAS_W}x{CANVAS_H}:r={FPS}[canvas];"
+            "[canvas][bg_source]overlay=shortest=1,"
             "boxblur=luma_radius=20:luma_power=2:chroma_radius=20:chroma_power=2[bg];"
             f"[0:v]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=decrease[fg];"
             "[bg][fg]overlay=(W-w)/2:(H-h)/2[base]"
@@ -167,8 +222,12 @@ class FfmpegReelRenderer:
                     "-map", out_chain, *audio_map,
                     "-r", str(FPS), *duration_args,
                     "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac",
+                    # Every segment must share one audio layout: concat copies
+                    # streams, and mixed rates/channels corrupt AAC timing on
+                    # playback (browser stops mid-reel with a decode error).
+                    "-ar", str(AUDIO_RATE), "-ac", "2",
                     "-movflags", "+faststart", str(seg)]
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = _run_command(command, cancelled)
         if result.returncode != 0 or not seg.is_file():
             logger.info(result.stderr.strip())
             raise RenderFailed(
@@ -176,7 +235,10 @@ class FfmpegReelRenderer:
             )
         return seg
 
-    def _concat(self, segments: list[Path], out_path: Path) -> None:
+    def _concat(
+        self, segments: list[Path], out_path: Path, *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> None:
         if not segments:
             raise RenderFailed("no clips to render")
         list_file = out_path.parent / "concat.txt"
@@ -184,7 +246,7 @@ class FfmpegReelRenderer:
             "\n".join(f"file '{path.as_posix()}'" for path in segments) + "\n",
             encoding="utf-8",
         )
-        result = subprocess.run(
+        result = _run_command(
             [
                 "ffmpeg",
                 "-y",
@@ -198,8 +260,7 @@ class FfmpegReelRenderer:
                 "copy",
                 str(out_path),
             ],
-            capture_output=True,
-            text=True,
+            cancelled,
         )
         if result.returncode != 0 or not out_path.is_file():
             raise RenderFailed(

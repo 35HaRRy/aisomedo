@@ -75,6 +75,15 @@ it("acknowledged save moves to requested route and closes the guard", async () =
   expect(server.writes).toHaveLength(1); expect(screen.getByText("clean")).toBeInTheDocument();
 });
 
+it("discard confirmation retains draft if removal fails", async () => {
+  const server = await setup(); server.writeStatus = 422;
+  fireEvent.click(screen.getByText("Remove A"));
+  fireEvent.click(await screen.findByRole("button", { name: "Değişiklikleri at" }));
+  await waitFor(() => expect(server.writes).toHaveLength(1));
+  expect(screen.getByLabelText("End")).toHaveValue("5");
+  expect(screen.getByText("dirty")).toBeInTheDocument();
+});
+
 it("a recovered hidden draft does not block navigation back to its editor", async () => {
   const server = editorServer(); vi.stubGlobal("fetch", server.fetcher);
   await writeDraft({ origin: window.location.origin, clientId: 1, packageId: 1 }, 0, {

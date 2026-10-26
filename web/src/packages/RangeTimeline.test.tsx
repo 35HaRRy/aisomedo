@@ -8,11 +8,11 @@ beforeEach(() => {
   class Pointer extends MouseEvent { pointerId: number; constructor(type: string, init: PointerEventInit) { super(type, init); this.pointerId = init.pointerId ?? 1; } }
   vi.stubGlobal("PointerEvent", Pointer);
 });
-function setup(initial: VideoRange[] = []) {
+function setup(initial: VideoRange[] = [], duration = 30) {
   const change = vi.fn(), seek = vi.fn(), capture = vi.fn(), release = vi.fn();
   function Probe() {
     const [ranges, setRanges] = useState(initial);
-    return <><RangeTimeline duration={30} ranges={ranges} playhead={0} disabled={false} onChange={value => { change(value); setRanges(value); }} onSeek={seek} /><output>{JSON.stringify(ranges)}</output></>;
+    return <><RangeTimeline duration={duration} ranges={ranges} playhead={0} disabled={false} onChange={value => { change(value); setRanges(value); }} onSeek={seek} /><output>{JSON.stringify(ranges)}</output></>;
   }
   render(<Probe />);
   const track = screen.getByRole("group", { name: "Video zaman çizelgesi" });
@@ -61,6 +61,17 @@ it("keyboard uses 0.1/1 second steps and one-frame limit", () => {
   fireEvent.keyDown(start, { key: "ArrowRight" }); expect(start).toHaveAttribute("aria-valuenow", "10.1");
   fireEvent.keyDown(start, { key: "ArrowLeft", shiftKey: true }); expect(start).toHaveAttribute("aria-valuenow", "9.1");
   fireEvent.keyDown(start, { key: "End" }); expect(start).toHaveAttribute("aria-valuenow", "14.96");
+});
+
+it.each([6.123456, 6.1238])("preserves exact terminal bound %s for End and pointer resize", duration => {
+  const { track } = setup([{ start: 0, end: 5 }], duration);
+  const end = screen.getByRole("slider", { name: "1. bölüm bitişi" });
+  fireEvent.keyDown(end, { key: "End" });
+  expect(end).toHaveAttribute("aria-valuenow", String(duration));
+  fireEvent.pointerDown(end, { pointerId: 1, button: 0, clientX: 390 });
+  fireEvent.pointerMove(track, { pointerId: 1, clientX: 450 });
+  fireEvent.pointerUp(track, { pointerId: 1, clientX: 450 });
+  expect(end).toHaveAttribute("aria-valuenow", String(duration));
 });
 
 it("timeline events never propagate to montage row reordering", () => {

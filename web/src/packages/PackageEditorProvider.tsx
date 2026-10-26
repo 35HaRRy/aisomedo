@@ -10,30 +10,36 @@ export function PackageEditorProvider({ children }: { children: ReactNode }) {
   const leave = useRef<() => Promise<boolean>>(async () => true);
   const navigation = useNavigation(useCallback(() => leave.current(), []));
   const editor = usePackageEditor(navigation.area === "package");
-  const [prompt, setPrompt] = useState<{ id?: string } | null>(null);
+  const [prompt, setPrompt] = useState<{ id: string; removing: boolean } | null>(null);
   const resolver = useRef<((value: Decision) => void) | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
   const active = useRef(editor); active.current = editor;
   const choose = useCallback((decision: Decision) => { resolver.current?.(decision); resolver.current = null; setPrompt(null); }, []);
-  const ask = useCallback((id?: string) => {
+  const ask = useCallback((id: string, removing = false) => {
     if (resolver.current) return Promise.resolve<Decision>("cancel");
-    return new Promise<Decision>(resolve => { resolver.current = resolve; setPrompt({ id }); });
+    return new Promise<Decision>(resolve => { resolver.current = resolve; setPrompt({ id, removing }); });
   }, []);
   const requestLeave = useCallback(async () => {
     if (navigation.area !== "package") return true;
     if (active.current.busy) return false;
     if (!active.current.dirty) return true;
-    const answer = await ask();
-    if (answer === "discard") { active.current.discard(); return true; }
-    return answer === "save" && await active.current.save();
-  }, [ask, navigation.area]);
-  leave.current = requestLeave;
-  const remove = useCallback(async (id: string) => {
-    if (active.current.isDirty(id)) {
+    const ids = Object.keys(active.current.draftInputs).filter(id => active.current.isDirty(id));
+    for (const id of ids) {
       const answer = await ask(id);
       if (answer === "cancel") return false;
-      if (answer === "save" && !await active.current.save()) return false;
       if (answer === "discard") active.current.discard(id);
+      else if (!await active.current.save(id)) return false;
+    }
+    return ids.length > 0 && ids.every(id => !active.current.isDirty(id));
+  }, [ask, navigation.area]);
+  leave.current = requestLeave;
+  const remove = useCallback(async (id: string, confirmedDiscard = false) => {
+    if (confirmedDiscard) return active.current.remove(id, true);
+    if (active.current.isDirty(id)) {
+      const answer = await ask(id, true);
+      if (answer === "cancel") return false;
+      if (answer === "save" && !await active.current.save(id)) return false;
+      if (answer === "discard") return active.current.remove(id, true);
     }
     return active.current.remove(id);
   }, [ask]);
@@ -60,10 +66,10 @@ export function PackageEditorProvider({ children }: { children: ReactNode }) {
   return <Context.Provider value={{ ...editor, remove, requestLeave, navigation }}>
     <div {...(prompt ? { inert: "" } : {})} aria-hidden={prompt ? true : undefined}>{children}</div>
     {prompt && <div className="editor-dialog-backdrop"><div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="draft-dialog-title" className="panel editor-dialog">
-      <h2 id="draft-dialog-title">{tr.editor.leaveTitle}</h2><p>{prompt.id ? tr.editor.removeDraft : tr.editor.leaveHelp}</p>
+      <h2 id="draft-dialog-title">{tr.editor.leaveTitle}</h2><p>{editor.snapshot?.media.find(m => m.media_id === prompt.id)?.filename}</p><p>{prompt.removing ? tr.editor.removeDraft : tr.editor.leaveHelp}</p>
       <div className="actions"><button onClick={() => choose("cancel")}>{tr.editor.cancel}</button>
         <button onClick={() => choose("discard")}>{tr.editor.discard}</button>
-        <button disabled={!editor.canSave} onClick={() => choose("save")}>{tr.editor.saveContinue}</button></div>
+        <button disabled={!editor.canSaveMedia(prompt.id)} onClick={() => choose("save")}>{tr.editor.saveContinue}</button></div>
     </div></div>}
   </Context.Provider>;
 }

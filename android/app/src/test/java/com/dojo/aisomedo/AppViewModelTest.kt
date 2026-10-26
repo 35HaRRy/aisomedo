@@ -273,13 +273,206 @@ class AppViewModelTest {
         }
     }
 
+    @Test fun saveOneMediaIgnoresInvalidSiblingAndSendsExactlyOneGroup() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.model.editRanges("c", listOf(RangeInput("0", "")))
+            f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":0,\"end\":5}],\"c\":[{\"start\":1,\"end\":3},{\"start\":7,\"end\":9}]")
+            f.model.saveMedia("a"); f.await { !it.busy && !it.editor.isDirty("a") }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val body = kotlinx.serialization.json.Json.parseToJsonElement(requests.single { it.path == "/api/packages/active/edits" }.body.readUtf8()).jsonObject
+            assertEquals(listOf("\"video:a\""), body.getValue("changes").jsonArray.map { it.jsonObject.getValue("key").toString() })
+            assertEquals("", f.model.state.value.editor.inputs.getValue("c")[0].end)
+            f.model.discardMedia("a")
+            assertTrue(f.model.state.value.editor.isDirty("c"))
+        }
+    }
+
+    @Test fun failedConfirmedRemovalPreservesDraftAndSuccessDiscardsOnlyTarget() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.model.editRanges("c", listOf(RangeInput("0", "2")))
+            f.await { !it.editor.persisting }
+            val path = "/api/packages/active/media/a/remove?expected_folder_name=active"
+            f.codes[path] = 422
+            f.model.removeMedia("a", confirmedDiscard = true); f.await { !it.busy }
+            assertTrue(f.model.state.value.editor.isDirty("a")); assertTrue(f.model.state.value.editor.isDirty("c"))
+            f.codes[path] = 200
+            f.bodies["/api/packages/active/editor"] = editorJson(aStatus = "removed", order = "\"b\",\"c\"")
+            f.model.removeMedia("a", confirmedDiscard = true); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.isDirty("a")); assertTrue(f.model.state.value.editor.isDirty("c"))
+        }
+    }
+
+    @Test fun clearRequiresConfirmationAndNeverRetriesAgainstReplacementPackage() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            f.model.clearActivePackage(false); main.scheduler.runCurrent()
+            assertFalse(f.seen.any { it == "POST /api/packages/active/clear" })
+            f.codes["/api/packages/active/clear"] = 502
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.readRequired }
+            assertTrue(f.model.state.value.editor.isDirty("a"))
+            f.model.clearActivePackage(true); main.scheduler.runCurrent()
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/clear" })
+            f.bodies["/api/dashboard"] = f.bodies["/api/dashboard"]!!.replace("\"id\":1,\"folder_name\":\"active\"", "\"id\":2,\"folder_name\":\"replacement\"")
+            f.bodies["/api/packages/active/editor"] = editorJson(folder = "replacement", id = 2)
+            f.model.refresh(); f.await { !it.busy && it.editor.snapshot?.`package`?.id == 2 }
+            f.model.refreshEditor(); f.await { !it.busy }
+            f.model.clearActivePackage(true); f.await { !it.busy }
+            val clears = (0 until f.server.requestCount).map { f.server.takeRequest() }.filter { it.path == "/api/packages/active/clear" }
+            assertEquals(2, clears.size)
+            assertTrue(clears.all { it.getHeader("If-Match") == "\"1:1\"" })
+            assertTrue(clears.all { it.body.readUtf8().contains("\"expected_package_id\":1") })
+        }
+    }
+
+    @Test fun photoSaveUsesSecondsAndRetainsOtherDraftAfterRecreation() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "")))
+            f.model.editPhotoDuration("b", "4.5"); f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/editor"] = editorJson().replace("\"effective_duration\":3", "\"effective_duration\":4.5")
+            f.model.saveMedia("b"); f.await { !it.busy && !it.editor.isDirty("b") }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val changes = kotlinx.serialization.json.Json.parseToJsonElement(requests.single { it.path == "/api/packages/active/edits" }.body.readUtf8()).jsonObject.getValue("changes").jsonArray
+            assertEquals(1, changes.size)
+            assertEquals("\"photo:b\"", changes.single().jsonObject.getValue("key").toString())
+            assertEquals("4.5", changes.single().jsonObject.getValue("proposed").jsonObject.getValue("seconds").toString())
+            f.recreate(); f.await { it.canEditMedia }
+            assertEquals("", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            assertFalse(f.model.state.value.editor.isDirty("b"))
+        }
+    }
+
+    @Test fun renderAndRetrySendSavedIdentityNotDraftAndStaleRetryRefreshes() {
+        Fixture(paired = true).use { f ->
+            fun failedPreview() = editorJson().replaceFirst("\"preview_url\":null", "\"preview_url\":null,\"section_preview\":{\"status\":\"failed\",\"generation\":\"saved-generation\"}")
+            f.bodies["/api/packages/active/editor"] = failedPreview()
+            f.await { it.canEditMedia }; f.model.refreshEditor(); f.await { !it.busy }
+            f.model.editRanges("a", listOf(RangeInput("0", ""))); f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/render"] = """{"stale":true,"render_revision":"reel"}"""
+            f.model.renderActivePackage(); f.await { !it.busy }
+            f.bodies["/api/packages/active/media/a/sections/retry"] = failedPreview()
+            f.model.retrySectionPreview("a"); f.await { !it.busy }
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val retry = requests.single { it.path == "/api/packages/active/media/a/sections/retry" }
+            assertEquals("""{"expected_folder_name":"active","expected_generation":"saved-generation","expected_package_id":1}""",
+                kotlinx.serialization.json.Json.parseToJsonElement(retry.body.readUtf8()).toString())
+            assertFalse(requests.any { it.path == "/api/packages/active/edits" })
+            assertEquals("", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            f.codes["/api/packages/active/media/a/sections/retry"] = 409
+            f.model.retrySectionPreview("a"); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.readRequired)
+        }
+    }
+
+    @Test fun successfulClearUsesCapturedRevisionAndDiscardsAcknowledgedDrafts() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            f.bodies["/api/packages/active/clear"] = """{"folder_name":"active","upload_ids":[]}"""
+            f.codes["/api/packages/active/editor"] = 404
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.snapshot == null }
+            assertFalse(f.model.state.value.editor.dirty)
+            val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
+            val clear = requests.single { it.path == "/api/packages/active/clear" }
+            assertEquals("\"1:1\"", clear.getHeader("If-Match"))
+            assertEquals("""{"confirmed":true,"expected_folder_name":"active","expected_package_id":1}""", clear.body.readUtf8())
+            assertNull(DraftStore(f.dir.resolve("drafts")).read(f.origin, f.model.currentBinding!!, 1))
+        }
+    }
+
+    @Test fun cleanupRetryRemainsAvailableAfterAuthoritativeEditorDisappears() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5"))); f.await { !it.editor.persisting }
+            f.codes["/api/packages/active/clear"] = 503
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
+            f.codes["/api/packages/active/editor"] = 404
+            f.model.refreshEditor(); f.await { !it.busy && it.editor.snapshot == null }
+            f.codes["/api/packages/active/clear"] = 200
+            f.bodies["/api/packages/active/clear"] = """{"folder_name":"active","upload_ids":[]}"""
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.storedDraft == null }
+            val clears = (0 until f.server.requestCount).map { f.server.takeRequest() }.filter { it.path == "/api/packages/active/clear" }
+            assertEquals(2, clears.size)
+            assertTrue(clears.all { it.getHeader("If-Match") == "\"1:1\"" })
+        }
+    }
+
+    @Test fun definitiveClearRejectionAllowsFreshExplicitConfirmationAfterRefresh() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.codes["/api/packages/active/clear"] = 409
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.readRequired }
+            f.bodies["/api/packages/active/editor"] = editorJson().replace("\"content_revision\":1", "\"content_revision\":2")
+            f.model.refreshEditor(); f.await { !it.busy && !it.editor.readRequired }
+            f.model.clearActivePackage(true); f.await { !it.busy }
+            val clears = (0 until f.server.requestCount).map { f.server.takeRequest() }.filter { it.path == "/api/packages/active/clear" }
+            assertEquals(listOf("\"1:1\"", "\"1:2\""), clears.map { it.getHeader("If-Match") })
+        }
+    }
+
+    @Test fun retryingCapturedOldCleanupNeverRebindsOrDiscardsReplacementDraft() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.bodies["/api/dashboard"] = f.bodies["/api/dashboard"]!!.replace("\"id\":1,\"folder_name\":\"active\"", "\"id\":2,\"folder_name\":\"replacement\"")
+            f.bodies["/api/packages/active/editor"] = editorJson(folder = "replacement", id = 2)
+            f.saved["clear_package_id"] = 1; f.saved["clear_package_folder"] = "active"
+            f.saved["clear_package_revision"] = 1L; f.saved["clear_requires_read"] = true
+            f.saved["clear_origin"] = f.origin; f.saved["clear_binding"] = f.model.currentBinding
+            f.recreate(); f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", ""))); f.await { !it.editor.persisting }
+            f.model.refreshEditor(); f.await { !it.busy }
+            f.bodies["/api/packages/active/clear"] = """{"folder_name":"active","upload_ids":[]}"""
+            f.model.clearActivePackage(true); f.await { !it.busy }
+            assertEquals("", f.model.state.value.editor.inputs.getValue("a")[0].end)
+            assertEquals(2, f.model.state.value.editor.draftPackageId)
+            assertEquals("replacement", DraftStore(f.dir.resolve("drafts")).read(f.origin, f.model.currentBinding!!, 2)!!.folderName)
+            assertNull(DraftStore(f.dir.resolve("drafts")).read(f.origin, f.model.currentBinding!!, 1))
+        }
+    }
+
+    @Test fun lostRemovalReconcilesOnlyConfirmedTargetAfterRecreationWithoutReplay() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.model.editRanges("a", listOf(RangeInput("0", "5")))
+            f.model.editRanges("c", listOf(RangeInput("0", ""))); f.await { !it.editor.persisting }
+            f.codes["/api/packages/active/media/a/remove?expected_folder_name=active"] = 502
+            f.model.removeMedia("a", true); f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
+            f.bodies["/api/packages/active/editor"] = editorJson(aStatus = "removed", order = "\"b\",\"c\"")
+            f.recreate(); f.await { it.phase == Phase.READY && !it.busy }
+            f.model.refreshEditor(); f.await { !it.busy }
+            assertFalse(f.model.state.value.editor.isDirty("a"))
+            assertTrue(f.model.state.value.editor.isDirty("c"))
+            assertTrue(f.model.state.value.editor.conflicts.isEmpty())
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/media/a/remove?expected_folder_name=active" })
+        }
+    }
+
+    @Test fun capturedCleanupCannotCrossCredentialBindingOnRecreation() {
+        Fixture(paired = true).use { f ->
+            f.await { it.canEditMedia }
+            f.codes["/api/packages/active/clear"] = 503
+            f.model.clearActivePackage(true); f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
+            f.store.saveToken(f.origin, "REPLACEMENT")
+            f.recreate(); f.await { it.canEditMedia }
+            assertNull(f.saved.get<Int>("clear_package_id"))
+            assertNull(f.model.state.value.pendingClearFolder)
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/clear" })
+        }
+    }
+
     @Test fun lostGroupedSaveReconcilesOnReopenWithoutReplaying() {
         Fixture(paired = true).use { f ->
             f.await { it.canEditMedia }
             f.model.editRanges("a", listOf(RangeInput("0", "5")))
             f.await { it.editor.canSave }
             f.codes["/api/packages/active/edits"] = 502
-            f.model.saveMediaTrims()
+            f.model.saveMedia("a")
             f.await { !it.busy && it.editor.issue == EditorIssue.UNCERTAIN }
             f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":0,\"end\":5}]")
             f.recreate(); f.await { it.canEditMedia }
@@ -297,7 +490,7 @@ class AppViewModelTest {
             temporary.mkdirs(); temporary.resolve("locked").writeText("fixture")
             f.model.editRanges("a", listOf(RangeInput("0", "8")))
             f.await { it.editor.persistenceIssue == DraftIssue.STORAGE }
-            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); main.scheduler.runCurrent()
             assertEquals(0, f.seen.count { it.startsWith("PUT /api/packages") })
             assertEquals("8", f.model.state.value.editor.inputs.getValue("a")[0].end)
             val binding = f.model.currentBinding!!
@@ -322,7 +515,7 @@ class AppViewModelTest {
             f.model.refresh()
             f.await { it.editor.snapshot?.`package`?.id == 2 }
             assertEquals(1, f.model.state.value.editor.draftPackageId)
-            f.model.discardMediaTrims()
+            f.model.discardReplacedMediaDraft()
             f.await { it.canEditMedia && !it.editor.persisting }
             assertNull(drafts.read(f.origin, binding, 1))
             f.model.editRanges("a", listOf(RangeInput("1", "2")))
@@ -352,7 +545,7 @@ class AppViewModelTest {
             f.await { !it.canMutate }
             val writes = f.seen.count { it.startsWith("POST") || it.startsWith("PUT") }
             f.model.editRanges("a", listOf(RangeInput("0", "8")))
-            f.model.saveMediaTrims()
+            f.model.saveMedia("a")
             assertEquals(before, f.model.state.value.editor.inputs)
             assertEquals(writes, f.seen.count { it.startsWith("POST") || it.startsWith("PUT") })
         }
@@ -370,8 +563,13 @@ class AppViewModelTest {
         assertTrue(model.state.value.review.canApprove)
     }
 
+    private fun Fixture.readySetup() {
+        bodies["/api/setup"] = """{"checklist":[],"ready":true}"""
+    }
+
     @Test fun brandingSelectionSurvivesReturnRefresh() = runTest(main.scheduler) {
         for (field in listOf("logo_asset", "intro_asset", "outro_asset")) Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS)
             f.await { it.canConfigure("logo") && it.canConfigure("cards") }
@@ -838,7 +1036,7 @@ class AppViewModelTest {
             f.bodies["/api/reviews/8"] = reviewJson(id = 8)
             f.model.refreshReview(); f.await { !it.review.busy }
             assertEquals(8, f.model.state.value.review.target!!.reviewId)
-            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
         }
     }
     @Test fun failedGlobalRefreshBlocksAllReviewMutationsUntilRecovery() = runTest(main.scheduler) {
@@ -1012,6 +1210,49 @@ class AppViewModelTest {
         }
     }
 
+    @Test fun dueReviewAutomaticallyRendersButPackageScreenDoesNot() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.pendingDashboard("preparing")
+            f.bodies["/api/packages/active/render"] = """{"render_revision":"exact","stale":true}"""
+            f.model.navigate(Destination.PACKAGE)
+            f.await { it.editor.snapshot != null && !it.busy }
+            assertTrue(f.seen.none { it == "POST /api/packages/active/render" })
+            f.model.openReview(ReviewTarget(occurrenceId = 2, packageFolder = "active"))
+            f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+            f.model.refreshReview(); f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+        }
+    }
+
+    @Test fun missingDirectReviewAutomaticallyRendersSavedMontage() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.pendingDashboard("preparing", 7)
+            f.bodies["/api/reviews/7"] = reviewJson(ready = false)
+            f.bodies["/api/packages/active/render"] = """{"render_revision":"exact","stale":true}"""
+            f.model.openReview(ReviewTarget(reviewId = 7))
+            f.await { !it.review.busy }
+            assertEquals(1, f.seen.count { it == "POST /api/packages/active/render" })
+            assertEquals(Destination.PACKAGE, f.model.state.value.destination)
+            assertFalse(f.model.state.value.review.canApprove)
+        }
+    }
+
+    @Test fun dueReviewRendersAfterLiveResynchronizationWithoutBlockingWrites() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.openEmptyContinuation()
+            f.pendingDashboard("preparing")
+            f.model.setForeground(false)
+            main.scheduler.runCurrent()
+            f.model.setForeground(true)
+            f.await { !it.busy && !it.review.busy && it.livePhase == com.dojo.aisomedo.live.LivePhase.LIVE }
+            f.await { f.seen.count { it == "POST /api/packages/active/render" } == 1 && !it.review.busy }
+            assertTrue(f.model.state.value.canMutate)
+        }
+    }
+
     @Test fun openingPackageReadsEditorWithoutCreatingPackage() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
             f.await { it.phase == Phase.READY && !it.busy }
@@ -1045,6 +1286,7 @@ class AppViewModelTest {
     }
     @Test fun reminderSavePersistsOvernightWindowAndReloadsAfterRecreation() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
             f.model.setDraft("reminder_interval", "90", "reminders")
@@ -1066,6 +1308,7 @@ class AppViewModelTest {
     }
     @Test fun remindersRejectInvalidInputAndRetainDraftOnRejectedSave() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
             val count = f.server.requestCount
@@ -1085,6 +1328,7 @@ class AppViewModelTest {
     }
     @Test fun reminderIntervalOnlyEditPreservesSecondBearingWindow() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.bodies["/api/settings/reminders"] = """{"interval_minutes":60,"delivery_start":"09:00:10","delivery_end":"09:00:50","timezone":"Europe/Istanbul"}"""
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
@@ -1101,6 +1345,7 @@ class AppViewModelTest {
     }
     @Test fun reminderRefreshPreservesDirtyFieldsUntilExplicitReloadAndOfflineSaveNeverSends() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.navigate(Destination.SETTINGS); f.await { !it.busy }
             f.model.setDraft("reminder_interval", "90", "reminders")
@@ -1150,11 +1395,11 @@ class AppViewModelTest {
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             val count = f.server.requestCount
             f.model.editRanges("a", listOf(RangeInput("", "3")))
-            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); main.scheduler.runCurrent()
             assertEquals(count, f.server.requestCount)
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
             f.bodies["/api/packages/active/editor"] = editorJson(selections = "\"a\":[{\"start\":1,\"end\":3}],\"c\":[{\"start\":1,\"end\":3},{\"start\":7,\"end\":9}]")
-            f.model.saveMediaTrims(); f.await { !it.busy }
+            f.model.saveMedia("a"); f.await { !it.busy }
             assertFalse(f.model.state.value.editor.dirty)
             val requests = (0 until f.server.requestCount).map { f.server.takeRequest() }
             val put = requests.single { it.method == "PUT" }
@@ -1172,11 +1417,11 @@ class AppViewModelTest {
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
             f.codes["/api/packages/active/edits"] = 500
-            f.model.saveMediaTrims(); f.await { !it.busy }
+            f.model.saveMedia("a"); f.await { !it.busy }
             assertTrue(f.model.state.value.editor.readRequired)
             assertEquals("1", f.model.state.value.editor.inputs["a"]!!.first().start)
             val count = f.server.requestCount
-            f.model.saveMediaTrims(); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); main.scheduler.runCurrent()
             assertEquals(count, f.server.requestCount)
             f.model.refreshEditor(); f.await { !it.busy }
             assertFalse(f.model.state.value.editor.readRequired)
@@ -1233,13 +1478,13 @@ class AppViewModelTest {
             f.model.navigate(Destination.PACKAGE); f.await { it.editor.snapshot != null && !it.busy }
             f.model.editRanges("a", listOf(RangeInput("1", "3")))
             f.codes["/api/packages/active/editor"] = 503
-            f.model.saveMediaTrims(); f.await { !it.busy }
+            f.model.saveMedia("a"); f.await { !it.busy }
             assertTrue(f.model.state.value.editor.readRequired)
-            f.model.discardMediaTrims()
+            f.model.discardMedia("a")
             assertTrue("Unverified read-only editor must retain draft", f.model.state.value.editor.dirty)
             val count = f.server.requestCount
             f.model.editRanges("c", listOf(RangeInput("2", "3")))
-            f.model.saveMediaTrims(); f.model.removeMedia("a"); main.scheduler.runCurrent()
+            f.model.saveMedia("a"); f.model.removeMedia("a"); main.scheduler.runCurrent()
             assertEquals("Discard must not authorize a write from unverified snapshot", count, f.server.requestCount)
             assertTrue(f.model.state.value.editor.readRequired)
             f.codes["/api/packages/active/editor"] = 200
@@ -1302,6 +1547,7 @@ class AppViewModelTest {
     }
     @Test fun compatibilityBeforePairingThenTokenSavedAndMeValidated() = runTest(main.scheduler) {
         Fixture().use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
             f.await { it.phase == Phase.PAIRING }
             assertEquals("/api/compat", f.server.takeRequest().path)
             f.model.pair("12345678", "Telefon")
@@ -1323,9 +1569,39 @@ class AppViewModelTest {
     }
     @Test fun incompleteSetupOpensOnlyOnce() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.closeSetup(); f.model.refresh(); f.await { !it.busy }
             assertNull(f.model.state.value.step)
+        }
+    }
+    @Test fun incompleteSetupRedirectsSettingsToOnboarding() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/setup"] = """{"checklist":[{"key":"pairing","label":"Pairing","complete":true},{"key":"consent","label":"Consent","complete":false}],"ready":false}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.closeSetup(); f.model.navigate(Destination.SETTINGS)
+            assertEquals("consent", f.model.state.value.step)
+            assertNotEquals(Destination.SETTINGS, f.model.state.value.destination)
+        }
+    }
+    @Test fun removePairingRevokesServerAndClearsLocalSession() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.bodies["/api/pairing/clients/1/revoke"] = """{"revoked":true}"""
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.removePairing()
+            f.await { it.phase == Phase.ADDRESS }
+            assertTrue(f.seen.contains("POST /api/pairing/clients/1/revoke"))
+            assertNull(f.store.readToken(f.origin))
+        }
+    }
+    @Test fun removePairingClearsLocalSessionEvenWhenRevokeFails() = runTest(main.scheduler) {
+        Fixture(paired = true).use { f ->
+            f.codes["/api/pairing/clients/1/revoke"] = 500
+            f.await { it.phase == Phase.READY && !it.busy }
+            f.model.removePairing()
+            f.await { it.phase == Phase.ADDRESS }
+            assertTrue(f.seen.contains("POST /api/pairing/clients/1/revoke"))
+            assertNull(f.store.readToken(f.origin))
         }
     }
     @Test fun invalidCodeIsDifferentFromAuthenticated401() = runTest(main.scheduler) {
@@ -1554,9 +1830,11 @@ class AppViewModelTest {
     }
     @Test fun reopeningSessionRestoresSafeDraftAndNeverPairsAgain() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
-            f.model.setDraft("caption", "Rotation draft", "caption_template")
             f.model.navigate(Destination.SETTINGS)
+            f.await { it.canConfigure("caption_template") && !it.busy }
+            f.model.setDraft("caption", "Rotation draft", "caption_template")
             val saved = SavedStateHandle(f.model.saved.keys().associateWith { f.model.saved.get<Any>(it) })
             val owner = ViewModelStore()
             val reopened = AppViewModel(f.store, OkHttpClient(), 1, true, saved)
@@ -1644,6 +1922,7 @@ class AppViewModelTest {
     }
     @Test fun leavingWizardDuringSaveDoesNotReopenIt() = runTest(main.scheduler) {
         Fixture(paired = true).use { f ->
+            f.readySetup()
             f.await { it.phase == Phase.READY && !it.busy }
             f.model.selectStep("caption_template"); f.await { !it.busy }
             f.bodies["/api/setup"] = """{"checklist":[{"key":"caption_template","label":"Caption","complete":true},{"key":"cards","label":"Cards","complete":false,"required":false}],"ready":true}"""

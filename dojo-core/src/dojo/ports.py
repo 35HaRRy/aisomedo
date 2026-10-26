@@ -22,6 +22,7 @@ from dojo.model import (
     ProcessedMedia,
     PushRegistration,
     ReelBuild,
+    ReelClip,
     Upload,
     YayinIncelemesi,
     YayinZamani,
@@ -158,6 +159,14 @@ class JobStore(Protocol):
     def get_by_upload(self, upload_pk: int) -> Job | None: ...
     def update(self, job: Job) -> Job: ...
     def claim_next(self, claimed_at: datetime) -> Job | None: ...
+    def cancel_media_jobs(
+        self, package_id: int, media_id: str | None, *, kinds: tuple[str, ...],
+        cancelled_at: datetime,
+    ) -> int: ...
+    def finish_if_processing(
+        self, job_id: str, *, status: str, finished_at: datetime,
+        error_reason: str | None = None,
+    ) -> Job | None: ...
 
 
 @runtime_checkable
@@ -226,6 +235,14 @@ class MediaProcessor(Protocol):
 @runtime_checkable
 class ReelRenderer(Protocol):
     def render(self, build: ReelBuild, work_dir: Path, out_path: Path) -> Path: ...
+    def render_sections(
+        self, clips: list[ReelClip], work_dir: Path, out_path: Path, *,
+        cancelled: Callable[[], bool],
+    ) -> Path: ...
+    def render_thumbnail(
+        self, source: Path, out_path: Path, *, cancelled: Callable[[], bool],
+    ) -> Path: ...
+    def probe_duration(self, path: Path, *, cancelled: Callable[[], bool]) -> float: ...
 
 
 @runtime_checkable

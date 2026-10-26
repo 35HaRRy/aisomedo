@@ -56,6 +56,17 @@
           "package": {
             "$ref": "#/components/schemas/PackageOut"
           },
+          "render_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render Duration"
+          },
           "render_preview_url": {
             "anyOf": [
               {
@@ -1172,6 +1183,17 @@
             "title": "Media Id",
             "type": "string"
           },
+          "original_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Url"
+          },
           "preview_url": {
             "anyOf": [
               {
@@ -1197,6 +1219,16 @@
             ],
             "title": "Removed Position"
           },
+          "section_preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SectionPreviewOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "size_bytes": {
             "title": "Size Bytes",
             "type": "integer"
@@ -1215,6 +1247,17 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "thumbnail_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Url"
           },
           "uploaded_at": {
             "format": "date-time",
@@ -2312,6 +2355,84 @@
           "version"
         ],
         "title": "ReviewOut",
+        "type": "object"
+      },
+      "SectionPreviewOut": {
+        "properties": {
+          "duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "status": {
+            "default": "missing",
+            "enum": [
+              "missing",
+              "queued",
+              "processing",
+              "ready",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "SectionPreviewOut",
+        "type": "object"
+      },
+      "SectionPreviewRetryIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_folder_name": {
+            "title": "Expected Folder Name",
+            "type": "string"
+          },
+          "expected_generation": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Generation",
+            "type": "string"
+          },
+          "expected_package_id": {
+            "exclusiveMinimum": 0.0,
+            "title": "Expected Package Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_package_id",
+          "expected_folder_name",
+          "expected_generation"
+        ],
+        "title": "SectionPreviewRetryIn",
         "type": "object"
       },
       "SelectIn": {
@@ -4080,6 +4201,64 @@
         ]
       }
     },
+    "/api/packages/active/media/{media_id}/original": {
+      "get": {
+        "operationId": "original_media_api_packages_active_media__media_id__original_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_package_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Package Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Original Media",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/packages/active/media/{media_id}/preview": {
       "get": {
         "operationId": "media_preview_api_packages_active_media__media_id__preview_get",
@@ -4280,6 +4459,199 @@
           }
         },
         "summary": "Restore Media",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/media/{media_id}/sections/preview": {
+      "get": {
+        "operationId": "media_sections_preview_api_packages_active_media__media_id__sections_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_package_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Package Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "generation",
+            "required": true,
+            "schema": {
+              "title": "Generation",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Media Sections Preview",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/media/{media_id}/sections/retry": {
+      "post": {
+        "operationId": "retry_media_sections_preview_api_packages_active_media__media_id__sections_retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionPreviewRetryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveEditorOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Media Sections Preview",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/packages/active/media/{media_id}/thumbnail": {
+      "get": {
+        "operationId": "media_thumbnail_api_packages_active_media__media_id__thumbnail_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "media_id",
+            "required": true,
+            "schema": {
+              "title": "Media Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_package_id",
+            "required": true,
+            "schema": {
+              "title": "Expected Package Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_folder_name",
+            "required": true,
+            "schema": {
+              "title": "Expected Folder Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "generation",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Generation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Media Thumbnail",
         "tags": [
           "packages"
         ]

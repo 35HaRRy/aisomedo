@@ -71,7 +71,7 @@ private val diagnosticSegments = setOf(
     "settings", "plan", "branding", "assets", "cards", "skip", "meta", "status", "instagram", "token",
     "oauth", "start", "attempts", "select", "packages", "active", "render", "preview", "editor", "order",
     "selections", "media", "remove", "restore", "upload-limits", "uploads", "complete", "resolve",
-    "conflicts", "ranges", "reviews", "approve", "reschedule", "occurrences", "push-token",
+    "conflicts", "ranges", "reviews", "approve", "reschedule", "occurrences", "push-token", "clients", "revoke",
 )
 
 class DojoApi(private val origin: String, private val token: String?, private val versionCode: Int, http: OkHttpClient,
@@ -235,6 +235,7 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun compat(): CompatInfo = decode(request("GET", "/api/compat"))
     suspend fun pair(code: String, name: String): PairingOut = decode(request("POST", "/api/pairing/validate", json.encodeToJsonElement(ValidateIn(code, "device", name))))
     suspend fun me(): ClientOut = decode(request("GET", "/api/pairing/me"))
+    suspend fun revokeClient(id: Int) { request("POST", "/api/pairing/clients/$id/revoke") }
     suspend fun dashboard(): DashboardOut = decode(request("GET", "/api/dashboard"))
     suspend fun changeOneoffDate(id: Int, body: OneoffDateIn): DashboardSlotOut = decode(request("PATCH", "/api/dashboard/occurrences/$id", json.encodeToJsonElement(body)))
     suspend fun decideOneoff(id: Int, body: OneoffDecisionIn): OneoffDecisionOut = decode(request("POST", "/api/dashboard/occurrences/$id/decision", json.encodeToJsonElement(body)))
@@ -280,6 +281,8 @@ class DojoApi(private val origin: String, private val token: String?, private va
     suspend fun completedPackages(): List<PackageOut> = decode(request("GET", "/api/packages"))
     suspend fun completedPackage(folder: String): CompletedPackageOut = decode(request("GET", "/api/packages/${segment(folder)}"))
     suspend fun savePackageEdits(body: PackageEditIn): ActiveEditorOut = decode(request("PUT", "/api/packages/active/edits", json.encodeToJsonElement(body)))
+    suspend fun retrySectionPreview(id: String, body: SectionPreviewRetryIn): ActiveEditorOut = decode(request("POST", "/api/packages/active/media/${segment(id)}/sections/retry", json.encodeToJsonElement(body)))
+    suspend fun clearPackage(body: ClearPackageIn, expected: PackageRevision): ClearPackageOut = decode(request("POST", "/api/packages/active/clear", json.encodeToJsonElement(body), packageRevision = expected))
     suspend fun orderMedia(folder: String, order: List<String>, expected: PackageRevision) = request("PUT", "/api/packages/active/order",
         json.encodeToJsonElement(OrderIn(expectedFolderName = folder, order = order)), packageRevision = expected)
     suspend fun selectVideoRanges(folder: String, selections: Map<String, List<VideoRangeOut>>, expected: PackageRevision) = request("PUT", "/api/packages/active/selections",

@@ -33,6 +33,7 @@ data class ActiveEditorOut(
     @SerialName("media") val media: List<EditorMediaOut>,
     @SerialName("montage") val montage: MontageOut,
     @SerialName("package") val `package`: PackageOut,
+    @SerialName("render_duration") val renderDuration: Double? = null,
     @SerialName("render_preview_url") val renderPreviewUrl: String? = null,
     @SerialName("render_revision") val renderRevision: String? = null,
     @SerialName("render_stale") val renderStale: Boolean,
@@ -81,6 +82,19 @@ data class BrandingDefaultsOut(
     @SerialName("logo_asset") val logoAsset: String?,
     @SerialName("outro_asset") val outroAsset: String?,
     @SerialName("outro_duration") val outroDuration: Double?,
+)
+
+@Serializable
+data class ClearPackageIn(
+    @SerialName("confirmed") val confirmed: Boolean,
+    @SerialName("expected_folder_name") val expectedFolderName: String,
+    @SerialName("expected_package_id") val expectedPackageId: Int,
+)
+
+@Serializable
+data class ClearPackageOut(
+    @SerialName("folder_name") val folderName: String,
+    @SerialName("upload_ids") val uploadIds: List<String>,
 )
 
 @Serializable
@@ -198,12 +212,15 @@ data class EditorMediaOut(
     @SerialName("filename") val filename: String,
     @SerialName("is_video") val isVideo: Boolean,
     @SerialName("media_id") val mediaId: String,
+    @SerialName("original_url") val originalUrl: String? = null,
     @SerialName("preview_url") val previewUrl: String?,
     @SerialName("processed") val processed: ProcessedMetadataOut,
     @SerialName("removed_position") val removedPosition: Int? = null,
+    @SerialName("section_preview") val sectionPreview: SectionPreviewOut? = null,
     @SerialName("size_bytes") val sizeBytes: Long,
     @SerialName("source_duration") val sourceDuration: Double?,
     @SerialName("status") val status: String,
+    @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
     @SerialName("uploaded_at") val uploadedAt: String,
 )
 
@@ -425,6 +442,21 @@ data class ReviewOut(
     @SerialName("revision_digest") val revisionDigest: String,
     @SerialName("status") val status: String,
     @SerialName("version") val version: Int,
+)
+
+@Serializable
+data class SectionPreviewOut(
+    @SerialName("duration") val duration: Double? = null,
+    @SerialName("generation") val generation: String? = null,
+    @SerialName("status") val status: String = "missing",
+    @SerialName("url") val url: String? = null,
+)
+
+@Serializable
+data class SectionPreviewRetryIn(
+    @SerialName("expected_folder_name") val expectedFolderName: String,
+    @SerialName("expected_generation") val expectedGeneration: String,
+    @SerialName("expected_package_id") val expectedPackageId: Int,
 )
 
 @Serializable

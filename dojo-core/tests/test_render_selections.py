@@ -45,6 +45,8 @@ def make_video(tmp_path, duration=30.0):
 def run_render(seam):
     seam.render_preview()
     job = seam.claim_next_job()
+    while job is not None and job.kind in ("section_preview", "thumbnail"):
+        job = seam.claim_next_job()
     assert job is not None and job.kind == "render"
     seam.process_job(job.job_id)
     assert seam._jobs.get(job.job_id).status == "done"
@@ -84,6 +86,9 @@ def test_legacy_digest_and_manifest_survive_reads_until_explicit_edit(tmp_path):
                                           ensure_ascii=False).encode()).hexdigest()
     manifest["render_revision"] = old_digest
     seam._write_manifest(seam.get_active_package(), manifest)
+    rendered = path.parent / "render" / "reel.mp4"
+    rendered.parent.mkdir(exist_ok=True)
+    rendered.write_bytes(b"existing-legacy-render")
     before = path.read_bytes()
     assert seam.get_montage_status().combined_duration == 10.0
     assert seam.render_preview() == {"stale": False, "render_revision": old_digest}
@@ -210,3 +215,28 @@ def test_production_nonzero_seek_preserves_generated_silent_audio(tmp_path, ffmp
                              "-ac", "1", "pipe:1"], text=False)
     assert len(audio) > 100
     assert not any(audio)
+
+
+def test_production_render_unifies_audio_layout_across_segments(tmp_path, ffmpeg):
+    # concat copies streams, so a source clip quieter than 44.1 kHz must not
+    # leak its rate into the reel: mixed audio layouts corrupt AAC timing and
+    # browsers stop playback mid-reel with a decode error.
+    source = tmp_path / "narrowband.mp4"
+    command(ffmpeg, ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=160x90:d=2:r=25",
+                     "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=32000",
+                     "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
+                     "-threads", "2", str(source)])
+    photo = tmp_path / "photo.png"
+    command(ffmpeg, ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=white:s=100x100:d=1",
+                     "-frames:v", "1", str(photo)])
+    build = ReelBuild(clips=[
+        ReelClip(media_id="photo", path=photo, is_video=False, duration=1.0),
+        ReelClip(media_id="video", path=source, is_video=True, duration=0.5,
+                 trim_start=0.0, trim_end=0.5),
+    ], photo_duration=3)
+    out = tmp_path / "reel.mp4"
+    render_module.FfmpegReelRenderer().render(build, tmp_path / "segments", out)
+    info = probe(ffmpeg, out)
+    assert next(s for s in info["streams"] if s["codec_type"] == "audio")["sample_rate"] == "44100"
+    decoded = ffmpeg(["ffmpeg", "-v", "error", "-i", str(out), "-f", "null", "-"])
+    assert decoded.returncode == 0 and not decoded.stderr.strip(), decoded.stderr

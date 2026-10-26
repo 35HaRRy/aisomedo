@@ -12,12 +12,14 @@ from datetime import date, datetime, time, timedelta
 from functools import wraps
 from math import isfinite
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from dojo.setup import DojoSetup
 
 from dojo.adapters.clock import ISTANBUL, SystemClock
+from dojo.adapters.preview_process import PreviewCancelled
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
 from dojo.dashboard import NextSlot, PendingAction, PublishingDashboard, next_slot
 from dojo.exceptions import (
@@ -95,6 +97,7 @@ from dojo.model import (
     Upload,
     UploadLimits,
     UploadStatus,
+    VideoRange,
     VideoSelections,
     YayinIncelemesi,
     YayinZamani,
@@ -330,7 +333,15 @@ class DojoPublishing:
 
         now = self._clock.now().astimezone(ISTANBUL)
         completed_folder_name = f"{existing.folder_name}-completed"
+        completed_manifest = self._load_manifest(existing)
+        self._packages.after_commit(
+            f"preview-sweep:{existing.id}", lambda: self._prune_retired_preview_files(
+                replace(existing, folder_name=completed_folder_name), completed_manifest,
+            ),
+        )
 
+        self._jobs.cancel_media_jobs(existing.id, None, kinds=("section_preview", "thumbnail"),
+                                     cancelled_at=now)
         self._packages.update(replace(existing, status="completed"))
         (self.media_root / existing.folder_name).rename(
             self.media_root / completed_folder_name
@@ -394,6 +405,10 @@ class DojoPublishing:
         sources = [self.media_root / package.folder_name]
         sources.extend(self.media_root / "tmp" / u.upload_id for u in uploads)
         sources.extend(self.media_root / "tmp" / f"render-{j.job_id}" for j in jobs)
+        sources.extend(self.media_root / "tmp" / f"section-preview-{j.job_id}" for j in jobs
+                       if j.kind == "section_preview")
+        sources.extend(self.media_root / "tmp" / f"thumbnail-{j.job_id}" for j in jobs
+                       if j.kind == "thumbnail")
         for source in sources:
             resolved = source.resolve()
             if source.is_symlink() or not resolved.is_relative_to(root) or resolved == root:
@@ -448,18 +463,25 @@ class DojoPublishing:
                 and digest is not None and review.revision_digest == digest
                 and manifest.get("render_revision") == digest
             )
-            if not ready:
-                continue
-            try:
-                resolve_artifact(self.media_root / review.package_folder, manifest, "render/reel.mp4")
-            except MediaNotFound:
+            if ready:
+                try:
+                    resolve_artifact(self.media_root / review.package_folder, manifest,
+                                     "render/reel.mp4")
+                except MediaNotFound:
+                    ready = False
+            if not ready and not (
+                package is not None and package.status == "active"
+                and review.package_folder == package.folder_name and review.status == "pending"
+                and occurrence is not None and occurrence.status in ("pending", "due")
+                and occurrence.due_at <= now
+            ):
                 continue
             actions.append(PendingAction(
                 occurrence_id=review.occurrence_id, review_id=review.id,
                 version=review.version,
                 due_at=occurrence.due_at if occurrence else review.created_at,
                 package_folder=review.package_folder,
-                state="review_ready",
+                state="review_ready" if ready else "preparing" if has_media else "empty_package",
                 review_status=review.status if review.status != "pending" else None,
             ))
         reviewed = {r.occurrence_id for r in reviews}
@@ -478,7 +500,8 @@ class DojoPublishing:
                 actions, key=lambda action: (action.due_at, action.occurrence_id),
             ),
             plan=plan,
-            manual_review_allowed=not reviews and not actions and not self._schedule.has_pending_exception(),
+            manual_review_allowed=(not reviews and not actions
+                                   and not self._schedule.has_pending_exception()),
             next_slots=[NextSlot(o.kind, o.due_at, o.id) for o in sorted(
                 occurrences, key=lambda o: (o.due_at, o.id),
             ) if o.status == "pending"],
@@ -1093,10 +1116,18 @@ class DojoPublishing:
         job = self._jobs.get(job_id)
         if job is None:
             raise JobNotFound(f"job {job_id} not found")
+        if job.kind in ("section_preview", "thumbnail") and job.status == "cancelled":
+            return
         if job.status != "processing":
             raise UploadConflict(f"job {job_id} is {job.status}")
         if job.kind == "render":
             self._process_render_job(job)
+            return
+        if job.kind == "section_preview":
+            self._process_section_preview_job(job)
+            return
+        if job.kind == "thumbnail":
+            self._process_thumbnail_job(job)
             return
         upload = self._uploads.get_by_pk(job.upload_id)
         if upload is None:
@@ -1256,6 +1287,147 @@ class DojoPublishing:
             )
         return len(stale)
 
+    def _preview_job_snapshot(self, job: Job) -> tuple[Package, dict, dict] | None:
+        package = self._packages.get_active()
+        current = self._jobs.get(job.job_id)
+        if package is None or package.id != job.payload.get("package_id") \
+                or package.folder_name != job.payload.get("package") \
+                or current is None or current.status != "processing":
+            return None
+        manifest = self._load_manifest(package)
+        mid = job.payload["media_id"]
+        key = "thumbnails" if job.kind == "thumbnail" else "section_previews"
+        record = manifest.get(key, {}).get(mid)
+        if not record or record.get("generation") != job.job_id:
+            return None
+        entry = next((e for e in manifest.get("media", []) if e["media_id"] == mid), None)
+        if entry is None:
+            return None
+        inputs = (self._thumbnail_input(entry) if job.kind == "thumbnail" else
+                  self._section_preview_input(entry, manifest_selections(manifest).get(mid, [])))
+        if inputs is None or inputs["input_digest"] != job.payload.get("input_digest"):
+            return None
+        return package, manifest, entry
+
+    def _process_section_preview_job(self, job: Job) -> None:
+        self._process_media_preview_job(job)
+
+    def _process_thumbnail_job(self, job: Job) -> None:
+        self._process_media_preview_job(job)
+
+    def _process_media_preview_job(self, job: Job) -> None:
+        thumbnail = job.kind == "thumbnail"
+        key = "thumbnails" if thumbnail else "section_previews"
+        mid = job.payload["media_id"]
+        prefix = "thumbnail" if thumbnail else "section-preview"
+        work = self.media_root / "tmp" / f"{prefix}-{job.job_id}"
+        staged = work / ("thumbnail.jpg" if thumbnail else "sections.mp4")
+        age = max(0.0, (self._clock.now() - (job.claimed_at or self._clock.now())).total_seconds())
+        deadline = monotonic() + 900 - age
+
+        def cancelled() -> bool:
+            with self._packages.read_snapshot():
+                if self._preview_job_snapshot(job) is None:
+                    return True
+            if monotonic() >= deadline:
+                raise RenderFailed("preview worker deadline exceeded")
+            return False
+
+        try:
+            with self._packages.package_lock(), self._packages.command_transaction():
+                captured = self._preview_job_snapshot(job)
+                if captured is None:
+                    raise PreviewCancelled()
+                package, manifest, _ = captured
+                source = self.get_media_preview(mid, expected_folder_name=package.folder_name).path
+                manifest[key][mid]["status"] = "processing"
+                self._write_manifest(package, manifest)
+            renderer = self._renderer
+            if renderer is None:
+                from dojo.adapters.render import FfmpegReelRenderer
+
+                renderer = FfmpegReelRenderer()
+            if thumbnail:
+                renderer.render_thumbnail(source, staged, cancelled=cancelled)
+                duration = None
+            else:
+                clips = [ReelClip(media_id=mid, path=source, is_video=True,
+                    duration=r["end"] - r["start"], trim_start=r["start"], trim_end=r["end"])
+                    for r in job.payload["ranges"]]
+                renderer.render_sections(clips, work, staged, cancelled=cancelled)
+                duration = renderer.probe_duration(staged, cancelled=cancelled)
+            with self._packages.package_lock(), self._packages.command_transaction():
+                current = self._preview_job_snapshot(job)
+                if current is None:
+                    raise PreviewCancelled()
+                package, manifest, _ = current
+                relative = f"media/{mid}/previews/{job.job_id}{'.jpg' if thumbnail else '.mp4'}"
+                destination = self.media_root / package.folder_name / relative
+                if not destination.resolve().is_relative_to(
+                    (self.media_root / package.folder_name).resolve(),
+                ):
+                    raise ValueError("preview storage escapes package")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                staged.replace(destination)
+                manifest[key][mid].update(status="ready", artifact_ref=relative, duration=duration)
+                if self._jobs.finish_if_processing(job.job_id, status="done",
+                                                  finished_at=self._clock.now()) is None:
+                    raise PreviewCancelled()
+                self._write_manifest(package, manifest)
+        except PreviewCancelled:
+            self._jobs.finish_if_processing(job.job_id, status="cancelled",
+                                             finished_at=self._clock.now())
+        except Exception as exc:
+            with self._packages.package_lock(), self._packages.command_transaction():
+                current = self._preview_job_snapshot(job)
+                finished = self._jobs.finish_if_processing(
+                    job.job_id, status="failed" if current else "cancelled",
+                    finished_at=self._clock.now(),
+                    error_reason=(f"preview processing failed ({type(exc).__name__})"
+                                  if current else None),
+                )
+                if current is not None and finished is not None:
+                    package, manifest, _ = current
+                    manifest[key][mid].update(status="failed", artifact_ref=None, duration=None)
+                    self._write_manifest(package, manifest)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _maintain_media_preview_jobs(self) -> None:
+        package = self._packages.get_active()
+        if package is None:
+            return
+        manifest = self._load_manifest(package)
+        selections = manifest_selections(manifest)
+        now = self._clock.now()
+        for entry in manifest.get("media", []):
+            mid = entry["media_id"]
+            for key, kind, inputs in (
+                ("thumbnails", "thumbnail", self._thumbnail_input(entry)),
+                ("section_previews", "section_preview",
+                 self._section_preview_input(entry, selections.get(mid, []))),
+            ):
+                if inputs is None:
+                    continue
+                records = manifest.setdefault(key, {})
+                if mid not in records:
+                    records[mid] = self._enqueue_media_preview(package, mid, inputs, kind=kind)
+                record = records[mid]
+                job = self._jobs.get(record["generation"])
+                if job is not None and job.status == "processing" and job.claimed_at is not None \
+                        and job.claimed_at + timedelta(seconds=905) <= now:
+                    finished = self._jobs.finish_if_processing(
+                        job.job_id, status="failed", finished_at=now,
+                        error_reason="preview worker deadline exceeded",
+                    )
+                    if finished is not None:
+                        record.update(status="failed", artifact_ref=None, duration=None)
+        self._write_manifest(package, manifest)
+        self._packages.after_commit(
+            f"preview-sweep:{package.id}",
+            lambda: self._prune_retired_preview_files(package, manifest),
+        )
+
     def _process_render_job(self, job: Job) -> None:
         payload = job.payload or {}
         try:
@@ -1341,9 +1513,12 @@ class DojoPublishing:
         after the scope closes.
         """
         with self._packages.package_lock(wait=False) as acquired:
-            if not acquired or self._setup is not None and not self._setup.is_ready():
+            if not acquired:
                 return
             with self._packages.command_transaction():
+                self._maintain_media_preview_jobs()
+                if self._setup is not None and not self._setup.is_ready():
+                    return
                 self.ensure_schedule_upto()
                 self._ensure_reviews_for_due()
 
@@ -1351,12 +1526,12 @@ class DojoPublishing:
     def _ensure_reviews_for_due(self) -> None:
         """Create at most one durable review per due occurrence for the active revision.
 
-        A review is only created once a render is materialized. For a non-empty package
-        we enqueue a render when stale (the render job's completion hook creates the
-        review) or, when the render is already current, create it directly. An empty
-        active package creates no review and leaves the occurrence pending.
+        A review is only created once a render is materialized. Missing/stale Reels
+        wait for a manual render or an automatic request from the review screen.
+        Background scheduler ticks never enqueue Reel renders.
         """
-        self._select_due_occurrence()
+        if self._select_due_occurrence() is None:
+            return
         package = self._packages.get_active()
         if package is None:
             return
@@ -1369,10 +1544,8 @@ class DojoPublishing:
             # Keep due occurrences pending until the editor makes inputs eligible.
             return
         digest = self._render_digest(package, manifest)
-        if manifest.get("render_revision") == digest:
+        if self._has_current_render(package, manifest, digest):
             self._create_review_if_due(package, digest)
-        else:
-            self._enqueue_render(package, digest)
 
     @_package_edit
     def _create_review_if_due(self, package: Package, digest: str) -> None:
@@ -2021,6 +2194,10 @@ class DojoPublishing:
                     yield
                     return
                 raise NoActivePackage("no active package")
+            if allow_missing and package.id != package_id \
+                    and (self.media_root / f".clearing-{package_id}.json").is_file():
+                yield  # Only the captured old identity's cleanup journal may be retried.
+                return
             state = self._packages.read_package_state(package.id)
             if package.id != package_id or state is None \
                     or state.content_revision != content_revision:
@@ -2050,12 +2227,27 @@ class DojoPublishing:
                             if a["kind"] == "processed" and a["available"]), None)
             is_video = str(entry.get("content_type", "")).startswith("video/")
             source = source_duration(entry) if is_video else None
+            active = entry.get("status") == "finalized"
+            original = next((a["artifact_ref"] for a in items
+                             if a["kind"] == "original" and a["available"]), None)
+            section = manifest.get("section_previews", {}).get(mid, {}) if active else {}
+            thumbnail = manifest.get("thumbnails", {}).get(mid, {}) if active else {}
             media.append({
                 **public_media(entry), "is_video": is_video, "source_duration": source,
                 "effective_duration": effective_duration(
                     entry, selections.get(mid), limits.photo_duration_seconds
                 ) if not is_video or source is not None else None,
                 "preview_ref": preview, "artifacts": items,
+                "original_ref": original if active else None,
+                "thumbnail_ref": thumbnail.get("artifact_ref")
+                    if thumbnail.get("status") == "ready" else None,
+                "thumbnail_generation": thumbnail.get("generation"),
+                "section_preview": {
+                    "status": section.get("status", "missing"),
+                    "generation": section.get("generation"),
+                    "artifact_ref": section.get("artifact_ref"),
+                    "duration": section.get("duration"), "url": None,
+                },
             })
         digest = self._render_digest(package, manifest)
         stale = manifest.get("render_revision") != digest
@@ -2077,6 +2269,8 @@ class DojoPublishing:
             "render_stale": stale,
             "render_status": render_status,
             "render_revision": manifest.get("render_revision"),
+            "render_duration": (manifest.get("render_duration")
+                                if render_status == "ready" else None),
             "media": media, "montage": self._montage_status(manifest).to_dict(),
         }
 
@@ -2102,6 +2296,42 @@ class DojoPublishing:
         suffix = extension_for(str(entry.get("processed", {}).get("content_type", "")))
         reference = f"{prefix}/{media_id}/processed{suffix}"
         return resolve_artifact(root, manifest, reference)
+
+    def get_active_media_artifact(
+        self, media_id: str, kind: str, *, expected_package_id: int,
+        expected_folder_name: str, generation: str | None = None,
+    ) -> PackageArtifact:
+        package = self._require_editor_package(expected_folder_name)
+        if package.id != expected_package_id:
+            raise PackageChanged("active package identity changed")
+        manifest = self._load_manifest(package)
+        entry = next((e for e in manifest.get("media", []) if e["media_id"] == media_id), None)
+        if entry is None or entry.get("status") != "finalized":
+            raise MediaNotFound("active media is unavailable")
+        root = self.media_root / package.folder_name
+        if kind == "original":
+            original = next((a for a in describe_artifacts(root, manifest)
+                             if a["kind"] == "original" and a["artifact_ref"].startswith(
+                                 f"media/{media_id}/")), None)
+            if original is None:
+                raise MediaNotFound("original is unavailable")
+            return resolve_artifact(root, manifest, original["artifact_ref"])
+        if kind not in ("thumbnail", "section_preview"):
+            raise MediaNotFound("unknown media preview")
+        key = "thumbnails" if kind == "thumbnail" else "section_previews"
+        record = manifest.get(key, {}).get(media_id, {})
+        inputs = (self._thumbnail_input(entry) if kind == "thumbnail" else
+                  self._section_preview_input(
+                      entry, manifest_selections(manifest).get(media_id, []),
+                  ))
+        if record.get("status") != "ready" or inputs is None \
+                or inputs["input_digest"] != record.get("input_digest") \
+                or generation is not None and generation != record.get("generation"):
+            raise MediaNotFound("current media preview is unavailable")
+        try:
+            return resolve_artifact(root, manifest, record.get("artifact_ref", ""))
+        except ValueError as exc:
+            raise MediaNotFound("current media preview is unavailable") from exc
 
     def resolve_completed_artifact(self, folder_name: str, artifact_ref: str) -> PackageArtifact:
         package = self._get_completed_package(folder_name)
@@ -2160,12 +2390,156 @@ class DojoPublishing:
             old = self._packages.read_package_state(package.id, for_update=True)
             if old is not None and old.document == manifest:
                 return
+            self._reconcile_section_previews(package, old.document if old else {}, manifest)
             changed = old is None or content_fields(old.document) != content_fields(manifest)
             self._packages.write_package_state(package.id, manifest, content_changed=changed)
             self._packages.queue_change(["dashboard", "publication", f"package:{package.id}"])
             self._packages.after_commit(
                 f"manifest:{package.id}", lambda: self.export_manifest(package),
             )
+            self._packages.after_commit(
+                f"preview-sweep:{package.id}",
+                lambda: self._prune_retired_preview_files(package, manifest),
+            )
+            if changed:
+                self._packages.after_commit(
+                    f"reel-sweep:{package.id}", lambda: self._prune_stale_reel(package),
+                )
+
+    def _prune_stale_reel(self, package: Package) -> None:
+        with self._packages.package_lock():
+            current = self._packages.get_by_folder(package.folder_name)
+            if current is None or current.id != package.id or current.status != "active":
+                return
+            manifest = self._load_manifest(current)
+            if manifest.get("render_revision") is None or (
+                manifest["render_revision"] != self._render_digest(current, manifest)
+            ):
+                (self.media_root / current.folder_name / "render" / "reel.mp4").unlink(
+                    missing_ok=True,
+                )
+
+    @staticmethod
+    def _section_preview_input(entry: dict | None, ranges: list[VideoRange]) -> dict | None:
+        if not entry or entry.get("status") != "finalized" or not ranges \
+                or not isinstance(entry.get("processed"), dict) \
+                or not str(entry.get("content_type", "")).startswith("video/"):
+            return None
+        try:
+            ranges = validate_ranges(ranges, source_duration(entry) or 0)
+        except MontageTrimInvalid:
+            return None  # Recovery may persist an ineligible source; do not enqueue invalid work.
+        processed = entry.get("processed", {})
+        source = {"media_id": entry["media_id"], "uploaded_at": entry.get("uploaded_at"),
+                  "filename": entry.get("filename"), "processed": {
+                      key: processed.get(key) for key in ("path", "size_bytes", "duration")}}
+        identity = hashlib.sha256(
+            json.dumps(source, sort_keys=True, default=str).encode(),
+        ).hexdigest()
+        inputs = {"source_identity": identity, "ranges": ranges}
+        return {**inputs, "input_digest": hashlib.sha256(
+            json.dumps(inputs, sort_keys=True).encode()).hexdigest()}
+
+    @staticmethod
+    def _thumbnail_input(entry: dict | None) -> dict | None:
+        if not entry or not isinstance(entry.get("processed"), dict) \
+                or not str(entry.get("content_type", "")).startswith("video/"):
+            return None
+        duration = source_duration(entry or {})
+        if duration is None:
+            return None
+        inputs = DojoPublishing._section_preview_input(entry, [{"start": 0.0, "end": duration}])
+        if inputs is None:
+            return None
+        return {"source_identity": inputs["source_identity"],
+                "input_digest": inputs["source_identity"]}
+
+    def _enqueue_media_preview(
+        self, package: Package, media_id: str, inputs: dict, *, retry_of: str | None = None,
+        kind: str = "section_preview",
+    ) -> dict:
+        now = self._clock.now()
+        job, _ = self._jobs.create_job_once(Job(
+            id=0, job_id=uuid.uuid4().hex, upload_id=None, kind=kind,
+            status="queued", created_at=now, payload={
+                "package_id": package.id, "package": package.folder_name,
+                "media_id": media_id, **inputs,
+            },
+        ))
+        return {"generation": job.job_id, "input_digest": inputs["input_digest"],
+                "status": job.status, "artifact_ref": None, "duration": None,
+                "retry_of": retry_of}
+
+    def _prune_retired_preview_files(self, package: Package, manifest: dict) -> None:
+        root = self.media_root / package.folder_name
+        retained = {
+            record.get("artifact_ref") for key in ("section_previews", "thumbnails")
+            for record in manifest.get(key, {}).values()
+        }
+        for prefix in ("media", "removed"):
+            for path in root.glob(f"{prefix}/*/previews/*"):
+                if path.suffix not in (".mp4", ".jpg") or len(path.stem) != 32 \
+                        or any(char not in "0123456789abcdef" for char in path.stem):
+                    continue
+                if path.relative_to(root).as_posix() in retained:
+                    continue
+                try:
+                    if path.resolve().is_relative_to(root.resolve()):
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    logging.getLogger(__name__).warning("retired preview cleanup failed", extra={
+                        "event": "preview.cleanup_failed", "package_id": package.id,
+                    })
+
+    def _reconcile_section_previews(self, package: Package, before: dict, after: dict) -> None:
+        old_media = {e["media_id"]: e for e in before.get("media", [])}
+        new_media = {e["media_id"]: e for e in after.get("media", [])}
+        old_ranges, new_ranges = manifest_selections(before), manifest_selections(after)
+        for mid in old_media.keys() | new_media.keys():
+            if self._thumbnail_input(old_media.get(mid)) != self._thumbnail_input(
+                new_media.get(mid),
+            ):
+                self._jobs.cancel_media_jobs(package.id, mid, kinds=("thumbnail",),
+                                             cancelled_at=self._clock.now())
+                if mid in after.get("thumbnails", {}):
+                    after["thumbnails"].pop(mid)
+            previous = self._section_preview_input(old_media.get(mid), old_ranges.get(mid, []))
+            current = self._section_preview_input(new_media.get(mid), new_ranges.get(mid, []))
+            if previous == current:
+                continue
+            self._jobs.cancel_media_jobs(package.id, mid, kinds=("section_preview",),
+                                         cancelled_at=self._clock.now())
+            records = after.setdefault("section_previews", {})
+            records.pop(mid, None)
+            if current is not None:
+                records[mid] = self._enqueue_media_preview(package, mid, current)
+
+    @_package_edit
+    def retry_section_preview(
+        self, media_id: str, *, expected_package_id: int, expected_folder_name: str,
+        expected_generation: str,
+    ) -> dict:
+        package = self._require_editor_package(expected_folder_name)
+        if package.id != expected_package_id:
+            raise PackageChanged("active package identity changed")
+        manifest = self._load_manifest(package)
+        record = manifest.get("section_previews", {}).get(media_id)
+        if not record or expected_generation not in (record["generation"], record.get("retry_of")):
+            raise PackageChanged("section preview generation changed")
+        entry = next((e for e in manifest.get("media", []) if e["media_id"] == media_id), None)
+        inputs = self._section_preview_input(entry, manifest_selections(manifest).get(media_id, []))
+        if inputs is None or inputs["input_digest"] != record["input_digest"]:
+            raise PackageChanged("saved sections changed")
+        job = self._jobs.get(record["generation"])
+        if job is not None and job.status in ("queued", "processing"):
+            return self.get_active_editor()
+        if job is None or job.status != "failed":
+            raise PackageChanged("section preview is not retryable")
+        manifest["section_previews"][media_id] = self._enqueue_media_preview(
+            package, media_id, inputs, retry_of=expected_generation,
+        )
+        self._write_manifest(package, manifest)
+        return self.get_active_editor()
 
     def export_manifest(self, package: Package) -> None:
         """Project current committed state; a disk failure never rolls it back."""
@@ -2303,10 +2677,17 @@ class DojoPublishing:
         )
 
     def set_branding_defaults(
-        self, config: BrandingConfig, requester: str | None = None
+        self, config: BrandingConfig, requester: str | None = None, *,
+        apply_to_draft: bool = False,
     ) -> BrandingConfig:
-        """Set the installation-wide branding defaults; draft copies keep old values."""
+        """Set the installation-wide branding defaults.
+
+        ``apply_to_draft`` carries the change into the active package too, so a
+        card uploaded from Settings reaches the current Reel instead of only the
+        next package.
+        """
         now = self._clock.now()
+        before = self.get_branding_defaults().to_dict()
         for key, value in config.to_dict().items():
             self._settings.set(f"branding.{key}", value, updated_at=now)
         self._audit.append(
@@ -2317,10 +2698,33 @@ class DojoPublishing:
                 details=config.to_dict(),
             )
         )
-        return self.get_branding_defaults()
+        result = self.get_branding_defaults()
+        if apply_to_draft:
+            self._mirror_defaults_to_draft(before, result.to_dict(), requester)
+        return result
+
+    def _mirror_defaults_to_draft(
+        self, before: dict, after: dict, requester: str | None
+    ) -> None:
+        """Carry changed branding defaults into the active draft.
+
+        Draft branding is copied when a package is created, so without this a
+        card uploaded from Settings never reaches the current Reel; only the
+        next package would pick it up. Per-package overrides made through
+        ``set_branding`` still win until the defaults themselves change.
+        """
+        changed = {
+            key: after.get(key)
+            for key in ("logo_asset", "intro_asset", "intro_duration",
+                        "outro_asset", "outro_duration")
+            if before.get(key) != after.get(key)
+        }
+        if changed and self.get_active_package() is not None:
+            self.set_branding(changed, requester=requester)
 
     def patch_branding_defaults(
-        self, changes: dict[str, object], requester: str | None = None
+        self, changes: dict[str, object], requester: str | None = None, *,
+        apply_to_draft: bool = False,
     ) -> BrandingConfig:
         """Validate a partial update before writing only the changed settings."""
         current = self.get_branding_defaults().to_dict()
@@ -2349,6 +2753,8 @@ class DojoPublishing:
         result = self.get_branding_defaults()
         self._audit.append(AuditEvent(action="branding.defaults_updated",
             actor=requester or "system", occurred_at=now, details=result.to_dict()))
+        if apply_to_draft:
+            self._mirror_defaults_to_draft(current, result.to_dict(), requester)
         return result
 
     def _seed_draft_defaults(self, package: Package) -> None:
@@ -3001,10 +3407,19 @@ class DojoPublishing:
         manifest = self._load_manifest(package)
         self._validate_montage(manifest)
         digest = self._render_digest(package, manifest)
-        stale = manifest.get("render_revision") != digest
+        stale = not self._has_current_render(package, manifest, digest)
         if stale or retry:
             self._enqueue_render(package, digest, retry=retry)
         return {"stale": stale, "render_revision": digest}
+
+    def _has_current_render(self, package: Package, manifest: dict, digest: str) -> bool:
+        if manifest.get("render_revision") != digest:
+            return False
+        try:
+            resolve_artifact(self.media_root / package.folder_name, manifest, "render/reel.mp4")
+        except (MediaNotFound, ValueError):
+            return False
+        return True
 
     def render_if_stale(self) -> bool:
         """Trigger a render only when inputs changed; no-op when fresh."""
@@ -3109,6 +3524,7 @@ class DojoPublishing:
         work = self.media_root / "tmp" / f"render-{job.job_id}"
         staged = work / "reel.mp4"
         renderer.render(build, work, staged)
+        duration = renderer.probe_duration(staged, cancelled=lambda: False)
         with self._packages.package_lock(), self._packages.command_transaction():
             if self._jobs.get(job.job_id) is None:
                 shutil.rmtree(work, ignore_errors=True)
@@ -3132,6 +3548,7 @@ class DojoPublishing:
             staged.replace(out)
             manifest = fresh.document
             manifest["render_revision"] = digest
+            manifest["render_duration"] = duration
             self._write_manifest(package, manifest)
             self._create_review_if_due(package, digest)
             self._audit.append(AuditEvent(
