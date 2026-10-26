@@ -78,7 +78,7 @@ export const tr = {
     renderStale: "Render güncel değil. Bölüm ve sıra değişiklikleri yeni render gerektirir.",
     stale: "Paket dışarıdan değişti. Taslaklar korunuyor; yazmadan önce yenileyin veya değişiklikleri atın.", offline: "Çevrimdışısınız. Taslaklar korunuyor; işlemler için bağlantıyı bekleyin.",
     order: "Montaj sırası", video: "Video", photo: "Fotoğraf", preview: "önizlemesi",
-    drag: "Sürükle", left: "Sola", right: "Sağa", dragLabel: "sırasını sürükle", leftLabel: "dosyasını sola taşı", rightLabel: "dosyasını sağa taşı",
+    drag: "Sürükle", dragLabel: "sırasını sürükle",
     edit: "Bölümleri düzenle", editLabel: "bölümlerini düzenle", closeEditor: "Düzenleyiciyi kapat",
     remove: "Paketten çıkar", removeLabel: "dosyasını paketten çıkar", restore: "Geri yükle", restoreLabel: "dosyasını geri yükle",
     removed: "Paketten çıkarılmış medya", removedHelp: "Orijinal dosyalar ve seçili bölümler korunur. Geri yükleme önceki konumu kullanır.",

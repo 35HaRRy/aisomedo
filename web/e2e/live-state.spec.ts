@@ -33,7 +33,7 @@ function server() {
       return json({}, 404);
     });
     await page.goto("/#/package");
-    if (ready) await expect(page.getByRole("button", { name: "a.mp4 dosyasını sağa taşı" })).toBeEnabled();
+    if (ready) await expect(page.getByRole("button", { name: "a.mp4 dosyasını paketten çıkar" })).toBeEnabled();
   }
   return { snapshot, reads, writes, attach };
 }
@@ -92,7 +92,7 @@ test("restored input stays disabled until ready plus snapshot synchronization", 
   await expect.poll(() => durableEnd(page)).toBe("");
   expect(state.reads.filter(path => path.endsWith("/editor"))).toHaveLength(0);
   await page.evaluate(() => window.dispatchEvent(new Event("fixture:ready")));
-  await expect(page.getByRole("button", { name: "a.mp4 dosyasını sağa taşı" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "a.mp4 dosyasını paketten çıkar" })).toBeEnabled();
   await page.getByRole("button", { name: "a.mp4 bölümlerini düzenle" }).click();
   await expect(page.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("");
   expect(state.writes).toHaveLength(0);

@@ -80,7 +80,7 @@ export function ActivePackagePanel() {
       {!snapshot && !editor.loading && !editor.error && <p>{copy.noActive}</p>}
       {snapshot && <>
         {!ordered.length && <p>{copy.noMedia}</p>}
-        <ol aria-label={copy.order} className="package-media-list package-media-grid">{ordered.map((media, index) => <li key={media.media_id} data-editor-open={opened === media.media_id || undefined} data-selected={selected === media.media_id || undefined} data-dragging={dragged === media.media_id || undefined} data-drop-position={dropTarget?.id === media.media_id ? dropTarget.position : undefined}
+        <ol aria-label={copy.order} className="package-media-list package-media-grid">{ordered.map(media => <li key={media.media_id} data-editor-open={opened === media.media_id || undefined} data-selected={selected === media.media_id || undefined} data-dragging={dragged === media.media_id || undefined} data-drop-position={dropTarget?.id === media.media_id ? dropTarget.position : undefined}
           onDragOver={event => {
             if (!canDrop(event) || dragging.current === media.media_id) { setDropTarget(null); return; }
             event.preventDefault(); event.dataTransfer.dropEffect = "move";
@@ -90,13 +90,16 @@ export function ActivePackagePanel() {
             if (canDrop(event)) { event.preventDefault(); move(dragging.current!, media.media_id, dropPosition(event)); }
             clearDrag();
           }}>
-          <div className="package-media-heading"><div><h3 title={media.filename}>{media.filename}</h3><p className="muted">{media.is_video ? copy.video : copy.photo} · {media.effective_duration === null ? copy.unknownDuration : `${media.effective_duration.toFixed(2)} s`}{editor.isDirty(media.media_id) && <> · <strong>{copy.cardDraft}</strong></>}</p></div>
+          <div className="package-media-heading"><div><h3 title={media.filename}>{media.filename}</h3>
+            <div className="package-media-meta"><p className="muted">{media.is_video ? copy.video : copy.photo} · {media.effective_duration === null ? copy.unknownDuration : `${media.effective_duration.toFixed(2)} s`}{editor.isDirty(media.media_id) && <> · <strong>{copy.cardDraft}</strong></>}</p>
+              {!media.is_video && <input className="photo-duration-input" type="number" min="0.04" step="0.01" disabled={blocked} aria-label={`${media.filename} ${copy.photoDuration}`} aria-invalid={!!editor.validationErrors[media.media_id]} value={editor.draftInputs[media.media_id]?.[0]?.end ?? "3"} onChange={event => editor.setPhotoDuration(media.media_id, event.target.value)} />}
+            </div>
+            {editor.validationErrors[media.media_id] && <span role="alert" className="photo-duration-error">{copy.photoDurationHelp}</span>}
+          </div>
             <div className="package-media-actions">
               {media.is_video && <button className="media-icon-button" aria-label={`${media.filename} ${copy.editLabel}`} title={`${media.filename} ${copy.editLabel}`} aria-expanded={opened === media.media_id} onClick={() => setOpened(opened === media.media_id ? null : media.media_id)}><MediaActionIcon action={opened === media.media_id ? "close" : "edit"} /></button>}
-              {opened === media.media_id && <CardSaveActions id={media.media_id} />}
+              <CardSaveActions id={media.media_id} />
               <button className="media-icon-button" disabled={blocked} aria-label={`${media.filename} ${copy.removeLabel}`} title={`${media.filename} ${copy.removeLabel}`} onClick={() => void editor.remove(media.media_id)}><MediaActionIcon action="remove" /></button>
-               <button className="media-icon-button" disabled={blocked || index === 0} aria-label={`${media.filename} ${copy.leftLabel}`} title={`${media.filename} ${copy.leftLabel}`} onClick={() => move(media.media_id, ordered[index - 1].media_id)}><MediaActionIcon action="left" /></button>
-               <button className="media-icon-button" disabled={blocked || index === ordered.length - 1} aria-label={`${media.filename} ${copy.rightLabel}`} title={`${media.filename} ${copy.rightLabel}`} onClick={() => move(media.media_id, ordered[index + 1].media_id)}><MediaActionIcon action="right" /></button>
               <button className="media-icon-button media-drag-handle" draggable={!blocked} disabled={blocked} aria-label={`${media.filename} ${copy.dragLabel}`} title={`${media.filename} ${copy.dragLabel}`}
                 onPointerDown={() => { if (!blocked) setSelected(media.media_id); }}
                 onDragStart={event => {
@@ -111,13 +114,8 @@ export function ActivePackagePanel() {
           {opened !== media.media_id && <button className="media-image-button" aria-label={`${media.filename} ${tr.editor.viewOriginal}`} onClick={() => setViewing(media)}>
             <MediaThumbnail key={`${media.media_id}:${media.thumbnail_url}:${media.preview_url}`} media={media} />
           </button>}
-          {!media.is_video && <label className="photo-duration-control">{copy.photoDuration}
-            <input type="number" min="0.04" step="0.01" disabled={blocked} aria-label={`${media.filename} ${copy.photoDuration}`} aria-invalid={!!editor.validationErrors[media.media_id]} value={editor.draftInputs[media.media_id]?.[0]?.end ?? "3"} onChange={event => editor.setPhotoDuration(media.media_id, event.target.value)} />
-            {editor.validationErrors[media.media_id] && <span role="alert">{copy.photoDurationHelp}</span>}
-          </label>}
           {opened === media.media_id && media.is_video && <VideoSectionEditor key={media.media_id} media={media} ranges={editor.draft[media.media_id] ?? []} inputs={editor.draftInputs[media.media_id] ?? []} validationError={editor.validationErrors[media.media_id] ?? null} disabled={blocked} dirty={editor.isDirty(media.media_id)} onRetryPreview={() => void editor.retrySectionPreview(media.media_id)}
             onChange={ranges => editor.setRanges(media.media_id, ranges)} onInputChange={(i, bound, value) => editor.setInput(media.media_id, i, bound, value)} />}
-          {opened !== media.media_id && <CardSaveActions id={media.media_id} />}
           {editor.saveBlockedReasonFor(media.media_id) && editor.saveBlockedReasonFor(media.media_id) !== "unchanged" && <p id={`save-reason-${media.media_id}`} className="muted card-save-reason" role="status">{copy.saveReasons[editor.saveBlockedReasonFor(media.media_id)!]}</p>}
         </li>)}</ol>
         {!!removed.length && <CollapsiblePanel className="removed-media" title={copy.removed} level={3}><p className="muted">{copy.removedHelp}</p><ul className="package-media-list">{removed.map(media => <li key={media.media_id} className="package-media-heading"><h3>{media.filename}</h3>

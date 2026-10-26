@@ -12,8 +12,6 @@ const paths = {
   render: "m9 5 11 7-11 7ZM3 5v14",
   remove: "M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7",
   restore: "M8 4 3 9l5 5M3 9h11a6 6 0 0 1 0 12h-3",
-  left: "m10 6-6 6 6 6M4 12h16",
-  right: "m14 6 6 6-6 6M4 12h16",
   drag: "M12 2v20M2 12h20m-13-7 3-3 3 3m-6 14 3 3 3-3M5 9l-3 3 3 3m14-6 3 3-3 3",
 };
 

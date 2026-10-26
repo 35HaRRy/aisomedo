@@ -193,14 +193,15 @@ test("timeline geometry, native seek, drafts, persistence and cancellation", asy
 test("media order/removal/restoration and immutable authenticated archive", async ({ page, isMobile }, info) => {
   const server = await fixture(page);
   if (process.env.CAPTURE_UI) await page.screenshot({ path: info.outputPath("media-actions.png"), fullPage: true });
-  if (isMobile) await page.getByRole("button", { name: "b.mp4 dosyasını sola taşı" }).click();
-  else await page.getByRole("button", { name: "b.mp4 sırasını sürükle" }).dragTo(page.getByRole("heading", { name: "a.mp4", exact: true }));
-  await expect.poll(() => server.snapshot.montage.order).toEqual(["b", "a"]);
+  if (!isMobile) {
+    await page.getByRole("button", { name: "b.mp4 sırasını sürükle" }).dragTo(page.getByRole("heading", { name: "a.mp4", exact: true }));
+    await expect.poll(() => server.snapshot.montage.order).toEqual(["b", "a"]);
+  }
   await page.getByRole("button", { name: "a.mp4 dosyasını paketten çıkar" }).click();
   await expect(page.getByRole("list", { name: "Montaj sırası" }).getByRole("heading", { name: "a.mp4", exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Paketten çıkarılmış medya" }).getByRole("heading", { name: "a.mp4", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "a.mp4 dosyasını geri yükle" }).click();
-  await expect.poll(() => server.snapshot.montage.order).toEqual(["b", "a"]);
+  await expect.poll(() => server.snapshot.montage.order).toEqual(isMobile ? ["a", "b"] : ["b", "a"]);
   await page.getByRole("link", { name: "Tamamlanmış paketler", exact: true }).click();
   const link = page.getByRole("link", { name: /Orijinali indir/ }); await expect(link).toHaveAttribute("href", server.original);
   await expect(page.getByRole("button", { name: "Bölümleri kaydet" })).toHaveCount(0);
@@ -212,7 +213,7 @@ test("media order/removal/restoration and immutable authenticated archive", asyn
 });
 
 test("native row drag previews before/after insertion without writing until drop", async ({ page, isMobile }, info) => {
-  test.skip(!!isMobile, "Native drag uses mouse; mobile reorder is covered by left/right controls.");
+  test.skip(!!isMobile, "Native drag uses mouse; mobile has no reorder control.");
   const server = await fixture(page);
   const list = page.getByRole("list", { name: "Montaj sırası" });
   const rowA = list.locator(":scope > li").filter({ has: page.getByRole("heading", { name: "a.mp4", exact: true }) });
