@@ -124,6 +124,9 @@ test("package panels toggle independently and completed navigation protects draf
   await page.getByLabel("1. bölüm bitişi (saniye)").fill("5");
   await toggle.click();
    await expect(panel.getByRole("button", { name: "Bölümleri kaydet" }).first()).toBeHidden();
+  // The upload panel keeps its own collapsed state while the media panel closes.
+  await expect(page.getByLabel("Fotoğraf ve video seç")).toBeHidden();
+  await page.getByRole("region", { name: "Fotoğraf ve video yükle", exact: true }).getByRole("button", { name: "Fotoğraf ve video yükle panelini aç", exact: true }).click();
   await expect(page.getByLabel("Fotoğraf ve video seç")).toBeVisible();
   await panel.getByRole("button", { name: "Aktif paket medyası panelini aç", exact: true }).click();
   await expect(page.getByLabel("1. bölüm bitişi (saniye)")).toHaveValue("5");
