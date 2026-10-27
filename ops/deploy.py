@@ -235,20 +235,26 @@ def write_state(root: Path, release: Path, mode: str, monitoring: bool, origin: 
 
 def verify_public_health(origin: str, timeout: int) -> None:
     deadline = time.monotonic() + timeout
+    failure = "no attempt"
     while True:
+        url = origin.rstrip("/") + "/ready"
         try:
-            with urllib.request.urlopen(origin.rstrip("/") + "/ready", timeout=5) as response:
+            with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status != 200 or json.load(response).get("status") != "ok":
                     raise ValueError("invalid readiness response")
-            with urllib.request.urlopen(
-                origin.rstrip("/") + "/web-health.txt", timeout=5
-            ) as response:
+            url = origin.rstrip("/") + "/web-health.txt"
+            with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status != 200 or not response.read().strip():
                     raise ValueError("empty web health response")
             return
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
+            # Keep the reason: a bare "verification failed" hides whether the
+            # cause is DNS, a closed firewall port, TLS or a bad response body.
+            failure = f"{url} -> {type(error).__name__}: {error}"
             if time.monotonic() >= deadline:
-                raise RuntimeError("public HTTPS health verification failed") from None
+                raise RuntimeError(
+                    f"public HTTPS health verification failed: {failure}"
+                ) from None
             time.sleep(2)
 
 

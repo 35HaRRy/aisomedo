@@ -337,6 +337,17 @@ def test_public_health_failure_rolls_back_but_does_not_report_success(
     assert not docker.stopped
 
 
+def test_public_health_failure_reports_url_and_reason(cli, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise OSError("Connection timed out")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", unavailable)
+    with pytest.raises(RuntimeError) as error:
+        cli.verify_public_health("https://example.test", 0)
+    assert "https://example.test/ready" in str(error.value)
+    assert "Connection timed out" in str(error.value)
+
+
 def test_state_path_escape_is_rejected_before_commands(cli, installation):
     root, new, docker = installation
     state = json.loads((root / "current.json").read_text())
