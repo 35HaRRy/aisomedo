@@ -168,10 +168,11 @@ Invoke-RestMethod -Method Get -Uri "$base/api/settings/branding" -Headers $H
 
 3. **Global marka varsayılanlarını güncelleyin**:
 ```powershell
-$body = [System.Text.Encoding]::UTF8.GetBytes((@{ logo_asset = "logo.png"; caption_template = "Bugünün dojo anısı"; intro_asset = "intro.mp4"; intro_duration = 2.5; outro_asset = "outro.mp4"; outro_duration = 1.5 } | ConvertTo-Json))
+$body = [System.Text.Encoding]::UTF8.GetBytes((@{ logo_asset = "logo.png"; caption_template = "Bugünün dojo anısı"; intro_asset = "intro.mp4"; intro_duration = 3; outro_asset = "outro.mp4"; outro_duration = 2 } | ConvertTo-Json))
 Invoke-RestMethod -Method Put -Uri "$base/api/settings/branding" -Headers $H -ContentType "application/json" -Body $body
 ```
    - `200`; güncellenen varsayılanlar yankılanır.
+   - `intro_duration` / `outro_duration` API üzerinden yalnızca pozitif tam saniye kabul eder.
 
 4. **Aktif paket oluşturun** (varsa aynısını döndürür):
 ```powershell
