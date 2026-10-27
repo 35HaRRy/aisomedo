@@ -258,6 +258,35 @@ def verify_public_health(origin: str, timeout: int) -> None:
             time.sleep(2)
 
 
+def public_diagnostics() -> str:
+    """Host-side listeners and published ports, for a failed origin probe."""
+    detail = []
+    for command in (
+        ["ss", "-ltn"],
+        ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}\t{{.Ports}}"],
+    ):
+        try:
+            detail.append(
+                "$ " + " ".join(command) + "\n"
+                + run(command, step="public health diagnostics").decode()
+            )
+        except RuntimeError as error:
+            detail.append(f"$ {' '.join(command)}\n{error}")
+    return "\n".join(detail)
+
+
+def verify_public_origin(origin: str, timeout: int) -> None:
+    """Reach the public origin before touching production, so a closed
+    firewall port or broken TLS fails fast instead of after the rollout."""
+    try:
+        verify_public_health(origin, timeout)
+    except RuntimeError as error:
+        raise RuntimeError(
+            f"public origin unreachable before deployment: {error}\n"
+            + public_diagnostics()
+        ) from None
+
+
 def adopt_baseline(release: Path, root: Path, *, mode: str, monitoring: bool, origin: str) -> None:
     options(mode, origin)
     with installation_lock(root):
@@ -473,6 +502,7 @@ def deploy(
         if any(option not in help_text for option in ("--wait-timeout", "--no-deps", "--pull")):
             raise RuntimeError("Compose lacks required rollout/rollback features")
         ids = running(old, old_images)
+        verify_public_origin(state["origin"], min(health_timeout, 30))
         old_config = json.loads(run(
             old + ["config", "--format", "json"], step="baseline config (docker compose config)"
         ))
