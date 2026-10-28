@@ -72,7 +72,7 @@ it("replaces settings panels with the embedded setup widget", async () => {
   expect(within(steps).getByRole("button", { name: /^Hatırlatmalar/ })).toHaveAttribute("aria-current", "step");
   expect(screen.queryByRole("link", { name: "Kurulumu bitir" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Kuruluma sonra devam et" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("region", { name: "Dojo Yayın Planı" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Yayın Planı" })).not.toBeInTheDocument();
   await step("Medya rızası");
   await within(content("Medya rızası")).findByText(/Sürüm 2/);
   expect(within(content("Medya rızası")).queryByRole("checkbox")).not.toBeInTheDocument();
@@ -81,7 +81,7 @@ it("replaces settings panels with the embedded setup widget", async () => {
 it("persists plan, branding and reminder edits across a page remount", async () => {
   const view = render(<App />);
   await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(360));
-  await step("Dojo Yayın Planı");
+  await step("Yayın Planı");
   await waitFor(() => expect(screen.getByLabelText("Yayın saati")).toHaveValue("10:00"));
   fireEvent.change(screen.getByLabelText("Yayın saati"), { target: { value: "13:30" } });
   fireEvent.click(screen.getByRole("button", { name: "Planı kaydet" }));
@@ -92,7 +92,7 @@ it("persists plan, branding and reminder edits across a page remount", async () 
   fireEvent.change(screen.getByRole("textbox", { name: "Açıklama şablonu" }), { target: { value: "Yeni Dojo {title}" } });
   fireEvent.click(screen.getByRole("button", { name: "Açıklamayı kaydet" }));
   await waitFor(() => expect(branding.caption_template).toBe("Yeni Dojo {title}"));
-  await step("Dojo logosu");
+  await step("Logo");
   await screen.findByRole("img", { name: "Logo önizlemesi" });
   fireEvent.change(screen.getByLabelText("Logo görseli"), { target: { files: [new File(["image"], "logo.png", { type: "image/png" })] } });
   fireEvent.click(screen.getByRole("button", { name: "Logoyu kaydet" }));
@@ -112,13 +112,13 @@ it("persists plan, branding and reminder edits across a page remount", async () 
   await waitFor(() => expect(reminders).toEqual({ interval_minutes: 120, delivery_start: "22:00", delivery_end: "08:00", timezone: "Europe/Istanbul" }));
   view.unmount(); render(<App />);
   await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120));
-  await step("Dojo Yayın Planı");
+  await step("Yayın Planı");
   await waitFor(() => expect(screen.getByLabelText("Yayın saati")).toHaveValue("13:30"));
   await step("Açıklama şablonu");
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Yeni Dojo {title}"));
   await step("İsteğe bağlı kartlar");
   await waitFor(() => expect(screen.getByLabelText("Giriş süresi (saniye)")).toHaveValue(2));
-  await step("Dojo logosu");
+  await step("Logo");
   await waitFor(() => expect(screen.getByRole("img", { name: "Logo önizlemesi" })).toHaveAttribute("src", "/api/settings/branding/assets/" + "b".repeat(32) + ".png"));
   expect(cardSkips).toBe(0);
   expect(screen.queryByRole("button", { name: "Kartları değiştirmeden devam et" })).not.toBeInTheDocument();

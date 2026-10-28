@@ -61,7 +61,7 @@
     <string name="open_package">Pakete git</string>
     <string name="review_skip">Atla</string>
     <string name="review_reschedule">Yeniden zamanla</string>
-    <string name="review_skip_warning">Bu Yayın Zamanı atlanacak; Dojo Yayın Planı değişmez.</string>
+    <string name="review_skip_warning">Bu Yayın Zamanı atlanacak; Yayın Planı değişmez.</string>
     <string name="review_confirm_skip">Atlamayı onayla</string>
     <string name="review_confirm_reschedule">Yeni zamanı onayla</string>
     <string name="review_next_regular">Sonraki düzenli Yayın Zamanı: %1$s</string>
@@ -200,7 +200,7 @@
     <string name="upload_slow_title">İşlem uzun sürüyor. Durdurulsun mu?</string>
     <string name="upload_slow_help">Dosyanın hazırlanması veya aktarımı sürüyor. Bu uyarı işlemi durdurmaz. Durdur seçeneği işlemi duraklatır; sunucuya gönderilmiş bir isteğin sonucu sonradan belli olabilir.</string>
     <string name="upload_stop">Durdur</string>
-    <string name="app_name">Dojo Yayıncılık</string>
+    <string name="app_name">Aisomedo</string>
     <string name="dashboard">Kontrol Paneli</string>
     <string name="package_nav">Paket</string>
     <string name="active_package">Aktif Paket</string>
@@ -227,7 +227,7 @@
     <string name="retry">Tekrar dene</string>
     <string name="cancel">Vazgeç</string>
     <string name="loading">Bilgiler yükleniyor…</string>
-    <string name="server_title">Dojo sunucusuna bağlan</string>
+    <string name="server_title">Aisomedo sunucusuna bağlan</string>
     <string name="server_help">Sistem yöneticinizden sunucunun HTTPS adresini alın.</string>
     <string name="server_address">Sunucu adresi</string>
     <string name="connect">Bağlan</string>
@@ -245,7 +245,7 @@
     <string name="device_identity">%1$s · Cihaz %2$d</string>
     <string name="version_context">Sürüm: %1$d · Sunucu en az %2$d, güncel %3$d</string>
     <string name="update_title">Güncelleme gerekli</string>
-    <string name="update_help">Devam etmek için yeni Dojo sürümünü yükleyin. Eşleştirme bilgileriniz korunur.</string>
+    <string name="update_help">Devam etmek için yeni Aisomedo sürümünü yükleyin. Eşleştirme bilgileriniz korunur.</string>
     <string name="update_download">Güncellemeyi indir</string>
     <string name="connection_title">Sunucuya ulaşılamadı</string>
     <string name="browser_unavailable">Tarayıcı açılamadı. Tarayıcı uygulamanızı kontrol edip tekrar deneyin.</string>
@@ -259,7 +259,7 @@
     <string name="policy_changed">Rıza metni değişti. Yeni sürümü okuyup yeniden onaylayın.</string>
     <string name="storage_error">Güvenli eşleştirme bilgisi okunamadı veya kaydedilemedi. Yeniden eşleştirmeyi deneyin.</string>
     <string name="unknown_error">İşlem doğrulanamadı. Tekrar göndermeden önce yenileyin.</string>
-    <string name="setup">Dojo kurulumu</string>
+    <string name="setup">Aisomedo kurulumu</string>
     <string name="setup_ready">Gerekli kurulum tamamlandı</string>
     <string name="setup_incomplete">Kurulum eksik. Gerekli adımları tamamlayın.</string>
     <string name="open_setup">Kurulumu aç</string>
@@ -303,9 +303,9 @@
     <string name="policy_accepted">Bu sürüm için kurulum genelinde rıza kaydedildi: %1$s</string>
     <string name="policy_acknowledgement">Metni okudum ve bu sürümü kabul ediyorum.</string>
     <string name="accept_policy">Bu sürümü kabul et</string>
-    <string name="schedule">Dojo Yayın Planı</string>
+    <string name="schedule">Yayın Planı</string>
     <string name="consent">Medya rızası</string>
-    <string name="logo">Dojo logosu</string>
+    <string name="logo">Logo</string>
     <string name="cards">Giriş ve çıkış kartları</string>
     <string name="setup_summary">Kurulum özeti</string>
     <string name="unknown_step">Diğer kurulum adımı</string>

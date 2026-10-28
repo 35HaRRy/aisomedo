@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-28T00:00:00Z",
+  "title": "Design System: Aisomedo",
+  "extensions": {
+    "colorMeta": {
+      "light-canvas": { "role": "neutral", "displayName": "Cool paper canvas", "tonalRamp": ["oklch(15% 0.008 260)", "oklch(26% 0.008 260)", "oklch(38% 0.008 260)", "oklch(49% 0.008 260)", "oklch(61% 0.008 260)", "oklch(72% 0.008 260)", "oklch(84% 0.008 260)", "oklch(95% 0.008 260)"] },
+      "light-surface": { "role": "neutral", "displayName": "White panel", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(38% 0 0)", "oklch(49% 0 0)", "oklch(61% 0 0)", "oklch(72% 0 0)", "oklch(84% 0 0)", "oklch(95% 0 0)"] },
+      "light-surface-soft": { "role": "neutral", "displayName": "Cool inset surface", "tonalRamp": ["oklch(15% 0.012 260)", "oklch(26% 0.012 260)", "oklch(38% 0.012 260)", "oklch(49% 0.012 260)", "oklch(61% 0.012 260)", "oklch(72% 0.012 260)", "oklch(84% 0.012 260)", "oklch(95% 0.012 260)"] },
+      "light-text": { "role": "neutral", "displayName": "Navy ink", "tonalRamp": ["oklch(15% 0.045 260)", "oklch(26% 0.045 260)", "oklch(38% 0.045 260)", "oklch(49% 0.045 260)", "oklch(61% 0.045 260)", "oklch(72% 0.045 260)", "oklch(84% 0.045 260)", "oklch(95% 0.045 260)"] },
+      "light-muted": { "role": "neutral", "displayName": "Slate supporting text", "tonalRamp": ["oklch(15% 0.045 260)", "oklch(26% 0.045 260)", "oklch(38% 0.045 260)", "oklch(49% 0.045 260)", "oklch(61% 0.045 260)", "oklch(72% 0.045 260)", "oklch(84% 0.045 260)", "oklch(95% 0.045 260)"] },
+      "light-line": { "role": "neutral", "displayName": "Cool divider", "tonalRamp": ["oklch(15% 0.017 260)", "oklch(26% 0.017 260)", "oklch(38% 0.017 260)", "oklch(49% 0.017 260)", "oklch(61% 0.017 260)", "oklch(72% 0.017 260)", "oklch(84% 0.017 260)", "oklch(95% 0.017 260)"] },
+      "light-accent": { "role": "primary", "displayName": "Workspace blue", "tonalRamp": ["oklch(15% 0.215 263)", "oklch(26% 0.215 263)", "oklch(38% 0.215 263)", "oklch(49% 0.215 263)", "oklch(61% 0.215 263)", "oklch(72% 0.215 263)", "oklch(84% 0.215 263)", "oklch(95% 0.215 263)"] },
+      "light-accent-hover": { "role": "primary", "displayName": "Deep action blue", "tonalRamp": ["oklch(15% 0.215 263)", "oklch(26% 0.215 263)", "oklch(38% 0.215 263)", "oklch(49% 0.215 263)", "oklch(61% 0.215 263)", "oklch(72% 0.215 263)", "oklch(84% 0.215 263)", "oklch(95% 0.215 263)"] },
+      "light-accent-soft": { "role": "primary", "displayName": "Pale blue active surface", "tonalRamp": ["oklch(15% 0.018 260)", "oklch(26% 0.018 260)", "oklch(38% 0.018 260)", "oklch(49% 0.018 260)", "oklch(61% 0.018 260)", "oklch(72% 0.018 260)", "oklch(84% 0.018 260)", "oklch(95% 0.018 260)"] },
+      "light-success": { "role": "semantic", "displayName": "Healthy teal", "tonalRamp": ["oklch(15% 0.10 170)", "oklch(26% 0.10 170)", "oklch(38% 0.10 170)", "oklch(49% 0.10 170)", "oklch(61% 0.10 170)", "oklch(72% 0.10 170)", "oklch(84% 0.10 170)", "oklch(95% 0.10 170)"] },
+      "light-danger": { "role": "semantic", "displayName": "Destructive red", "tonalRamp": ["oklch(15% 0.19 18)", "oklch(26% 0.19 18)", "oklch(38% 0.19 18)", "oklch(49% 0.19 18)", "oklch(61% 0.19 18)", "oklch(72% 0.19 18)", "oklch(84% 0.19 18)", "oklch(95% 0.19 18)"] },
+      "light-danger-soft": { "role": "semantic", "displayName": "Pale destructive surface", "tonalRamp": ["oklch(15% 0.016 10)", "oklch(26% 0.016 10)", "oklch(38% 0.016 10)", "oklch(49% 0.016 10)", "oklch(61% 0.016 10)", "oklch(72% 0.016 10)", "oklch(84% 0.016 10)", "oklch(95% 0.016 10)"] },
+      "light-warning": { "role": "semantic", "displayName": "Warning amber ink", "tonalRamp": ["oklch(15% 0.10 70)", "oklch(26% 0.10 70)", "oklch(38% 0.10 70)", "oklch(49% 0.10 70)", "oklch(61% 0.10 70)", "oklch(72% 0.10 70)", "oklch(84% 0.10 70)", "oklch(95% 0.10 70)"] },
+      "light-warning-soft": { "role": "semantic", "displayName": "Pale warning surface", "tonalRamp": ["oklch(15% 0.024 80)", "oklch(26% 0.024 80)", "oklch(38% 0.024 80)", "oklch(49% 0.024 80)", "oklch(61% 0.024 80)", "oklch(72% 0.024 80)", "oklch(84% 0.024 80)", "oklch(95% 0.024 80)"] },
+      "light-selection": { "role": "primary", "displayName": "Light selection blue", "tonalRamp": ["oklch(15% 0.035 260)", "oklch(26% 0.035 260)", "oklch(38% 0.035 260)", "oklch(49% 0.035 260)", "oklch(61% 0.035 260)", "oklch(72% 0.035 260)", "oklch(84% 0.035 260)", "oklch(95% 0.035 260)"] },
+      "dark-canvas": { "role": "neutral", "displayName": "Midnight canvas", "tonalRamp": ["oklch(15% 0.02 260)", "oklch(26% 0.02 260)", "oklch(38% 0.02 260)", "oklch(49% 0.02 260)", "oklch(61% 0.02 260)", "oklch(72% 0.02 260)", "oklch(84% 0.02 260)", "oklch(95% 0.02 260)"] },
+      "dark-surface": { "role": "neutral", "displayName": "Navy panel", "tonalRamp": ["oklch(15% 0.035 260)", "oklch(26% 0.035 260)", "oklch(38% 0.035 260)", "oklch(49% 0.035 260)", "oklch(61% 0.035 260)", "oklch(72% 0.035 260)", "oklch(84% 0.035 260)", "oklch(95% 0.035 260)"] },
+      "dark-surface-soft": { "role": "neutral", "displayName": "Raised navy inset", "tonalRamp": ["oklch(15% 0.04 260)", "oklch(26% 0.04 260)", "oklch(38% 0.04 260)", "oklch(49% 0.04 260)", "oklch(61% 0.04 260)", "oklch(72% 0.04 260)", "oklch(84% 0.04 260)", "oklch(95% 0.04 260)"] },
+      "dark-text": { "role": "neutral", "displayName": "Pale text", "tonalRamp": ["oklch(15% 0.01 260)", "oklch(26% 0.01 260)", "oklch(38% 0.01 260)", "oklch(49% 0.01 260)", "oklch(61% 0.01 260)", "oklch(72% 0.01 260)", "oklch(84% 0.01 260)", "oklch(95% 0.01 260)"] },
+      "dark-muted": { "role": "neutral", "displayName": "Slate blue metadata", "tonalRamp": ["oklch(15% 0.045 260)", "oklch(26% 0.045 260)", "oklch(38% 0.045 260)", "oklch(49% 0.045 260)", "oklch(61% 0.045 260)", "oklch(72% 0.045 260)", "oklch(84% 0.045 260)", "oklch(95% 0.045 260)"] },
+      "dark-line": { "role": "neutral", "displayName": "Navy divider", "tonalRamp": ["oklch(15% 0.045 260)", "oklch(26% 0.045 260)", "oklch(38% 0.045 260)", "oklch(49% 0.045 260)", "oklch(61% 0.045 260)", "oklch(72% 0.045 260)", "oklch(84% 0.045 260)", "oklch(95% 0.045 260)"] },
+      "dark-accent": { "role": "primary", "displayName": "Bright workspace blue", "tonalRamp": ["oklch(15% 0.175 260)", "oklch(26% 0.175 260)", "oklch(38% 0.175 260)", "oklch(49% 0.175 260)", "oklch(61% 0.175 260)", "oklch(72% 0.175 260)", "oklch(84% 0.175 260)", "oklch(95% 0.175 260)"] },
+      "dark-accent-hover": { "role": "primary", "displayName": "Light blue hover", "tonalRamp": ["oklch(15% 0.135 260)", "oklch(26% 0.135 260)", "oklch(38% 0.135 260)", "oklch(49% 0.135 260)", "oklch(61% 0.135 260)", "oklch(72% 0.135 260)", "oklch(84% 0.135 260)", "oklch(95% 0.135 260)"] },
+      "dark-accent-soft": { "role": "primary", "displayName": "Deep blue active surface", "tonalRamp": ["oklch(15% 0.065 260)", "oklch(26% 0.065 260)", "oklch(38% 0.065 260)", "oklch(49% 0.065 260)", "oklch(61% 0.065 260)", "oklch(72% 0.065 260)", "oklch(84% 0.065 260)", "oklch(95% 0.065 260)"] },
+      "dark-success": { "role": "semantic", "displayName": "Bright healthy teal", "tonalRamp": ["oklch(15% 0.145 170)", "oklch(26% 0.145 170)", "oklch(38% 0.145 170)", "oklch(49% 0.145 170)", "oklch(61% 0.145 170)", "oklch(72% 0.145 170)", "oklch(84% 0.145 170)", "oklch(95% 0.145 170)"] },
+      "dark-danger": { "role": "semantic", "displayName": "Bright destructive red", "tonalRamp": ["oklch(15% 0.17 15)", "oklch(26% 0.17 15)", "oklch(38% 0.17 15)", "oklch(49% 0.17 15)", "oklch(61% 0.17 15)", "oklch(72% 0.17 15)", "oklch(84% 0.17 15)", "oklch(95% 0.17 15)"] },
+      "dark-danger-soft": { "role": "semantic", "displayName": "Deep destructive surface", "tonalRamp": ["oklch(15% 0.035 345)", "oklch(26% 0.035 345)", "oklch(38% 0.035 345)", "oklch(49% 0.035 345)", "oklch(61% 0.035 345)", "oklch(72% 0.035 345)", "oklch(84% 0.035 345)", "oklch(95% 0.035 345)"] },
+      "dark-warning": { "role": "semantic", "displayName": "Bright warning amber", "tonalRamp": ["oklch(15% 0.105 80)", "oklch(26% 0.105 80)", "oklch(38% 0.105 80)", "oklch(49% 0.105 80)", "oklch(61% 0.105 80)", "oklch(72% 0.105 80)", "oklch(84% 0.105 80)", "oklch(95% 0.105 80)"] },
+      "dark-warning-soft": { "role": "semantic", "displayName": "Deep warning surface", "tonalRamp": ["oklch(15% 0.025 80)", "oklch(26% 0.025 80)", "oklch(38% 0.025 80)", "oklch(49% 0.025 80)", "oklch(61% 0.025 80)", "oklch(72% 0.025 80)", "oklch(84% 0.025 80)", "oklch(95% 0.025 80)"] },
+      "dark-selection": { "role": "primary", "displayName": "Deep selection blue", "tonalRamp": ["oklch(15% 0.08 260)", "oklch(26% 0.08 260)", "oklch(38% 0.08 260)", "oklch(49% 0.08 260)", "oklch(61% 0.08 260)", "oklch(72% 0.08 260)", "oklch(84% 0.08 260)", "oklch(95% 0.08 260)"] }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Page heading", "purpose": "Primary page h1; compact, strong, and tightly tracked." },
+      "section": { "displayName": "Panel heading", "purpose": "Compact h2; panel-specific overrides remain local." },
+      "title": { "displayName": "Content title", "purpose": "Default h3; 1.2rem at 700px and below unless locally overridden." },
+      "body": { "displayName": "Workspace body", "purpose": "Manrope throughout; self-hosted, no external font service." },
+      "numeric": { "displayName": "Time and duration", "purpose": "System monospace; tabular numerals for time and duration readouts." }
+    },
+    "shadows": [
+      { "name": "light-panel", "value": "0 1px 2px rgb(15 30 55 / 5%)", "purpose": "Light --shadow on shared panels." },
+      { "name": "dark-panel", "value": "none", "purpose": "Dark --shadow; tonal layering and borders supply depth." },
+      { "name": "brand", "value": "0 2px 8px rgb(37 99 235 / 22%)", "purpose": "DJ brand mark only." },
+      { "name": "editor-dialog", "value": "0 16px 48px rgb(8 13 21 / 20%)", "purpose": "Editor dialog over a rgb(8 13 21 / 65%) backdrop." }
+    ],
+    "motion": [
+      { "name": "control-colors", "value": "background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out", "purpose": "Buttons and sidebar links only, under prefers-reduced-motion: no-preference." }
+    ],
+    "breakpoints": [
+      { "name": "dashboard-stack-max", "value": "1000px" },
+      { "name": "video-editor-stack-max", "value": "900px" },
+      { "name": "setup-stack-max", "value": "800px" },
+      { "name": "mobile-shell-max", "value": "700px" },
+      { "name": "optional-cards-stack-max", "value": "600px" },
+      { "name": "range-fields-stack-max", "value": "500px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button", "kind": "button", "refersTo": "button-primary",
+      "description": "Fixed blue and white in both themes; does not adopt dark --accent.",
+      "html": "<button class=\"ds-primary\" type=\"button\">Kaydet</button>",
+      "css": ".ds-primary{font:600 .875rem/1.65 Manrope,'Segoe UI',sans-serif;min-height:44px;padding:9px 16px;background:#2563eb;color:white;border:1px solid #2563eb;border-radius:6px;cursor:pointer}.ds-primary:hover{background:#1d4ed8;border-color:#1d4ed8}.ds-primary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.ds-primary:disabled{opacity:.55;cursor:not-allowed}@media(prefers-reduced-motion:no-preference){.ds-primary{transition:background-color 140ms ease-out,border-color 140ms ease-out,color 140ms ease-out}}"
+    },
+    {
+      "name": "Secondary button", "kind": "button", "refersTo": "button-secondary",
+      "description": "Neutral surface with a quiet accent-soft hover.",
+      "html": "<button class=\"ds-secondary\" type=\"button\">Vazgeç</button>",
+      "css": ".ds-secondary{font:600 .875rem/1.65 Manrope,'Segoe UI',sans-serif;min-height:44px;padding:9px 16px;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:6px;cursor:pointer}.ds-secondary:hover{background:var(--accent-soft)}.ds-secondary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.ds-secondary:disabled{opacity:.55;cursor:not-allowed}@media(prefers-reduced-motion:no-preference){.ds-secondary{transition:background-color 140ms ease-out,border-color 140ms ease-out,color 140ms ease-out}}"
+    },
+    {
+      "name": "Danger button", "kind": "button", "refersTo": "button-danger",
+      "description": "Destructive semantic border and text, without changing confirmation behavior.",
+      "html": "<button class=\"ds-danger\" type=\"button\">Kaldır</button>",
+      "css": ".ds-danger{font:600 .875rem/1.65 Manrope,'Segoe UI',sans-serif;min-height:44px;padding:9px 16px;background:var(--surface);color:var(--danger);border:1px solid var(--danger);border-radius:6px;cursor:pointer}.ds-danger:hover{background:var(--danger-soft)}.ds-danger:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.ds-danger:disabled{opacity:.55;cursor:not-allowed}@media(prefers-reduced-motion:no-preference){.ds-danger{transition:background-color 140ms ease-out,border-color 140ms ease-out,color 140ms ease-out}}"
+    },
+    {
+      "name": "Text field", "kind": "input", "refersTo": "input",
+      "description": "Visible label, fine outline, and theme-aware placeholder and caret.",
+      "html": "<label class=\"ds-field-label\" for=\"ds-client-name\">Tarayıcı adı</label><input class=\"ds-field\" id=\"ds-client-name\" placeholder=\"Tarayıcı adı\" />",
+      "css": ".ds-field-label{display:block;font:600 .9375rem/1.65 Manrope,'Segoe UI',sans-serif;color:var(--text);margin-bottom:8px}.ds-field{box-sizing:border-box;width:100%;min-width:0;min-height:44px;font:400 15px/1.65 Manrope,'Segoe UI',sans-serif;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text);caret-color:var(--accent)}.ds-field::placeholder{color:var(--muted);opacity:1}.ds-field:focus-visible{outline:3px solid var(--accent);outline-offset:3px}"
+    },
+    {
+      "name": "Current navigation link", "kind": "nav", "refersTo": "navigation-link",
+      "description": "Active text/icon and blue left marker; compact mobile adaptation.",
+      "html": "<nav aria-label=\"Gezinme\"><a class=\"ds-nav\" href=\"#/dashboard\" aria-current=\"page\"><svg aria-hidden=\"true\" focusable=\"false\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 3h7v7H3ZM14 3h7v7h-7ZM3 14h7v7H3ZM14 14h7v7h-7Z\"/></svg><span>Genel Bakış</span></a></nav>",
+      "css": ".ds-nav{position:relative;display:flex;align-items:center;gap:12px;min-height:44px;box-sizing:border-box;padding:10px 14px;border-radius:6px;text-decoration:none;color:var(--text);font:600 .8125rem/1.65 Manrope,'Segoe UI',sans-serif}.ds-nav svg{flex-shrink:0;color:var(--muted)}.ds-nav:hover{background:var(--surface-soft)}.ds-nav[aria-current=page]{background:var(--accent-soft);color:var(--accent);font-weight:750}.ds-nav[aria-current=page] svg{color:inherit}.ds-nav[aria-current=page]::before{content:'';position:absolute;inset:7px auto 7px 0;width:3px;border-radius:2px;background:var(--accent)}.ds-nav:focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:700px){.ds-nav{padding:10px;font-size:.75rem;gap:8px}}@media(prefers-reduced-motion:no-preference){.ds-nav{transition:background-color 140ms ease-out,border-color 140ms ease-out,color 140ms ease-out}}"
+    },
+    {
+      "name": "Connection status", "kind": "custom", "refersTo": "status",
+      "description": "Text-only semantic status; not a pill or chip.",
+      "html": "<span class=\"ds-status\">Bağlı</span>",
+      "css": ".ds-status{font:600 .875rem/1.65 Manrope,'Segoe UI',sans-serif;color:var(--success)}"
+    },
+    {
+      "name": "Shared panel", "kind": "card", "refersTo": "panel",
+      "description": "Shared surface and divider vocabulary for summary and settings panels.",
+      "html": "<section class=\"ds-panel\"><h2 class=\"ds-panel-title\">Yayın bilgileri</h2></section>",
+      "css": ".ds-panel{padding:24px;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);font:400 15px/1.65 Manrope,'Segoe UI',sans-serif}.ds-panel-title{margin:0;font-size:1rem;font-weight:750}@media(max-width:700px){.ds-panel{padding:20px}}"
+    },
+    {
+      "name": "Pending panel", "kind": "card", "refersTo": "pending-panel",
+      "description": "Screenshot-led task panel with intentional 4px accent edge.",
+      "html": "<section class=\"ds-pending\"><h2 class=\"ds-pending-title\">Bekleyen işlemler</h2></section>",
+      "css": ".ds-pending{background:var(--surface);color:var(--text);padding:24px 28px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;margin-bottom:32px;box-shadow:var(--shadow);font:400 15px/1.65 Manrope,'Segoe UI',sans-serif}.ds-pending-title{margin:0;color:var(--accent);font-size:1.0625rem;font-weight:750}@media(max-width:700px){.ds-pending{padding:20px;margin-bottom:24px}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "A publishing workspace, not a social feed.",
+    "overview": "Plain, modern, powerful: a blue/navy workspace for scanning task state and taking existing publishing actions. The seven user-approved `docs/design/*.png` references define the visual direction; `PRODUCT.md` defines the unchanged product. Unpictured pages use the same shell, panels, forms, and status language.",
+    "keyCharacteristics": [
+      "Cool canvas, quiet panels, fine borders, and blue action cues.",
+      "Compact line icons, strong headings, and readable task-oriented density.",
+      "Light and dark appearances with the same hierarchy and interactions."
+    ],
+    "rules": [{ "name": "The Solid Action Rule", "body": "Keep primary buttons blue with white text in both themes; use the theme accent for links, focus, and active navigation.", "section": "colors" }],
+    "dos": [
+      "Do reuse the shared shell, panel, form, navigation, and status vocabulary on every page.",
+      "Do preserve existing actions, content, validation, permissions, confirmations, panel defaults, and live updates.",
+      "Do check both themes and narrow layouts, retaining visible keyboard focus and readable status text."
+    ],
+    "donts": [
+      "Don't introduce social-media styling, invented metrics, decorative imagery, or new functionality.",
+      "Don't add fonts, UI dependencies, or speculative tokens to extend this visual system.",
+      "Don't remove the screenshot-led pending-panel accent edge or replace the fixed blue/white primary-button treatment."
+    ]
+  }
+}

@@ -64,7 +64,7 @@ it("shows initial setup error without inventing completion or redirect", async (
   expect(window.location.hash).toBe("#/dashboard");
   setupStatus = 200; setup = setupState("logo");
   fireEvent.click(screen.getByRole("button", { name: "Tekrar dene" }));
-  await screen.findByRole("heading", { name: "Dojo logosu" });
+  await screen.findByRole("heading", { name: "Logo" });
 });
 
 it("hides setup access in Settings once setup is complete", async () => {
@@ -110,7 +110,7 @@ it("shows completed packages in navigation and hides empty pending actions", asy
   const nav = screen.getByRole("navigation");
   for (const name of ["Kontrol Paneli", "Güncel Paket", "Tamamlanmış paketler", "Etkinlik", "Ayarlar"])
     expect(within(nav).getByRole("link", { name })).toBeInTheDocument();
-  for (const name of ["Dojo Paylaşım Paketi", "Sonraki Yayın Zamanı", "Instagram", "Worker"])
+  for (const name of ["Paylaşım Paketi", "Sonraki Yayın Zamanı", "Instagram", "Worker"])
     expect(screen.getByText(name)).toBeInTheDocument();
   expect(screen.getByText(/17 Ağustos 2026.*10:00/)).toBeInTheDocument();
   expect(screen.queryByText(tr.live)).not.toBeInTheDocument();

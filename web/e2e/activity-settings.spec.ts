@@ -49,11 +49,11 @@ async function fixture(page: Page) {
 
 test("settings persist and remain keyboard-accessible; consent and recent activity are visible", async ({ page }, info) => {
   const state = await fixture(page);
-  await page.getByRole("button", { name: /^Dojo Yayın Planı/ }).click();
+  await page.getByRole("button", { name: /^Yayın Planı/ }).click();
   await page.getByLabel("Yayın saati").fill("13:30");
   await page.getByRole("button", { name: "Planı kaydet" }).click();
   await expect(page.getByText("Ayarlar kaydedildi.")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Dojo Yayın Planı" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Yayın Planı" })).toBeFocused();
   await page.getByRole("button", { name: /^Açıklama şablonu/ }).click();
   await page.getByRole("textbox", { name: "Açıklama şablonu" }).fill("Yeni Dojo {title}");
   await page.getByRole("button", { name: "Açıklamayı kaydet" }).click();
@@ -68,7 +68,7 @@ test("settings persist and remain keyboard-accessible; consent and recent activi
   await expect(page.getByText("Ayarlar kaydedildi.")).toBeVisible();
   await page.reload();
   await expect(page.getByLabel("Hatırlatma aralığı (dakika)")).toHaveValue("120");
-  await page.getByRole("button", { name: /^Dojo Yayın Planı/ }).click();
+  await page.getByRole("button", { name: /^Yayın Planı/ }).click();
   await expect(page.getByLabel("Yayın saati")).toHaveValue("13:30");
   await page.getByRole("button", { name: /^Açıklama şablonu/ }).click();
   await expect(page.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Yeni Dojo {title}");

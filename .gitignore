@@ -26,6 +26,7 @@ dist/
 playwright-report/
 test-results/
 /artifacts/acceptance/
+/.impeccable/review/
 build/
 
 .agents/

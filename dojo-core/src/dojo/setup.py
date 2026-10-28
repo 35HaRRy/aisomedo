@@ -136,7 +136,7 @@ class DojoSetup:
                 key=SCHEDULE_ITEM, label="Publication plan", complete=self._plan_configured()
             ),
             SetupItem(key=CONSENT_ITEM, label="Media consent", complete=consent_done),
-            SetupItem(key=LOGO_ITEM, label="Dojo logo", complete=logo_done),
+            SetupItem(key=LOGO_ITEM, label="Logo", complete=logo_done),
             SetupItem(
                 key=CAPTION_TEMPLATE_ITEM,
                 label="Caption template",
