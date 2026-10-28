@@ -112,13 +112,13 @@ it("persists plan, branding and reminder edits across a page remount", async () 
   await waitFor(() => expect(reminders).toEqual({ interval_minutes: 120, delivery_start: "22:00", delivery_end: "08:00", timezone: "Europe/Istanbul" }));
   view.unmount(); render(<App />);
   await waitFor(() => expect(screen.getByLabelText("Hatırlatma aralığı (dakika)")).toHaveValue(120));
-  await step("Aisomedo Yayın Planı");
+  await step("Yayın Planı");
   await waitFor(() => expect(screen.getByLabelText("Yayın saati")).toHaveValue("13:30"));
   await step("Açıklama şablonu");
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Açıklama şablonu" })).toHaveValue("Yeni Dojo {title}"));
   await step("İsteğe bağlı kartlar");
   await waitFor(() => expect(screen.getByLabelText("Giriş süresi (saniye)")).toHaveValue(2));
-  await step("Aisomedo logosu");
+  await step("Logo");
   await waitFor(() => expect(screen.getByRole("img", { name: "Logo önizlemesi" })).toHaveAttribute("src", "/api/settings/branding/assets/" + "b".repeat(32) + ".png"));
   expect(cardSkips).toBe(0);
   expect(screen.queryByRole("button", { name: "Kartları değiştirmeden devam et" })).not.toBeInTheDocument();

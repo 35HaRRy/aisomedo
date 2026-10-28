@@ -8,7 +8,7 @@ Aisomedo that helps administrators collect class photos and videos, prepare them
 
 - Stores and manages the media files (photos and videos) intended for publication.
 - Lets administrators order, trim, and caption a package of media.
-- Schedules publication every other Monday on an `Aisomedo Yayın Planı`.
+- Schedules publication every other Monday on an `Yayın Planı`.
 - Renders an immutable, branded 1080x1920 Reel for review.
 - Requires approval (Review / Skip / Reschedule) before any post is published.
 - Publishes the exact reviewed artifact through the official Instagram Graph API.
@@ -227,7 +227,7 @@ Client message contract:
 
 ## Domain language
 
-Canonical terminology (`Aisomedo Paylaşım Paketi`, `Aisomedo Yayın Planı`, `Yayın Zamanı`, `Yayın İncelemesi`, `Tamamlanmış Paket`) is defined in [`CONTEXT.md`](CONTEXT.md). The full product spec lives in [`docs/specs/dojo-reel-publishing-mvp.md`](docs/specs/dojo-reel-publishing-mvp.md).
+Canonical terminology (`Paylaşım Paketi`, `Yayın Planı`, `Yayın Zamanı`, `Yayın İncelemesi`, `Tamamlanmış Paket`) is defined in [`CONTEXT.md`](CONTEXT.md). The full product spec lives in [`docs/specs/dojo-reel-publishing-mvp.md`](docs/specs/dojo-reel-publishing-mvp.md).
 # Web dashboard worker health
 
 ## Browser dashboard
