@@ -3,6 +3,7 @@ import { ApiError } from "../api/client";
 import { tr } from "../i18n";
 import { useSession } from "../session";
 import { ThemeToggle } from "../theme";
+import { SocialLinks } from "./SocialLinks";
 
 export function PairingForm() {
   const { pair } = useSession();
@@ -22,7 +23,7 @@ export function PairingForm() {
     } finally { setBusy(false); }
   }
   return <div className="pairing-layout">
-    <div className="pairing-brand"><span className="brand-mark" aria-hidden="true">A</span><strong>{tr.app}</strong><p>{tr.tagline}</p><ThemeToggle /></div>
+    <div className="pairing-brand"><span className="brand-mark" aria-hidden="true">A</span><strong>{tr.app}</strong><p>{tr.tagline}</p><ThemeToggle /><SocialLinks /></div>
     <main className="pairing-form" id="content" tabIndex={-1}>
       <h1>{tr.pairTitle}</h1><p>{tr.pairIntro}</p>
       <form onSubmit={event => void submit(event)}>

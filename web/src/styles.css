@@ -220,7 +220,7 @@ h3 { font-size: 1.25rem; line-height: 1.4; font-weight: 750; letter-spacing: -.0
 small, .muted { color: var(--muted); font-size: .8125rem; }
 .skip-link { position: fixed; top: -90px; left: 16px; padding: 12px; background: var(--surface); z-index: 40; }
 .skip-link:focus { top: 12px; }
-.app-shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100dvh; }
+.app-shell { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 100dvh; }
 .sidebar { position: sticky; top: 0; height: 100dvh; overflow-y: auto; padding: 16px 8px 24px; background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-self: start; }
 .brand { display: flex; align-items: center; gap: 12px; font-size: 1rem; line-height: 1.35; font-weight: 800; text-decoration: none; color: var(--text); padding: 0 6px 18px; border-bottom: 1px solid var(--line); letter-spacing: -.025em; }
 .brand:hover { text-decoration: none; }
@@ -327,6 +327,11 @@ button.danger:hover { background: var(--danger-soft); }
 .pairing-brand strong { font-size: 1.125rem; color: var(--text); font-weight: 800; }
 .pairing-brand p { margin-top: 20px; font-size: 2.25rem; line-height: 1.3; letter-spacing: -.035em; font-weight: 750; }
 .pairing-brand .theme-toggle { width: auto; margin-top: 28px; }
+.social-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.social-links a { display: inline-grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--surface); }
+.social-links a:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.social-links a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.social-links svg { width: 18px; height: 18px; }
 .pairing-form { background: var(--surface); padding: 36px; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
 .pairing-form > p { color: var(--muted); margin-top: 16px; }
 form { margin-top: 28px; display: grid; }

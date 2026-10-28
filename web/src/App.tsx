@@ -18,6 +18,7 @@ import { PackageEditorProvider, usePackageEditorContext } from "./packages/Packa
 import { LiveProvider } from "./liveProvider";
 import { MediaActionIcon } from "./packages/MediaActionIcon";
 import { ThemeToggle } from "./theme";
+import { SocialLinks } from "./components/SocialLinks";
 
 function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
   return <div role="alert" className="notice"><p>{stale ? tr.stale : tr.loadError}</p>
@@ -45,7 +46,7 @@ function PairedShell() {
   return <UploadProvider><div className="app-shell">
     <aside className="sidebar"><a className="brand" href="#/dashboard" onClick={event => { event.preventDefault(); void navigate("#/dashboard"); }}><span className="brand-mark" aria-hidden="true">A</span><span>{tr.app}<small>Video &amp; Reel Stüdyosu</small></span></a>
       <nav aria-label={tr.navigation}>{areas.map(item => <a key={item} href={`#/${item}`} onClick={event => { event.preventDefault(); void navigate(`#/${item}`); }} aria-current={area === item ? "page" : undefined}><MediaActionIcon action={item} /><span>{tr[item]}</span></a>)}</nav>
-      <div className="sidebar-foot"><div className="paired-client"><span>{tr.client}</span><strong>{client?.name}</strong></div><ThemeToggle /></div>
+      <div className="sidebar-foot"><div className="paired-client"><span>{tr.client}</span><strong>{client?.name}</strong></div><SocialLinks /><ThemeToggle /></div>
     </aside>
     <main id="content" className="main-content" tabIndex={-1}>
       {area !== "onboarding" && onboarding.error && <ErrorNotice stale={!!onboarding.setup} retry={() => void onboarding.refresh().catch(() => {})} />}

@@ -155,7 +155,7 @@ Font provenance: [Google Fonts Manrope variable TTF](https://raw.githubuserconte
 
 ## Layout
 
-- Desktop shell: sticky, vertically scrollable sidebar (248px), five navigation links, paired-browser identity and appearance control at the bottom. Main content has a maximum width of 1320px and padding `24px 32px 60px 56px`.
+- Desktop shell: sticky, vertically scrollable sidebar (250px), five navigation links, paired-browser identity and appearance control at the bottom. Main content has a maximum width of 1320px and padding `24px 32px 60px 56px`.
 - Heading/divider precedes content. Dashboard pending panel spans the width, then publishing information and connections form a `1.4fr / minmax(260px, 1fr)` grid with a 28px gap. Package panels stack; activity uses divided rows; settings uses two equal columns.
 - Shared panels generally use 24px padding and 24–32px separation. Media cards wrap; open editors expand to full width. Long text wraps and grid children can shrink rather than force page overflow.
 - At **1000px and below**: dashboard becomes one column, main horizontal padding becomes 28px, and pairing gap narrows.
