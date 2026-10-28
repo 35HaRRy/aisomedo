@@ -12,8 +12,8 @@ import { CardsStep } from "./CardsStep";
 import { SetupActionTarget } from "./forms";
 
 export const stepTitles: Record<OnboardingStep, string> = {
-  pairing: "Tarayıcı eşleştirmesi", instagram: "Instagram bağlantısı", schedule: "Dojo Yayın Planı",
-  consent: "Medya rızası", logo: "Dojo logosu", caption_template: "Açıklama şablonu", cards: "İsteğe bağlı kartlar",
+  pairing: "Tarayıcı eşleştirmesi", instagram: "Instagram bağlantısı", schedule: "Yayın Planı",
+  consent: "Medya rızası", logo: "Logo", caption_template: "Açıklama şablonu", cards: "İsteğe bağlı kartlar",
   reminders: "Hatırlatmalar",
 };
 export function OnboardingWizard({ embedded = false }: { embedded?: boolean }) {
@@ -59,7 +59,7 @@ export function OnboardingWizard({ embedded = false }: { embedded?: boolean }) {
     <div className="setup-content">
     <header className="setup-heading">
       {embedded ? <h2 ref={heading} tabIndex={-1}>{title}</h2> : <h1 ref={heading} tabIndex={-1}>{title}</h1>}
-      <p>Dojo yayınları için bağlantı, plan ve medya tercihlerini hazırlayın.</p></header>
+      <p>Yayınlar için bağlantı, plan ve medya tercihlerini hazırlayın.</p></header>
     {embedded && saved && <p role="status">{tr.settingsPage.saved}</p>}
     <SetupActionTarget.Provider value={actionTarget}>
     <div className="setup-form" onChange={() => setSaved(false)} onSubmitCapture={() => setSaved(false)} onClick={() => setSaved(false)}>{step === "pairing" && <p>Bu tarayıcı eşleştirildi.</p>}

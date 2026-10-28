@@ -225,7 +225,7 @@ small, .muted { color: var(--muted); font-size: .8125rem; }
 .brand { display: flex; align-items: center; gap: 12px; font-size: 1rem; line-height: 1.35; font-weight: 800; text-decoration: none; color: var(--text); padding: 0 6px 18px; border-bottom: 1px solid var(--line); letter-spacing: -.025em; }
 .brand:hover { text-decoration: none; }
 .brand small { display: block; color: var(--muted); font-size: .6875rem; font-weight: 400; letter-spacing: .015em; }
-.brand-mark { display: inline-grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; background: #2563eb; color: white; border-radius: 8px; font-size: .75rem; font-weight: 800; letter-spacing: -.02em; box-shadow: 0 2px 8px rgb(37 99 235 / 22%); }
+.brand-mark { display: inline-grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; background: #2563eb; color: white; border-radius: 8px; font-size: 1rem; font-weight: 800; letter-spacing: -.02em; box-shadow: 0 2px 8px rgb(37 99 235 / 22%); }
 .sidebar nav { display: grid; gap: 4px; margin-top: 24px; }
 .sidebar nav a { position: relative; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 10px 14px; border-radius: 6px; text-decoration: none; color: var(--text); font-size: .8125rem; font-weight: 600; }
 .sidebar nav svg { width: 18px; height: 18px; flex-shrink: 0; color: var(--muted); }

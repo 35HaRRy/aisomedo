@@ -152,7 +152,7 @@ def create_app(
     readiness: Callable[[], bool] | None = None,
 ) -> FastAPI:
     app = FastAPI(
-        title="Dojo publishing API",
+        title="Aisomedo publishing API",
         version="0.1.0",
         lifespan=lifespan,
         docs_url=None,

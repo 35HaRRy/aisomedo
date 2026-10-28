@@ -9,7 +9,7 @@ import { OnboardingWizard } from "./OnboardingWizard";
 it("renders seven ordered steps and backend-selected heading", async () => {
   vi.stubGlobal("fetch", async (url: string) => new Response(JSON.stringify(url.endsWith("/me") ? client : url === "/api/settings/plan" ? { anchor_date: null, anchor_time: null, enabled: false, timezone: "Europe/Istanbul" } : setupState("schedule"))));
   render(<SessionProvider><OnboardingProvider><OnboardingWizard /></OnboardingProvider></SessionProvider>);
-  await screen.findByRole("heading", { name: "Dojo Yayın Planı" });
+  await screen.findByRole("heading", { name: "Yayın Planı" });
   expect(screen.getByRole("list", { name: "Kurulum adımları" }).children).toHaveLength(7);
 });
 

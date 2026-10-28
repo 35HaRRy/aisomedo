@@ -8,7 +8,7 @@ web
 
 ## Product Purpose
 
-Dojo Yayıncılık is the existing Turkish-language publishing workspace. This
+Aisomedo is the existing Turkish-language publishing workspace. This
 redesign changes its appearance, not its functionality.
 
 ## Capabilities and Constraints

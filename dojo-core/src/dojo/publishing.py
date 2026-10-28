@@ -219,7 +219,7 @@ def _first_free_suffixed_name(
 
 
 class DojoPublishing:
-    """Deep behavioral seam for the Dojo Paylaşım Paketi lifecycle.
+    """Deep behavioral seam for the Paylaşım Paketi lifecycle.
 
     Consumed by both FastAPI routes and the worker scheduler. Domain rules
     live behind this facade; only the wall clock, Meta publishing,
@@ -279,7 +279,7 @@ class DojoPublishing:
 
     @_package_edit
     def ensure_active_package(self, *, requester: str | None = None) -> Package:
-        """Create an active Dojo Paylaşım Paketi; raise if one already exists."""
+        """Create an active Paylaşım Paketi; raise if one already exists."""
         existing = self._packages.get_active()
         if existing is not None:
             raise ActivePackageExists(f"active package {existing.folder_name} already exists")

@@ -1,5 +1,5 @@
 ---
-name: Dojo Yayıncılık
+name: Aisomedo
 description: Plain, modern, powerful Turkish-language publishing workspace.
 colors:
   light-canvas: "#f7f9fc"
@@ -109,7 +109,7 @@ components:
     padding: "24px 28px"
 ---
 
-# Design System: Dojo Yayıncılık
+# Design System: Aisomedo
 
 ## Overview
 
@@ -130,7 +130,7 @@ Frontmatter records both palettes exactly. Each `light-*` / `dark-*` pair maps t
 
 ### Primary
 - **Workspace blue:** accent for links, current navigation, focus, progress, selection controls, and the pending-panel edge. Accent-soft supplies quiet active/action backgrounds; accent-hover supplies theme-aware interaction color.
-- **Solid action blue:** primary buttons and the DJ brand mark retain the light accent with white text in both themes. Primary-button hover likewise retains the light hover color; do not substitute the brighter dark accent here.
+- **Solid action blue:** primary buttons and the Aisomedo brand mark retain the light accent with white text in both themes. Primary-button hover likewise retains the light hover color; do not substitute the brighter dark accent here.
 
 **The Solid Action Rule.** Keep primary buttons blue with white text in both themes; use the theme accent for links, focus, and active navigation.
 

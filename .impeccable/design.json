@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "generatedAt": "2026-10-28T00:00:00Z",
-  "title": "Design System: Dojo Yayıncılık",
+  "title": "Design System: Aisomedo",
   "extensions": {
     "colorMeta": {
       "light-canvas": { "role": "neutral", "displayName": "Cool paper canvas", "tonalRamp": ["oklch(15% 0.008 260)", "oklch(26% 0.008 260)", "oklch(38% 0.008 260)", "oklch(49% 0.008 260)", "oklch(61% 0.008 260)", "oklch(72% 0.008 260)", "oklch(84% 0.008 260)", "oklch(95% 0.008 260)"] },

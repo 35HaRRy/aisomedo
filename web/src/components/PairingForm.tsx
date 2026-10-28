@@ -22,7 +22,7 @@ export function PairingForm() {
     } finally { setBusy(false); }
   }
   return <div className="pairing-layout">
-    <div className="pairing-brand"><span className="brand-mark" aria-hidden="true">DJ</span><strong>{tr.app}</strong><p>{tr.tagline}</p><ThemeToggle /></div>
+    <div className="pairing-brand"><span className="brand-mark" aria-hidden="true">A</span><strong>{tr.app}</strong><p>{tr.tagline}</p><ThemeToggle /></div>
     <main className="pairing-form" id="content" tabIndex={-1}>
       <h1>{tr.pairTitle}</h1><p>{tr.pairIntro}</p>
       <form onSubmit={event => void submit(event)}>
