@@ -325,8 +325,13 @@ def test_public_health_failure_rolls_back_but_does_not_report_success(
 ):
     root, new, docker = installation
 
+    calls = 0
+
     def unavailable(*args):
-        raise RuntimeError("HTTPS unavailable")
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("HTTPS unavailable")
 
     monkeypatch.setattr(cli, "verify_public_health", unavailable)
     with pytest.raises(RuntimeError, match="rollback failed"):
@@ -335,6 +340,35 @@ def test_public_health_failure_rolls_back_but_does_not_report_success(
         )
     assert json.loads((root / "current.json").read_text())["sha"] == OLD
     assert not docker.stopped
+
+
+def test_unreachable_origin_aborts_before_quiesce(cli, installation, monkeypatch):
+    root, new, docker = installation
+
+    def unavailable(*args):
+        raise RuntimeError("public HTTPS health verification failed: timeout")
+
+    monkeypatch.setattr(cli, "verify_public_health", unavailable)
+    with pytest.raises(RuntimeError, match="unreachable before deployment"):
+        cli.deploy(
+            new, root, mode="existing-proxy", monitoring=False, origin="https://example.test"
+        )
+    assert json.loads((root / "current.json").read_text())["sha"] == OLD
+    assert not docker.stopped
+    assert not any(
+        " stop " in " ".join(c) or "pg_dump" in " ".join(c) for c in docker.calls
+    )
+
+
+def test_public_health_failure_reports_url_and_reason(cli, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise OSError("Connection timed out")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", unavailable)
+    with pytest.raises(RuntimeError) as error:
+        cli.verify_public_health("https://example.test", 0)
+    assert "https://example.test/ready" in str(error.value)
+    assert "Connection timed out" in str(error.value)
 
 
 def test_state_path_escape_is_rejected_before_commands(cli, installation):

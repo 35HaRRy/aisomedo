@@ -131,6 +131,19 @@ def test_cli_reports_break_and_nonzero(tmp_path):
     assert "/item" in result.stdout
 
 
+def test_reviewed_narrowing_passes_but_unlisted_breaks_still_fail():
+    spec = importlib.util.spec_from_file_location("compat_gate", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    location = ("PUT /api/settings/branding/requestBody/application/json/"
+                "properties/intro_duration")
+    reviewed = f"{location}: union contains incompatible values"
+    assert module.filter_reviewed([reviewed]) == ([], [reviewed])
+    # Same location, different break: the exception must not swallow it.
+    other = f"{location}: type changed"
+    assert module.filter_reviewed([other]) == ([other], [])
+
+
 def test_nullable_union_sibling_constraints_fail_closed():
     schema = {"anyOf": [{"type": "string"}, {"type": "null"}]}
     assert compare(contract(schema), contract({**schema, "minLength": 5}))

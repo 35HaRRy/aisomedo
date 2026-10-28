@@ -235,21 +235,56 @@ def write_state(root: Path, release: Path, mode: str, monitoring: bool, origin: 
 
 def verify_public_health(origin: str, timeout: int) -> None:
     deadline = time.monotonic() + timeout
+    failure = "no attempt"
     while True:
+        url = origin.rstrip("/") + "/ready"
         try:
-            with urllib.request.urlopen(origin.rstrip("/") + "/ready", timeout=5) as response:
+            with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status != 200 or json.load(response).get("status") != "ok":
                     raise ValueError("invalid readiness response")
-            with urllib.request.urlopen(
-                origin.rstrip("/") + "/web-health.txt", timeout=5
-            ) as response:
+            url = origin.rstrip("/") + "/web-health.txt"
+            with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status != 200 or not response.read().strip():
                     raise ValueError("empty web health response")
             return
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
+            # Keep the reason: a bare "verification failed" hides whether the
+            # cause is DNS, a closed firewall port, TLS or a bad response body.
+            failure = f"{url} -> {type(error).__name__}: {error}"
             if time.monotonic() >= deadline:
-                raise RuntimeError("public HTTPS health verification failed") from None
+                raise RuntimeError(
+                    f"public HTTPS health verification failed: {failure}"
+                ) from None
             time.sleep(2)
+
+
+def public_diagnostics() -> str:
+    """Host-side listeners and published ports, for a failed origin probe."""
+    detail = []
+    for command in (
+        ["ss", "-ltn"],
+        ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}\t{{.Ports}}"],
+    ):
+        try:
+            detail.append(
+                "$ " + " ".join(command) + "\n"
+                + run(command, step="public health diagnostics").decode()
+            )
+        except RuntimeError as error:
+            detail.append(f"$ {' '.join(command)}\n{error}")
+    return "\n".join(detail)
+
+
+def verify_public_origin(origin: str, timeout: int) -> None:
+    """Reach the public origin before touching production, so a closed
+    firewall port or broken TLS fails fast instead of after the rollout."""
+    try:
+        verify_public_health(origin, timeout)
+    except RuntimeError as error:
+        raise RuntimeError(
+            f"public origin unreachable before deployment: {error}\n"
+            + public_diagnostics()
+        ) from None
 
 
 def adopt_baseline(release: Path, root: Path, *, mode: str, monitoring: bool, origin: str) -> None:
@@ -467,6 +502,7 @@ def deploy(
         if any(option not in help_text for option in ("--wait-timeout", "--no-deps", "--pull")):
             raise RuntimeError("Compose lacks required rollout/rollback features")
         ids = running(old, old_images)
+        verify_public_origin(state["origin"], min(health_timeout, 30))
         old_config = json.loads(run(
             old + ["config", "--format", "json"], step="baseline config (docker compose config)"
         ))

@@ -11,6 +11,19 @@ from pathlib import Path
 
 METHODS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 ANNOTATIONS = {"title", "description", "default", "example", "examples", "deprecated", "$id"}
+
+# Reviewed request narrowings. Each entry must be a deliberate product decision
+# that no shipped client depends on; anything not listed still fails the gate.
+# Full messages are matched, so a different break at the same location still
+# fails. A further tightening of that union reports the same message and becomes
+# indistinguishable: re-review before editing those schemas, and delete entries
+# once the baseline carries the change.
+_UNION = "union contains incompatible values"
+ACCEPTED_BREAKS = {
+    f"{method} /api/settings/branding/requestBody/application/json/properties/{field}: {_UNION}":
+        "card durations are whole positive seconds"
+    for method in ("PATCH", "PUT") for field in ("intro_duration", "outro_duration")
+}
 KEYWORDS = {"$ref", "type", "properties", "required", "additionalProperties", "items",
             "anyOf", "enum", "const", "minimum", "maximum", "exclusiveMinimum",
             "exclusiveMaximum", "minLength", "maxLength", "minItems", "maxItems",
@@ -230,6 +243,12 @@ def breaking_changes(previous: dict, current: dict) -> list[str]:
     return sorted(set(errors))
 
 
+def filter_reviewed(errors: list[str]) -> tuple[list[str], list[str]]:
+    """Split errors into (unreviewed, reviewed) using ACCEPTED_BREAKS."""
+    return ([error for error in errors if error not in ACCEPTED_BREAKS],
+            [error for error in errors if error in ACCEPTED_BREAKS])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("previous", type=Path)
@@ -241,6 +260,9 @@ def main() -> int:
     except (OSError, ValueError, TypeError, AttributeError) as exc:
         print(f"Invalid contract input: {exc}")
         return 2
+    errors, reviewed = filter_reviewed(errors)
+    for error in reviewed:
+        print(f"Accepted: {error} ({ACCEPTED_BREAKS[error]})")
     for error in errors:
         print(error)
     print(f"OpenAPI compatibility: {len(errors)} breaking/unproven changes")
