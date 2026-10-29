@@ -1,7 +1,9 @@
 import type { Page } from "@playwright/test";
 
 /** Exercise the real Fetch parser without a buffered route.fulfill SSE body. */
-export async function installLiveStream(page: Page, ready = true) {
+export async function installLiveStream(page: Page, ready = true, tours = false) {
+  // Existing workflow tests exercise product actions, not first-visit tour overlays.
+  if (!tours) await page.addInitScript(() => localStorage.setItem("aisomedo:promotion:v1:1", JSON.stringify({ version: 1, completed: [], dismissed: [], skipAll: true })));
   await page.addInitScript(initialReady => {
     const original = window.fetch.bind(window);
     const outputs = new Set<ReadableStreamDefaultController<Uint8Array>>();

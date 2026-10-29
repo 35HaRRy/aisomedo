@@ -1,7 +1,7 @@
 import { test, expect, type Page, type BrowserContext, type APIRequestContext } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { DashboardOut, ReviewDetailOut, PackageOut } from "../src/api/openapi";
+import type { ClientOut, DashboardOut, ReviewDetailOut, PackageOut } from "../src/api/openapi";
 
 test.describe.configure({ mode: "serial" });
 let context: BrowserContext, page: Page;
@@ -102,9 +102,16 @@ test.beforeAll(async ({ browser, playwright }) => {
   });
   expect(registration.ok()).toBe(true);
   await page.goto("/");
+  // Unpaired visitors land on the public page; the pairing form lives behind "Uygulamayı aç".
+  await page.getByRole("button", { name: "Uygulamayı aç", exact: true }).first().click();
   await page.getByLabel("Eşleştirme kodu", { exact: true }).fill(seed.browser_code);
   await page.getByLabel("Tarayıcı adı", { exact: true }).fill("Acceptance browser");
   await page.getByRole("button", { name: "Eşleştir", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Instagram bağlantısı/ })).toBeVisible();
+  // Product tours are browser-local onboarding; this run verifies publication, not the tour UI.
+  await page.evaluate(clientId => localStorage.setItem(`aisomedo:promotion:v1:${clientId}`,
+    JSON.stringify({ version: 1, completed: [], dismissed: [], skipAll: true })),
+    (await json<ClientOut>("/api/pairing/me")).id);
   await page.getByRole("button", { name: /^Instagram bağlantısı/ }).click();
   await page.getByLabel("Instagram erişim tokenı").fill("acceptance-token");
   await page.getByRole("button", { name: "Token ile bağlan", exact: true }).click();

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api/client";
 import { ContractBanner } from "./api/compat";
 import { ActivitySummary } from "./components/ActivitySummary";
@@ -15,10 +15,16 @@ import { OnboardingProvider, useOnboarding } from "./onboarding/useOnboarding";
 import { OnboardingWizard } from "./onboarding/OnboardingWizard";
 import { UploadProvider } from "./uploads/UploadProvider";
 import { PackageEditorProvider, usePackageEditorContext } from "./packages/PackageEditorProvider";
-import { LiveProvider } from "./liveProvider";
+import { LiveProvider, useLivePhase } from "./liveProvider";
 import { MediaActionIcon } from "./packages/MediaActionIcon";
 import { ThemeToggle } from "./theme";
 import { SocialLinks } from "./components/SocialLinks";
+import "driver.js/dist/driver.css";
+import { LandingPage } from "./promotion/LandingPage";
+import { Walkthrough, replayTours } from "./promotion/Walkthrough";
+import { getDemoRuntime, startDemo, stopDemo } from "./demo/runtime";
+import { isDemoHash, normalHref, readPairingMarker, workspaceHref } from "./demo/routing";
+import { live } from "./live";
 
 function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
   return <div role="alert" className="notice"><p>{stale ? tr.stale : tr.loadError}</p>
@@ -30,25 +36,28 @@ function PairedShell() {
   const editor = usePackageEditorContext();
   const { area, reviewId, occurrenceId, packageFolder, navigate } = editor.navigation;
   const onboarding = useOnboarding();
+  const livePhase = useLivePhase();
   const opened = useRef(false);
   useEffect(() => {
     if (!onboarding.setup) return;
     if (!onboarding.setup.ready && (area === "settings" || (area === "dashboard" && !opened.current))) {
       opened.current = true;
-      window.location.hash = "#/onboarding";
+      window.location.hash = workspaceHref("#/onboarding");
     }
   }, [onboarding.setup, area]);
   const dashboardVisible = area === "dashboard" || area === "package";
   const snapshot = useLiveData(api.dashboard, dashboardVisible, ["dashboard"]);
   const activity = useLiveData(api.activity, area === "activity", ["activity"]);
-  const areas: Exclude<Area, "onboarding">[] = ["dashboard", "package", "completed", "activity", "settings"];
-  useEffect(() => { document.title = `${area === "onboarding" ? "Kurulum" : tr[area]} · ${tr.app}`; }, [area]);
+  const areas: Exclude<Area, "onboarding" | "welcome">[] = ["dashboard", "package", "completed", "activity", "settings"];
+  useEffect(() => { document.title = `${area === "onboarding" ? "Kurulum" : area === "welcome" ? "Tanıtım" : tr[area]} · ${tr.app}`; }, [area]);
+  if (area === "welcome") return <LandingPage onOpenApp={() => { void navigate("#/dashboard"); }} />;
   return <UploadProvider><div className="app-shell">
-    <aside className="sidebar"><a className="brand" href="#/dashboard" onClick={event => { event.preventDefault(); void navigate("#/dashboard"); }}><span className="brand-mark" aria-hidden="true">A</span><span>{tr.app}<small>Video &amp; Reel Stüdyosu</small></span></a>
-      <nav aria-label={tr.navigation}>{areas.map(item => <a key={item} href={`#/${item}`} onClick={event => { event.preventDefault(); void navigate(`#/${item}`); }} aria-current={area === item ? "page" : undefined}><MediaActionIcon action={item} /><span>{tr[item]}</span></a>)}</nav>
-      <div className="sidebar-foot"><div className="paired-client"><span>{tr.client}</span><strong>{client?.name}</strong></div><SocialLinks /><ThemeToggle /></div>
+    <aside className="sidebar"><a className="brand" href={workspaceHref("#/dashboard")} onClick={event => { event.preventDefault(); void navigate("#/dashboard"); }}><span className="brand-mark" aria-hidden="true">A</span><span>{tr.app}{getDemoRuntime() && <span className="demo-badge">demo</span>}<small>Video &amp; Reel Stüdyosu</small></span></a>
+      <nav aria-label={tr.navigation}>{areas.map(item => <a key={item} data-tour={item === "package" ? "package-link" : undefined} href={workspaceHref(`#/${item}`)} onClick={event => { event.preventDefault(); void navigate(`#/${item}`); }} aria-current={area === item ? "page" : undefined}><MediaActionIcon action={item} /><span>{tr[item]}</span></a>)}</nav>
+      <div className="sidebar-foot"><details className="promotion-help" data-tour="help"><summary>Yardım</summary><button onClick={() => { void navigate("#/welcome"); }}>Uygulama tanıtımı</button><button onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); if (client) replayTours(client.id); }}>Tanıtımları yeniden başlat</button></details><div className="paired-client"><span>{tr.client}</span><strong>{client?.name}</strong></div><SocialLinks /><ThemeToggle /></div>
     </aside>
     <main id="content" className="main-content" tabIndex={-1}>
+      {getDemoRuntime() && <p className="notice demo-notice">Demo: işlemler yalnızca bu tarayıcı oturumunda simüle edilir. Örnek önizleme; yüklediğiniz dosya işlenmedi. Gerçek paylaşım yapılmaz.</p>}
       {area !== "onboarding" && onboarding.error && <ErrorNotice stale={!!onboarding.setup} retry={() => void onboarding.refresh().catch(() => {})} />}
       {dashboardVisible && snapshot.error && <ErrorNotice stale={!!snapshot.data} retry={snapshot.retry} />}
       {dashboardVisible && !snapshot.data && !snapshot.error && <p role="status">{tr.loading}</p>}
@@ -63,11 +72,20 @@ function PairedShell() {
         {area === "package" && <PackageSummary data={snapshot.data} reviewId={reviewId} occurrenceId={occurrenceId} packageFolder={packageFolder} onRefresh={snapshot.retry} stale={snapshot.error} />}
       </>}
     </main>
+    {client && (area === "dashboard" || area === "package" || area === "settings") && <Walkthrough clientId={client.id} tour={area === "package" && (reviewId !== null || occurrenceId !== null) ? "review" : area} enabled={livePhase === "live" && !!onboarding.setup?.ready && !onboarding.error && (area === "settings" || !!snapshot.data && !snapshot.error)} />}
   </div></UploadProvider>;
 }
 
 function SessionGate() {
   const session = useSession();
+  const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => {
+    const update = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", update);
+    return () => window.removeEventListener("hashchange", update);
+  }, []);
+  if (session.status !== "paired" && (hash === "#/welcome" || ((!hash || hash === "#/") && session.status === "unpaired")))
+    return <LandingPage onOpenApp={() => { window.location.hash = "#/pair"; setHash("#/pair"); }} />;
   if (session.status === "paired") return <LiveProvider key={session.generation}><PackageEditorProvider><PairedWorkspace /></PackageEditorProvider></LiveProvider>;
   if (session.status === "unpaired") return <PairingForm />;
   return <main className="session-loading" id="content" tabIndex={-1}><h1>{tr.app}</h1>
@@ -81,7 +99,28 @@ function PairedWorkspace() {
 }
 
 export function App() {
-  return <SessionProvider><a className="skip-link" href="#content" onClick={event => {
+  const selectMode = () => {
+    if (isDemoHash(window.location.hash) && readPairingMarker()) window.history.replaceState(null, "", normalHref(window.location.hash));
+    if (isDemoHash(window.location.hash)) {
+      if (!getDemoRuntime()) { live.stop(); startDemo(); }
+      const normal = normalHref(window.location.hash), area = normal.slice(2).split("?")[0];
+      if (!["dashboard", "package", "completed", "activity", "settings", "onboarding"].includes(area)) window.history.replaceState(null, "", "#/demo/dashboard");
+      else if (/^#\/demo\/?(?:\?|$)/.test(window.location.hash)) window.history.replaceState(null, "", workspaceHref(normal, true));
+      return "demo";
+    }
+    if (getDemoRuntime()) { live.stop(); stopDemo(); }
+    return window.location.hash === "#/welcome" ? "welcome" : "normal";
+  };
+  const [mode, setMode] = useState(selectMode);
+  useEffect(() => {
+    let active = true;
+    // Let the editor's synchronous hash guard restore a rejected route first.
+    const update = () => queueMicrotask(() => { if (active) setMode(selectMode()); });
+    window.addEventListener("hashchange", update);
+    return () => { active = false; window.removeEventListener("hashchange", update); };
+  }, []);
+  if (mode === "welcome") return <LandingPage onOpenApp={() => { window.location.hash = readPairingMarker() ? "#/dashboard" : "#/pair"; }} />;
+  return <SessionProvider key={mode}><a className="skip-link" href="#content" onClick={event => {
     event.preventDefault(); document.getElementById("content")?.focus();
   }}>{tr.skip}</a><ContractBanner /><SessionGate /></SessionProvider>;
 }

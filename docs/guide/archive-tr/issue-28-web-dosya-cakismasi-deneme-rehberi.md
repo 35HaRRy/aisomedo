@@ -36,7 +36,7 @@ da düzeltildi. Bu çalışma Android arayüzünü veya medya galerisi eklemeyi 
 ## 2. Deneme ortamını hazırlayın
 
 Bu değişiklikleri içeren **ayrı ve çalışan** ortamınız varsa bölüm 3'e geçin.
-Yeni yerel ortam için Docker Desktop'ın Linux konteynerleri ve Node.js 22/npm
+Yeni yerel ortam için Docker Desktop'ın Linux konteynerleri ve Node.js 26.13.0/npm
 hazır olmalıdır. Komutları bu değişikliklerin bulunduğu repo kökünde çalıştırın.
 
 ### 2.1. Dizini ve verileri kontrol edin

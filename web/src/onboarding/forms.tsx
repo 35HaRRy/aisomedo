@@ -4,6 +4,8 @@ import { ApiError } from "../api/client";
 import { MediaPreview, useFilePreview } from "../components/MediaPreview";
 import { tr } from "../i18n";
 import { useOnboarding } from "./useOnboarding";
+import { getDemoRuntime } from "../demo/runtime";
+import { demoAssetUrl, demoAssetType } from "../demo/assets";
 
 export const SetupActionTarget = createContext<HTMLElement | null>(null);
 export function StepActions({ children }: { children: ReactNode }) {
@@ -15,12 +17,11 @@ export function useDraft<T>(source: T | null, initial: T) {
   const [draft, setDraft] = useState(initial);
   const [dirty, setDirty] = useState(false);
   const [baseline, setBaseline] = useState("");
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
   const fingerprint = JSON.stringify(source);
-  useEffect(() => {
-    if (source && !dirtyRef.current) { setDraft(source); setBaseline(fingerprint); }
-  }, [fingerprint]);
+  // Hydrate before committing enabled inputs; an effect leaves an editable empty draft.
+  if (source && !dirty && baseline !== fingerprint) {
+    setDraft(source); setBaseline(fingerprint);
+  }
   return { draft, dirty, changed: dirty && baseline !== fingerprint,
     edit: (value: T) => { setDirty(true); setDraft(value); },
     reload: () => { if (source) { setDraft(source); setBaseline(fingerprint); setDirty(false); } },
@@ -79,6 +80,7 @@ export function AssetPreview({ reference, label, file = null }: { reference: str
   const selected = `Seçilen ${label.toLocaleLowerCase("tr")} önizlemesi`;
   if (local && file) return <><p>{selected}</p><MediaPreview src={local} contentType={cardContentType(file)} label={selected} /></>;
   if (!reference) return null;
+  if (getDemoRuntime()) return <MediaPreview src={demoAssetUrl(reference)} contentType={demoAssetType(reference)} label={`${label} önizlemesi`} />;
   const generated = /^branding\/assets\/[0-9a-f]{32}\.(png|jpg|mp4|mov|webm|mkv|avi)$/.test(reference);
   const contentType = /\.(mp4|mov|webm|mkv|avi)$/.test(reference) ? "video/mp4" : "image/png";
   return <><p>{label} tanımlı</p>{generated && <MediaPreview src={`/api/settings/branding/assets/${reference.split("/").pop()}`} contentType={contentType} label={`${label} önizlemesi`} />}</>;

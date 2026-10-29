@@ -6,11 +6,23 @@ import { startLiveRefresh } from "../live";
 import { useLiveData } from "../useLiveData";
 import { useOnboarding } from "./useOnboarding";
 import { StepActions } from "./forms";
+import { getDemoRuntime } from "../demo/runtime";
+
+// A missing Meta configuration is an expected 503 for this read. Treat it as a
+// normal status so an optional integration cannot lock the live workspace.
+const loadStatus = async (signal: AbortSignal): Promise<StatusOut> => {
+  try { return await api.instagram(signal); }
+  catch (failure) {
+    if (failure instanceof ApiError && failure.status === 503
+      && failure.detail === "Instagram connection is not configured") return { health: "unconfigured" };
+    throw failure;
+  }
+};
 
 export function InstagramStep({ onSaved }: { onSaved: () => void }) {
   const formId = useId();
   const { save } = useOnboarding();
-  const snapshot = useLiveData(api.instagram, true, ["settings", "setup"]);
+  const snapshot = useLiveData(loadStatus, true, ["settings", "setup"]);
   const [verified, setVerified] = useState<StatusOut | null>(null);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -53,6 +65,10 @@ export function InstagramStep({ onSaved }: { onSaved: () => void }) {
     try {
       const result = await mutate(signal => api.startOAuth(signal));
       if (!alive.current) return;
+      if (getDemoRuntime()) {
+        const resultStatus = await api.oauthAttempt(result.attempt_id);
+        candidateAttempt.current = result.attempt_id; setCandidates(resultStatus.candidates); setAuthUrl("demo"); return;
+      }
       const url = new URL(result.auth_url);
       if (url.protocol !== "https:") throw new Error("unsafe authorization URL");
       setAuthUrl(url.href); setAttempt(result.attempt_id);
@@ -91,20 +107,21 @@ export function InstagramStep({ onSaved }: { onSaved: () => void }) {
   if (attempt) candidateAttempt.current = attempt;
   const status = verified ?? snapshot.data;
   return <div className="onboarding-form">
-    <p>Instagram’dan kendi aldığınız erişim tokenını tanımlayın veya yeni pencerede yetkilendirin. Mevcut hesap yeni bağlantı doğrulanana kadar korunur.</p>
+    <p>{getDemoRuntime() ? "Demo bağlantısı temsilidir. Gerçek token girmeyin; örnek hesaplardan birini seçin." : "Instagram’dan kendi aldığınız erişim tokenını tanımlayın veya yeni pencerede yetkilendirin. Mevcut hesap yeni bağlantı doğrulanana kadar korunur."}</p>
     {status?.ig_username && <p>@{status.ig_username} · {status.health === "healthy" ? "Bağlantı doğrulandı" : "Yeniden bağlantı gerekli"}</p>}
-    {status && !status.ig_username && <p>{tr.noAccount}</p>}
+    {status?.health === "unconfigured" && <p role="alert">{tr.instagramUnconfigured}</p>}
+    {status && status.health !== "unconfigured" && !status.ig_username && <p>{tr.noAccount}</p>}
     {!status && !snapshot.error && <p role="status">{tr.loading}</p>}
     {snapshot.error && <div role="alert">{tr.instagramUnavailable}<StepActions><button onClick={snapshot.retry}>{tr.retry}</button></StepActions></div>}
     {error && <p role="alert">{error}</p>}
-    <form id={formId} onSubmit={event => { event.preventDefault(); void connect(); }}>
+    {!getDemoRuntime() && <form id={formId} onSubmit={event => { event.preventDefault(); void connect(); }}>
       <label htmlFor="instagram-token">Instagram erişim tokenı</label>
       <input id="instagram-token" type="password" autoComplete="off" spellCheck={false} value={token} maxLength={16384} disabled={busy} onChange={event => setToken(event.target.value)} />
       <small>Token yalnızca doğrulama için sunucuya gönderilir; tarayıcıda saklanmaz.</small>
       <StepActions><button form={formId} className="primary" disabled={busy || !token.trim()}>{busy ? "Bağlantı doğrulanıyor…" : "Token ile bağlan"}</button></StepActions>
-    </form>
+    </form>}
     <StepActions><button disabled={busy} onClick={() => void start()}>Instagram ile yetkilendir</button>
-    {authUrl && <a href={authUrl} target="_blank" rel="noopener noreferrer">Yetkilendirme sayfasını aç</a>}</StepActions>
+    {authUrl && !getDemoRuntime() && <a href={authUrl} target="_blank" rel="noopener noreferrer">Yetkilendirme sayfasını aç</a>}</StepActions>
     {attempt && <p role="status">Yeni pencerede yetkilendirmeyi tamamlayın. Bu sayfa sonucu kontrol ediyor.</p>}
     <StepActions>{candidates.map(candidate => <button key={candidate.ig_user_id} disabled={busy} onClick={() => void select(candidate.ig_user_id)}>@{candidate.ig_username} hesabını seç</button>)}</StepActions>
   </div>;

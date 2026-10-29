@@ -3,6 +3,7 @@ import type { ApproveIn, SkipIn, RescheduleIn, ReviewDetailOut } from "./openapi
 import type { ReminderPolicyIn, ReminderPolicyOut } from "./openapi";
 import type { DashboardSlotOut, OneoffDateIn, OneoffDecisionIn, OneoffDecisionOut } from "./openapi";
 import type { PackageEditIn, EditConflictOut, SectionPreviewRetryIn } from "./openapi";
+import { transportFetch } from "./transport";
 
 export type PackagePrecondition = { package: { id: number }; content_revision: number };
 const packageHeaders = (expected: PackagePrecondition) => ({ "If-Match": `"${expected.package.id}:${expected.content_revision}"` });
@@ -41,7 +42,7 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
   init.signal?.addEventListener("abort", cancel, { once: true });
   const timeout = window.setTimeout(cancel, timeoutMs);
   try {
-    const response = await fetch(path, {
+    const response = await transportFetch(path, {
       ...init, credentials: "same-origin", cache: "no-store", signal: controller.signal,
       headers: { ...(typeof init.body === "string" ? { "Content-Type": "application/json" } : {}), ...init.headers },
     });

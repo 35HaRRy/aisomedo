@@ -64,7 +64,7 @@ export function PackageEditorProvider({ children }: { children: ReactNode }) {
     return () => { window.removeEventListener("beforeunload", warn); resolver.current?.("cancel"); };
   }, []);
   return <Context.Provider value={{ ...editor, remove, requestLeave, navigation }}>
-    <div {...(prompt ? { inert: "" } : {})} aria-hidden={prompt ? true : undefined}>{children}</div>
+    <div inert={!!prompt} aria-hidden={prompt ? true : undefined}>{children}</div>
     {prompt && <div className="editor-dialog-backdrop"><div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="draft-dialog-title" className="panel editor-dialog">
       <h2 id="draft-dialog-title">{tr.editor.leaveTitle}</h2><p>{editor.snapshot?.media.find(m => m.media_id === prompt.id)?.filename}</p><p>{prompt.removing ? tr.editor.removeDraft : tr.editor.leaveHelp}</p>
       <div className="actions"><button onClick={() => choose("cancel")}>{tr.editor.cancel}</button>

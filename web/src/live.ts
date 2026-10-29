@@ -1,5 +1,6 @@
 /** Foreground transport plus single-flight, event-triggered resource reads. */
 import { responseVersions, SupersededRead } from "./api/client";
+import { transportFetch } from "./api/transport";
 export type LivePhase = "connecting" | "syncing" | "sync-failed" | "live" | "disconnected" | "unauthorized";
 type Frame = (event: string, data: unknown) => void;
 const MAX_FRAME_BYTES = 64 * 1024;
@@ -72,8 +73,9 @@ export class LiveCoordinator {
   private attempt = 0;
   private epoch = 0;
   private owners = 0;
+  private ownershipGeneration = 0;
 
-  constructor(private fetcher: (url: string, init: RequestInit) => Promise<Response> = (url, init) => fetch(url, init)) {}
+  constructor(private fetcher: (url: string, init: RequestInit) => Promise<Response> = transportFetch) {}
   getSnapshot = (): LivePhase => this.phase;
   watch = (listener: () => void): (() => void) => {
     this.listeners.add(listener); return () => { this.listeners.delete(listener); };
@@ -134,6 +136,7 @@ export class LiveCoordinator {
     }
   }
   start(): () => void {
+    const generation = this.ownershipGeneration;
     if (++this.owners === 1) {
       this.running = true; this.ready = false; this.terminal = false; this.attempt = 0;
       this.setPhase("connecting");
@@ -142,9 +145,10 @@ export class LiveCoordinator {
       this.wake();
     }
     let active = true;
-    return () => { if (active) { active = false; if (--this.owners === 0) this.stop(); } };
+    return () => { if (active) { active = false; if (generation === this.ownershipGeneration && --this.owners === 0) this.stop(); } };
   }
   stop() {
+    this.ownershipGeneration++;
     this.running = false; this.owners = 0; this.disconnect(false); this.versions.clear();
     document.removeEventListener("visibilitychange", this.wake);
     for (const event of ["focus", "online", "offline"]) window.removeEventListener(event, this.wake);

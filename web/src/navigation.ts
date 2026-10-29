@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { normalHref, workspaceHref } from "./demo/routing";
 
-export type Area = "dashboard" | "package" | "completed" | "activity" | "settings" | "onboarding";
+export type Area = "dashboard" | "package" | "completed" | "activity" | "settings" | "onboarding" | "welcome";
 function readNavigation(): { area: Area; reviewId: number | null; occurrenceId: number | null; packageFolder: string | null } {
-  const [path, query] = window.location.hash.replace(/^#\/?/, "").split("?");
-  const area = ["dashboard", "package", "completed", "activity", "settings", "onboarding"].includes(path) ? path as Area : "dashboard";
+  const [path, query] = normalHref(window.location.hash).replace(/^#\/?/, "").split("?");
+  const area = ["dashboard", "package", "completed", "activity", "settings", "onboarding", "welcome"].includes(path) ? path as Area : "dashboard";
   const params = new URLSearchParams(query);
   const value = Number(params.get("review")), occurrence = Number(params.get("occurrence"));
   return { area, reviewId: Number.isSafeInteger(value) && value > 0 ? value : null,
@@ -15,6 +16,7 @@ export function useNavigation(canLeave?: () => Promise<boolean>) {
   const guard = useRef(canLeave); guard.current = canLeave;
   const pending = useRef(false);
   const navigate = useCallback(async (href: string) => {
+    href = workspaceHref(href);
     if (pending.current) return false;
     if (href === accepted.current) return true;
     pending.current = true;

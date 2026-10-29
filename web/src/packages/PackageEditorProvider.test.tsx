@@ -26,7 +26,10 @@ async function setup() {
 it("cancel retains route and drafts; explicit discard permits navigation", async () => {
   await setup(); fireEvent.click(screen.getByText("Leave"));
   expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  const background = screen.getByText("Leave").parentElement;
+  expect(background).toHaveAttribute("inert");
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Vazgeç" })); });
+  expect(background).not.toHaveAttribute("inert");
   expect(screen.getByText("package")).toBeInTheDocument(); expect(screen.getByText("dirty")).toBeInTheDocument();
   fireEvent.click(screen.getByText("Leave"));
   fireEvent.click(await screen.findByRole("button", { name: "Değişiklikleri at" }));

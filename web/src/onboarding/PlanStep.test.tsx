@@ -29,7 +29,7 @@ it("saves Monday, local time and disabled plan", async () => {
 });
 it("rejects Tuesday locally without sending", async () => {
   const { sent } = mount();
-  await screen.findByLabelText("İlk yayın tarihi");
+  await waitFor(() => expect(screen.getByLabelText("İlk yayın tarihi")).toHaveValue("2026-10-05"));
   fireEvent.change(screen.getByLabelText("İlk yayın tarihi"), { target: { value: "2026-10-06" } });
   fireEvent.click(screen.getByRole("button", { name: "Planı kaydet" }));
   await screen.findByRole("alert"); expect(sent).not.toHaveBeenCalled();

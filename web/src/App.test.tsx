@@ -14,6 +14,21 @@ let setup = setupState();
 let setupStatus = 200;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
+it("introduces the product to a new visitor and keeps pairing reachable", async () => {
+  paired = false; window.location.hash = "";
+  render(<App />);
+  await screen.findByRole("heading", { name: "Antrenmandan paylaşmaya. Kontrol sende." });
+  fireEvent.click(screen.getAllByRole("button", { name: "Uygulamayı aç" })[0]);
+  await screen.findByRole("heading", { name: "Tarayıcıyı eşleştir" });
+});
+
+it("does not replace a protected deep link with the introduction", async () => {
+  paired = false; window.location.hash = "#/package?review=2";
+  render(<App />);
+  await screen.findByRole("heading", { name: "Tarayıcıyı eşleştir" });
+  expect(window.location.hash).toBe("#/package?review=2");
+});
+
 beforeEach(() => {
   localStorage.clear();
   paired = true; snapshot = dashboard(); dashboardStatus = 200; pairingStatus = 200; activityStatus = 200;

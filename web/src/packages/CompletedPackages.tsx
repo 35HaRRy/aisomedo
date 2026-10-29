@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
-import type { CompletedPackageOut, PackageArtifactOut } from "../api/openapi";
+import type { CompletedMediaOut, CompletedPackageOut, PackageArtifactOut } from "../api/openapi";
+import { MediaPreview } from "../components/MediaPreview";
 import { tr } from "../i18n";
 import { useSession } from "../session";
 import { useLiveData } from "../useLiveData";
+import { MediaActionIcon } from "./MediaActionIcon";
+import { MediaFullscreenDialog } from "./MediaFullscreenDialog";
 
 function ArtifactLinks({ artifacts }: { artifacts: PackageArtifactOut[] }) {
   const copy = tr.packageManagement;
   return <ul className="artifact-links">{artifacts.map(artifact => <li key={artifact.artifact_ref}>
-    {artifact.url && artifact.available ? <a href={artifact.url}>{artifact.kind === "original" ? copy.originalDownload : artifact.kind === "processed" ? copy.processedDownload : copy.renderDownload} — {artifact.filename}</a>
+    {artifact.url && artifact.available ? <a className="media-icon-button" href={artifact.url} aria-label={`${artifact.kind === "original" ? copy.originalDownload : artifact.kind === "processed" ? copy.processedDownload : copy.renderDownload} — ${artifact.filename}`} title={`${artifact.kind === "original" ? copy.originalDownload : artifact.kind === "processed" ? copy.processedDownload : copy.renderDownload} — ${artifact.filename}`}><MediaActionIcon action="download" /></a>
       : <span>{artifact.filename} — {copy.fileMissing}</span>}
   </li>)}</ul>;
 }
@@ -17,11 +20,12 @@ export function CompletedPackages({ onBack }: { onBack(): void }) {
   const { invalidate } = useSession();
   const [folder, setFolder] = useState(""), [detail, setDetail] = useState<CompletedPackageOut | null>(null);
   const [error, setError] = useState(false), [retry, setRetry] = useState(0);
+  const [viewing, setViewing] = useState<CompletedMediaOut | null>(null);
   useEffect(() => {
     if (list.data && !list.data.some(p => p.folder_name === folder)) setFolder(list.data[0]?.folder_name ?? "");
   }, [list.data, folder]);
   useEffect(() => {
-    setDetail(null); setError(false);
+    setDetail(null); setError(false); setViewing(null);
     if (!folder) return;
     const controller = new AbortController();
     void api.completedPackage(folder, controller.signal).then(value => {
@@ -44,17 +48,24 @@ export function CompletedPackages({ onBack }: { onBack(): void }) {
     {error && <div role="alert" className="notice"><p>{copy.historyError}</p><button onClick={() => setRetry(retry + 1)}>{tr.retry}</button></div>}
     {folder && !detail && !error && <p role="status">{tr.loading}</p>}
     {detail && <div className="completed-detail"><h3>{detail.folder_name}</h3>
-      {render?.preview_url && <video className="completed-render" src={render.preview_url} controls playsInline preload="metadata" aria-label={copy.finalPreview} />}
-      <ArtifactLinks artifacts={detail.artifacts.filter(a => a.kind === "render")} />
+      <section className="completed-reel-card" aria-label={copy.finalPreview}>
+        <div className="completed-card-heading"><h3>Reel videosu</h3><ArtifactLinks artifacts={detail.artifacts.filter(a => a.kind === "render")} /></div>
+        {render?.preview_url && <video className="completed-render" src={render.preview_url} controls playsInline preload="metadata" aria-label={copy.finalPreview} />}
+      </section>
       {detail.caption && <p className="completed-caption">{detail.caption}</p>}
-      <ul className="package-media-list">{[...detail.media].sort((a, b) => {
+      <ul className="package-media-list completed-media-grid">{[...detail.media].sort((a, b) => {
         const x = detail.order.indexOf(a.media_id), y = detail.order.indexOf(b.media_id);
         return (x < 0 ? Infinity : x) - (y < 0 ? Infinity : y);
-      }).map(media => <li key={media.media_id}><h3>{media.filename}</h3>
+      }).map(media => <li key={media.media_id}>
+        <div className="completed-card-heading"><h3 title={media.filename}>{media.filename}</h3><ArtifactLinks artifacts={media.artifacts} /></div>
+        <p className="muted">{media.content_type.startsWith("video/") ? copy.video : copy.photo} · {media.effective_duration == null ? copy.unknownDuration : `${media.effective_duration.toFixed(2)} s`}</p>
         {media.status === "removed" && <p className="muted">{copy.removed}</p>}
-        {media.preview_url && (media.content_type.startsWith("video/") ? <video className="completed-media-preview" src={media.preview_url} controls playsInline preload="metadata" aria-label={`${media.filename} ${copy.preview}`} /> : <img className="package-photo-preview" src={media.preview_url} alt={`${media.filename} ${copy.preview}`} loading="lazy" />)}
-        <ArtifactLinks artifacts={media.artifacts} />
+        {media.preview_url ? <button className="media-image-button" aria-label={`${media.filename} ${copy.preview}`} onClick={() => setViewing(media)}>
+          {media.content_type.startsWith("video/") && media.thumbnail_url ? <img className="package-photo-preview" src={media.thumbnail_url} alt={`${media.filename} ${copy.preview}`} loading="lazy" />
+            : <MediaPreview src={media.preview_url} contentType={media.processed.content_type ?? media.content_type} label={`${media.filename} ${copy.preview}`} />}
+        </button> : <p className="muted">{tr.editor.previewMissing}</p>}
       </li>)}</ul>
     </div>}
+    {viewing && <MediaFullscreenDialog key={viewing.media_id} media={{ ...viewing, is_video: viewing.content_type.startsWith("video/") }} processed onClose={() => setViewing(null)} />}
   </section>;
 }

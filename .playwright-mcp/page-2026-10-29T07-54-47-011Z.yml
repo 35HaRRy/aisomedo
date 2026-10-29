@@ -1,0 +1,6 @@
+- generic [ref=f2e2]:
+  - link "İçeriğe geç" [ref=f2e3] [cursor=pointer]:
+    - /url: "#content"
+  - main [ref=f2e4]:
+    - heading "Aisomedo" [level=1] [ref=f2e5]
+    - status [ref=f2e6]: Bilgiler yükleniyor…

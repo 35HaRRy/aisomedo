@@ -1,0 +1,101 @@
+- generic [ref=e2]:
+  - link "İçeriğe geç" [ref=e3] [cursor=pointer]:
+    - /url: "#content"
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - button "Aisomedo başlangıç" [ref=e6] [cursor=pointer]:
+        - generic [aria-hidden] [ref=e7]: A
+        - text: Aisomedo
+      - navigation "Tanıtım bölümleri" [ref=e8]:
+        - button "Başlangıç" [ref=e9] [cursor=pointer]
+        - button "Neden Aisomedo?" [ref=e10] [cursor=pointer]
+        - button "Nasıl çalışır?" [ref=e11] [cursor=pointer]
+        - button "Android" [ref=e12] [cursor=pointer]
+    - button "Koyu Mod" [ref=e13] [cursor=pointer]
+    - main [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]:
+          - heading "Antrenmandan paylaşmaya. Kontrol sende." [level=1] [ref=e19]: Antrenmandan paylaşmaya.Kontrol sende.
+          - paragraph [ref=e20]: Biriken fotoğraf ve videoları markana ait Instagram Reels’lerine dönüştür. Aisomedo hazırlığı bir araya getirir, son söz sende kalır.
+          - generic [ref=e21]:
+            - button "Uygulamayı aç" [ref=e22] [cursor=pointer]
+            - button "Akışı keşfet" [ref=e23] [cursor=pointer]
+          - paragraph [ref=e24]: Yükle. Düzenle. İncele. Onayla ve yayınla.
+        - generic [ref=e25]:
+          - img "Fotoğraf ve videoların düzenleme, insan onayı ve Instagram yayınına uzanan akışı" [ref=e26]
+          - figure "Gerçek uygulama arayüzü · örnek veriler" [ref=e27]:
+            - img "Aisomedo kontrol panelinde yayın planı ve bekleyen inceleme" [ref=e28]
+      - generic [ref=e30]:
+        - heading "İçeriğe odaklan. Dağınık sürece değil." [level=2] [ref=e31]: İçeriğe odaklan.Dağınık sürece değil.
+        - generic [ref=e32]:
+          - article [ref=e33]:
+            - heading "Tek Paylaşım Paketi" [level=3] [ref=e37]
+            - paragraph [ref=e38]: Fotoğraf, video, sıralama ve açıklama aynı akışta. Dosyalar arasında kaybolmadan hazırlan.
+          - article [ref=e39]:
+            - heading "Sana ait bir kurgu" [level=3] [ref=e44]
+            - paragraph [ref=e45]: Kalacak bölümleri seç. Logonu ve kartlarını ekle. Hazırlanan dikey Reel’i yayın öncesinde gör.
+          - article [ref=e46]:
+            - heading "Planlı, ama kontrolsüz değil" [level=3] [ref=e50]
+            - paragraph [ref=e51]: Yayın Planı zamanı hatırlatır. İnceleme ve onay adımı, neyin paylaşılacağına senin karar vermeni sağlar.
+      - generic [ref=e52]:
+        - generic [ref=e53]:
+          - heading "Bir paketin paylaşıma yolculuğu." [level=2] [ref=e54]: Bir paketinpaylaşıma yolculuğu.
+          - paragraph [ref=e55]: Kaydırarak süreci izle veya adımlar arasında geçiş yap.
+        - generic [ref=e56]:
+          - figure "Akışın etkin ekran görüntüsü" [ref=e57]:
+            - generic [aria-hidden] [ref=e58]:
+              - generic [ref=e59]: "1"
+              - generic [ref=e60]: "2"
+              - generic [ref=e61]: "3"
+              - generic [ref=e62]: "4"
+            - img "Anları bir araya getir." [ref=e63]
+            - generic [ref=e64]: Örnek verilerle uygulama görünümü
+          - generic [ref=e65]:
+            - article [ref=e66]:
+              - generic [ref=e67]: Adım 1 / 4
+              - heading "Anları bir araya getir." [level=3] [ref=e68]
+              - paragraph [ref=e69]: Fotoğraf ve videoları Aktif Paket’e yükle. Yükleme durumunu tek yerden takip et; kesintiden sonra kaldığın yerden devam et.
+              - button "Düzenlemeyi keşfet" [ref=e70] [cursor=pointer]: Düzenlemeyi keşfet ↓
+            - article [ref=e71]:
+              - generic [ref=e72]: Adım 2 / 4
+              - heading "Hikâyenin sırasını sen belirle." [level=3] [ref=e73]
+              - paragraph [ref=e74]: Medyayı sırala, videoda kalmasını istediğin bölümleri seç. Logon ve açıklama şablonunla paylaşımına kendi kimliğini ver.
+              - button "İnceleme adımına geç" [ref=e75] [cursor=pointer]: İnceleme adımına geç ↓
+            - article [ref=e76]:
+              - generic [ref=e77]: Adım 3 / 4
+              - heading "Sen onaylamadan yayınlanmaz." [level=3] [ref=e78]
+              - paragraph [ref=e79]: Hazırlanan Reel’i ve açıklamasını birlikte incele. Uygun zamanda onayla; hazır değilsen Yayın İncelemesi’ni atla veya başka zamana taşı.
+              - button "Yayın sonrasını gör" [ref=e80] [cursor=pointer]: Yayın sonrasını gör ↓
+            - article [ref=e81]:
+              - generic [ref=e82]: Adım 4 / 4
+              - heading "Paylaşımın izini kaybetme." [level=3] [ref=e83]
+              - paragraph [ref=e84]: Instagram’ın doğruladığı yayınlar Tamamlanmış Paketler’de yerini alır. Etkinlik kaydıyla ne olduğunu geriye dönük takip et.
+              - button "Android uygulamasını keşfet" [ref=e85] [cursor=pointer]: Android uygulamasını keşfet ↓
+      - generic [ref=e86]:
+        - generic [ref=e87]:
+          - heading "Bilgisayarda hazırla. Android’den de yanında olsun." [level=2] [ref=e88]: Bilgisayarda hazırla.Android’den de yanında olsun.
+          - paragraph [ref=e89]: Yerel Android uygulamasıyla aynı çalışma alanına bağlan. Medyanı yükle, paketini takip et ve Yayın İncelemesi’ni telefonundan aç.
+          - link "Android APK indir · v0.2.0" [ref=e90] [cursor=pointer]:
+            - /url: https://github.com/35HaRRy/aisomedo/releases/download/android-v0.2.0/aisomedo.apk
+          - paragraph [ref=e91]:
+            - link "SHA-256 doğrulama dosyası" [ref=e92] [cursor=pointer]:
+              - /url: https://github.com/35HaRRy/aisomedo/releases/download/android-v0.2.0/aisomedo.apk.sha256
+          - paragraph [ref=e93]: Kendi sunucuna bağlanır. İlk bağlantıda tek kullanımlık eşleştirme kodu gerekir.
+        - paragraph [ref=e101]: Web ve Android. Aynı Paylaşım Paketi.
+      - generic [ref=e102]:
+        - heading "Bir sonraki paylaşımın buradan başlasın." [level=2] [ref=e103]: Bir sonraki paylaşımınburadan başlasın.
+        - paragraph [ref=e104]: Hazırlığı bir araya getir. Yayını elinde tut.
+        - button "Uygulamayı aç" [ref=e105] [cursor=pointer]
+    - contentinfo [ref=e106]:
+      - strong [ref=e107]: Aisomedo
+      - generic [ref=e108]:
+        - link "Kişisel web sitesi" [ref=e109] [cursor=pointer]:
+          - /url: https://hayrihabip.com/
+        - link "GitHub" [ref=e113] [cursor=pointer]:
+          - /url: https://github.com/35HaRRy/aisomedo
+        - link "LinkedIn" [ref=e116] [cursor=pointer]:
+          - /url: https://www.linkedin.com/in/hayri-habip/
+        - link "X" [ref=e119] [cursor=pointer]:
+          - /url: https://x.com/35_HaRRy
+        - link "Instagram" [ref=e122] [cursor=pointer]:
+          - /url: https://www.instagram.com/hayrihabip/

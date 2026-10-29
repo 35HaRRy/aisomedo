@@ -10,6 +10,7 @@ import { PlanStep } from "./PlanStep";
 import { BrandingStep } from "./BrandingStep";
 import { CardsStep } from "./CardsStep";
 import { SetupActionTarget } from "./forms";
+import { workspaceHref } from "../demo/routing";
 
 export const stepTitles: Record<OnboardingStep, string> = {
   pairing: "Tarayıcı eşleştirmesi", instagram: "Instagram bağlantısı", schedule: "Yayın Planı",
@@ -76,7 +77,7 @@ export function OnboardingWizard({ embedded = false }: { embedded?: boolean }) {
     {!embedded && <footer className="setup-actions" role="group" aria-label="Kurulum işlemleri">
       <div className="step-actions" ref={setActionTarget} />
       {error && <button onClick={() => void refresh().catch(() => {})}>{tr.retry}</button>}
-      {setup.ready ? <a className="action-link" href="#/dashboard">Kurulumu bitir</a> : <a href="#/dashboard">Kuruluma sonra devam et</a>}
+      {setup.ready ? <a className="action-link" href={workspaceHref("#/dashboard")}>Kurulumu bitir</a> : <a href={workspaceHref("#/dashboard")}>Kuruluma sonra devam et</a>}
     </footer>}
     </div>
   </section>;

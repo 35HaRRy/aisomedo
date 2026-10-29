@@ -55,7 +55,7 @@ it("keeps foreground resynchronization quiet but exposes failed reads and retry"
   const ready = () => output.enqueue(new TextEncoder().encode('event: ready\ndata: {"protocol":1}\n\n'));
   render(<SessionProvider><Paired /></SessionProvider>);
   const input = await screen.findByLabelText("Draft");
-  expect(input).toBeDisabled();
+  await waitFor(() => expect(input).toBeDisabled());
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
   await act(async () => ready());
   expect(input).toBeDisabled();

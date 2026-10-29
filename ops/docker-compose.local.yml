@@ -1,0 +1,14 @@
+# Combine ONLY with docker-compose.prod.yml; local data stays in named volumes.
+services:
+  gateway:
+    environment:
+      SITE_ADDRESS: ":80"
+    ports:
+      - "127.0.0.1:9081:80"
+    restart: "no"
+  db:
+    restart: "no"
+  backend:
+    restart: "no"
+  worker:
+    restart: "no"

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
+import { getDemoRuntime, recoveryStorage } from "../demo/runtime";
 import type { ActiveEditorOut, ClearPackageOut } from "../api/openapi";
 import { live, startLiveRefresh } from "../live";
 import { useLivePhase } from "../liveProvider";
 import { useSession } from "../session";
-import { deleteDraft, listDrafts, reconcileDraft, resolveDraftConflict, sameGroup, serverGroup, writeDraft,
+import { deleteDraft, listDrafts, reconcileDraft, resolveDraftConflict, sameGroup, serverGroup, writeDraft, demoDraftStore,
   type DraftKey, type StoredDraft } from "./drafts";
 import { proposedDuration, validateRanges, type RangeInput, type SelectionMap, type VideoRange } from "./ranges";
 
@@ -73,15 +74,15 @@ export interface PackageEditorState {
 }
 const empty = (): Data => ({ draftKey: null, storedDraft: null, restoring: false, persisting: false, persistenceError: null, conflicts: {}, pendingClear: null, snapshot: null, draftInputs: {}, base: {}, baseFolder: null, stale: false, readRequired: false, loading: false, busy: false, error: null });
 const clearKey = (clientId: number) => `aisomedo.package-clear.v1:${clientId}`;
-function rememberedClear(clientId: number): ClearTarget | null {
+function rememberedClear(clientId: number, storage: Storage | null): ClearTarget | null {
   try {
-    const value = JSON.parse(localStorage.getItem(clearKey(clientId)) ?? "null");
+    const value = JSON.parse(storage?.getItem(clearKey(clientId)) ?? "null");
     return value && Number.isSafeInteger(value.id) && value.id > 0 && typeof value.folder_name === "string" && Number.isSafeInteger(value.content_revision) && value.content_revision > 0 ? value : null;
   } catch { return null; }
 }
-function rememberClear(clientId: number | undefined, target: ClearTarget | null) {
+function rememberClear(clientId: number | undefined, target: ClearTarget | null, storage: Storage | null) {
   if (clientId === undefined) return;
-  try { if (target) localStorage.setItem(clearKey(clientId), JSON.stringify(target)); else localStorage.removeItem(clearKey(clientId)); }
+  try { if (target) storage?.setItem(clearKey(clientId), JSON.stringify(target)); else storage?.removeItem(clearKey(clientId)); }
   catch { /* Blocked storage does not prevent an in-session cleanup retry. */ }
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -181,6 +182,10 @@ function cardSaveReason(data: Data, id: string, enabled: boolean): SaveBlockedRe
 }
 
 export function usePackageEditor(enabled = true): PackageEditorState {
+  const storage = useRef(recoveryStorage()).current;
+  const [draftStore] = useState(() => {
+    const runtime = getDemoRuntime(); return runtime ? demoDraftStore(runtime) : { writeDraft, deleteDraft, listDrafts };
+  });
   const phase = useLivePhase();
   const { status, generation, invalidate, client } = useSession();
   const [data, setData] = useState<Data>(empty);
@@ -201,8 +206,8 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     const work = persistence.current.then(async () => {
       if (epoch !== lifetime.current || current.current.persistenceError) return;
       try {
-        if (draft) revision.current = await writeDraft(key, revision.current, draft);
-        else { await deleteDraft(key, revision.current); revision.current = 0; }
+        if (draft) revision.current = await draftStore.writeDraft(key, revision.current, draft);
+        else { await draftStore.deleteDraft(key, revision.current); revision.current = 0; }
         succeeded = true;
       } catch (error) {
         if (alive.current && epoch === lifetime.current) update({ ...current.current,
@@ -265,7 +270,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     update({ ...current.current, restoring: true });
     await persistence.current;
     try {
-      const rows = await listDrafts({ origin: window.location.origin, clientId: client.id });
+      const rows = await draftStore.listDrafts({ origin: window.location.origin, clientId: client.id });
       if (!alive.current || epoch !== lifetime.current) return;
       const selected = current.current.draftKey ? rows.find(row => row.packageId === current.current.draftKey!.packageId) : rows[0];
       revision.current = selected?.draft.localRevision ?? 0;
@@ -284,7 +289,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
   useEffect(() => {
     alive.current = true;
     lifetime.current++; revision.current = 0;
-    const pendingClear = client ? rememberedClear(client.id) : null;
+    const pendingClear = client ? rememberedClear(client.id, storage) : null;
     update({ ...empty(), pendingClear, error: pendingClear ? "cleanup" : null });
     restoring.current = loadStoredDraft();
     const connectivity = () => setOffline(!navigator.onLine);
@@ -313,7 +318,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     read.current?.abort();
     const controller = new AbortController(); write.current = controller;
     const pendingClear = clearing ? { id: target.id, folder_name: target.folder_name, content_revision: old.pendingClear?.content_revision ?? old.snapshot!.content_revision } : old.pendingClear;
-    if (clearing) rememberClear(client?.id, pendingClear);
+    if (clearing) rememberClear(client?.id, pendingClear, storage);
     update({ ...old, pendingClear, busy: true, loading: false, error: null });
     try {
       const draft = editedDraft(old) ?? { schemaVersion: 1 as const, localRevision: revision.current,
@@ -326,7 +331,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
       if (!alive.current || controller.signal.aborted) return false;
       if (clearing) {
         await persist({ ...current.current, storedDraft: null });
-        rememberClear(client?.id, null); update({ ...empty(), persistenceError: current.current.persistenceError }); return true;
+        rememberClear(client?.id, null, storage); update({ ...empty(), persistenceError: current.current.persistenceError }); return true;
       }
       if (change.kind === "remove") {
         const acknowledged = current.current;
@@ -355,7 +360,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
           update({ ...current.current, error: "cleanup", stale: true, readRequired: true });
           return false;
         }
-        if (clearing) rememberClear(client?.id, null);
+        if (clearing) rememberClear(client?.id, null, storage);
         update({ ...current.current, stale: !definite || error instanceof ApiError && error.status === 409,
           pendingClear: clearing ? null : current.current.pendingClear,
           readRequired: !definite,

@@ -148,6 +148,8 @@ class MediaOut(BaseModel):
 class CompletedMediaOut(MediaOut):
     preview_url: str | None
     artifacts: list[PackageArtifactOut]
+    effective_duration: float | None = None
+    thumbnail_url: str | None = None
 
 
 class SectionPreviewOut(BaseModel):

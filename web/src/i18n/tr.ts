@@ -99,6 +99,7 @@ export const tr = {
   editor: {
     closeViewer: "Tam ekranı kapat", viewOriginal: "tam ekran görüntüle",
     originalFailed: "Orijinal medya oynatılamıyor. Dosyayı veya tarayıcı desteğini kontrol edin.",
+    processedFailed: "İşlenmiş medya görüntülenemiyor. Dosyayı veya tarayıcı desteğini kontrol edin.",
     sectionPreview: "Kaydedilmiş bölüm önizlemesi", retrySections: "Bölüm önizlemesini yeniden oluştur",
     previewDraftWarning: "Önizleme kaydedilmemiş değişiklikleri içermez.",
     sectionStates: { missing: "", queued: "Bölüm önizlemesi sırada.", processing: "Bölüm önizlemesi hazırlanıyor…", ready: "Kaydedilmiş bölümler", failed: "Bölüm önizlemesi oluşturulamadı. Kaydedilmiş bölümler korunuyor." },

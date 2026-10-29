@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { SessionProvider } from "../session";
 import { client } from "../test/fixtures";
@@ -30,4 +30,41 @@ it("late old-folder detail never replaces newly selected completed package", asy
   await screen.findByRole("heading", { name: "second" });
   await act(async () => { first.resolve(json(detail())); });
   await waitFor(() => expect(screen.queryByRole("heading", { name: folder })).not.toBeInTheDocument());
+});
+
+it("shows icon downloads and durations in media cards and opens processed media in the viewer", async () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; };
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  const snapshot = packageSnapshot();
+  const data = {
+    ...detail(), order: ["photo", "a"],
+    media: [
+      { ...snapshot.media[0], filename, effective_duration: 5, thumbnail_url: "/thumb.jpg", artifacts: [
+        { artifact_ref: "media/a/original.mp4", kind: "original", filename, available: true, url },
+        { artifact_ref: "media/a/processed.mp4", kind: "processed", filename: "Çalışma.processed.mp4", available: true, url: "/processed-download", preview_url: "/processed.mp4" },
+      ], preview_url: "/processed.mp4" },
+      { ...snapshot.media[1], media_id: "photo", filename: "profile.jpg", content_type: "image/jpeg", effective_duration: 2.95, preview_url: "/profile.jpg", artifacts: [] },
+    ],
+    artifacts: [{ artifact_ref: "render/reel.mp4", kind: "render", filename: "reel.mp4", available: true, url: "/reel-download", preview_url: "/reel.mp4" }],
+  };
+  vi.stubGlobal("fetch", async (path: string) => path.endsWith("/me") ? json(client) : path === "/api/packages" ? json([{ ...snapshot.package, folder_name: folder, status: "completed" }]) : json(data));
+  const view = render(<SessionProvider><CompletedPackages onBack={() => {}} /></SessionProvider>);
+  await screen.findByText(filename);
+  expect(screen.getByText("Fotoğraf · 2.95 s")).toBeVisible();
+  expect(screen.getByText("Video · 5.00 s")).toBeVisible();
+  for (const name of [/Orijinali indir/, /İşlenmiş dosyayı indir/, /Son Reel'i indir/]) {
+    const link = screen.getByRole("link", { name });
+    expect(link.textContent).toBe("");
+    expect(link.querySelector("svg")).not.toBeNull();
+  }
+  expect(screen.getByAltText(`${filename} önizlemesi`)).toHaveAttribute("src", "/thumb.jpg");
+  fireEvent.click(screen.getByRole("button", { name: `${filename} önizlemesi` }));
+  const dialog = screen.getByRole("dialog", { name: filename });
+  expect(dialog.querySelector("video")).toHaveAttribute("src", "/processed.mp4");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Tam ekranı kapat" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "profile.jpg önizlemesi" }));
+  expect(within(screen.getByRole("dialog")).getByRole("img")).toHaveAttribute("src", "/profile.jpg");
+  view.unmount();
 });

@@ -175,6 +175,20 @@ it("opens exact review without editing or publishing and requires loaded preview
   expect(screen.queryByRole("button", { name: "Onayla ve yayınla" })).not.toBeInTheDocument();
 });
 
+it("keeps an opened review mounted through publication transitions", async () => {
+  render(<App />); await loadedPreview();
+  state.pending_actions[0] = { ...state.pending_actions[0], state: "preparing" };
+  await act(async () => { invalidateLive(); });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Onayla ve yayınla" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Onayla ve yayınla" }));
+  fireEvent.click(screen.getByRole("button", { name: "Yayınlamayı onayla" }));
+  await screen.findByText("Yayınlama onayı alındı.");
+  state.package = null;
+  await act(async () => { invalidateLive(); });
+  expect(screen.getByText("Yayınlama onayı alındı.")).toBeInTheDocument();
+  expect(screen.queryByText("Paket değişti. Güncel işlemi kontrol panelinden açın.")).not.toBeInTheDocument();
+});
+
 it("skip shows next regular slot and sends explicit confirmation only after second action", async () => {
   render(<App />); await loadedPreview();
   fireEvent.click(screen.getByRole("button", { name: "Bu zamanı atla" }));

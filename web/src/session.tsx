@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "./api/client";
 import type { ClientOut } from "./api/openapi";
+import { getDemoRuntime } from "./demo/runtime";
+import { noteRealPairing } from "./demo/routing";
 
 interface Session {
   status: "loading" | "paired" | "unpaired" | "error";
@@ -20,6 +22,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const generation = useRef(0);
   const flight = useRef<AbortController | null>(null);
   const invalidate = useCallback(() => {
+    if (!getDemoRuntime()) noteRealPairing(false);
     flight.current?.abort();
     setState({ status: "unpaired", client: null, generation: ++generation.current });
   }, []);
@@ -28,13 +31,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const controller = new AbortController();
     flight.current = controller;
     const token = ++generation.current;
+    const demo = getDemoRuntime();
     setState({ status: "loading", client: null, generation: token });
     try {
       const client = await api.me(controller.signal);
-      if (token === generation.current && !controller.signal.aborted)
+      if (token === generation.current && !controller.signal.aborted) {
+        if (!demo) noteRealPairing(true);
         setState({ status: "paired", client, generation: token });
+      }
     } catch (error) {
       if (token !== generation.current || controller.signal.aborted) return;
+      if (!demo && error instanceof ApiError && error.status === 401) noteRealPairing(false);
       setState({ status: error instanceof ApiError && error.status === 401 ? "unpaired" : "error", client: null, generation: token });
     }
   }, []);

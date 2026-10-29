@@ -2,6 +2,8 @@ import { useState } from "react";
 import { formatDate, tr } from "../i18n";
 import { useUploads } from "./UploadProvider";
 import type { ConflictDecision, UploadRow } from "./types";
+import { getDemoRuntime } from "../demo/runtime";
+import { PHOTO, VIDEO } from "../demo/seed";
 
 interface Target extends Record<string, unknown> {
   media_id: string;
@@ -34,7 +36,8 @@ export function ConflictControls({ row }: { row: UploadRow }) {
   const blocked = busy || (overwrite && (!target || !confirmed || preview !== "ready"));
   const previewLabel = `${tr.conflict.preview}: ${target?.filename ?? ""}`;
   const source = target && row.status
-    ? `/api/media/uploads/${encodeURIComponent(row.status.upload_id)}/conflicts/${encodeURIComponent(target.media_id)}/preview${attempt ? `?attempt=${attempt}` : ""}` : undefined;
+    ? getDemoRuntime() ? (target.processed.content_type === "video/mp4" ? VIDEO : PHOTO)
+      : `/api/media/uploads/${encodeURIComponent(row.status.upload_id)}/conflicts/${encodeURIComponent(target.media_id)}/preview${attempt ? `?attempt=${attempt}` : ""}` : undefined;
   const retryPreview = () => { setConfirmed(false); setPreview("loading"); setAttempt(value => value + 1); };
   return <form className="conflict-controls" aria-label={`${tr.conflict.title}: ${row.filename}`} aria-busy={busy}
     onSubmit={event => {

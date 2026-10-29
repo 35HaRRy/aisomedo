@@ -1,0 +1,8 @@
+- generic [ref=f1e2]:
+  - link "İçeriğe geç" [ref=f1e3] [cursor=pointer]:
+    - /url: "#content"
+  - main [ref=f1e4]:
+    - heading "Aisomedo" [level=1] [ref=f1e5]
+    - alert [ref=f1e7]:
+      - paragraph [ref=f1e8]: Bilgiler alınamadı. Tekrar deneyin.
+      - button "Tekrar dene" [ref=f1e9] [cursor=pointer]
