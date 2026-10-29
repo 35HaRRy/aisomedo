@@ -4,6 +4,7 @@ import { tr } from "../i18n";
 import { startLiveRefresh } from "../live";
 import { useSession } from "../session";
 import { createUploadController, type UploadController, type UploadSnapshot } from "./controller";
+import { recoveryStorage } from "../demo/runtime";
 
 interface Uploads { snapshot: UploadSnapshot; controller: UploadController }
 const Context = createContext<Uploads | null>(null);
@@ -15,8 +16,7 @@ export function UploadProvider({ children, onPackageChanged }: { children: React
   const [binding, setBinding] = useState<Uploads | null>(null);
   useEffect(() => {
     if (!client) return;
-    let storage: Storage | null = null;
-    try { storage = window.localStorage; } catch { /* Blocked storage must not hide shell. */ }
+    const storage = recoveryStorage();
     const transport = { limits: api.uploadLimits, start: api.startUpload, status: api.uploadStatus,
       range: api.uploadRange, complete: api.completeUpload, resolve: api.resolveUpload };
     // Create in setup: StrictMode cleanup must not leave a reused disposed store.

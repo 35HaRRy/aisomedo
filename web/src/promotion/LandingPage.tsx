@@ -43,7 +43,7 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
   return <div className="promotion" ref={root}>
     <header className="promotion-header">
       <button className="promotion-wordmark" onClick={() => go("intro")} aria-label="Aisomedo başlangıç"><span className="brand-mark" aria-hidden="true">A</span>Aisomedo</button>
-      <nav aria-label="Tanıtım bölümleri">{sections.map(([id, label]) => <button key={id} aria-current={active === id ? "location" : undefined} onClick={() => go(id)}>{label}</button>)}</nav>
+      <nav aria-label="Tanıtım bölümleri">{sections.map(([id, label]) => <button key={id} aria-current={active === id ? "location" : undefined} onClick={() => go(id)}>{label}</button>)}<a className="promotion-demo-link" href="#/demo/dashboard">Demo</a></nav>
     </header>
     <ThemeToggle floating />
     <main id="content" tabIndex={-1}>

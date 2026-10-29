@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { CONTRACT_VERSION, fetchCompat } from "./openapi";
+import { CONTRACT_VERSION, type CompatInfo } from "./openapi";
+import { transportFetch } from "./transport";
 import { tr } from "../i18n";
 
 function apiBaseUrl(): string {
@@ -11,7 +12,11 @@ export function ContractBanner() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchCompat(apiBaseUrl())
+    const controller = new AbortController();
+    transportFetch(`${apiBaseUrl()}/api/compat`, { signal: controller.signal }).then(async response => {
+      if (!response.ok) throw new Error("Compatibility unavailable");
+      return await response.json() as CompatInfo;
+    })
       .then((compat) => {
         if (!cancelled && compat.api_version !== CONTRACT_VERSION) {
           setStale(true);
@@ -22,6 +27,7 @@ export function ContractBanner() {
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
 

@@ -4,6 +4,7 @@ import type { ClientOut } from "../api/openapi";
 import { tr } from "../i18n";
 import { OnboardingWizard } from "../onboarding/OnboardingWizard";
 import { useSession } from "../session";
+import { getDemoRuntime } from "../demo/runtime";
 
 export function SettingsSummary({ client }: { client: ClientOut }) {
   const { invalidate } = useSession();
@@ -11,6 +12,7 @@ export function SettingsSummary({ client }: { client: ClientOut }) {
   const [removeError, setRemoveError] = useState(false);
   async function remove() {
     if (!window.confirm(tr.settingsPage.removeWarning)) return;
+    if (getDemoRuntime()) { window.location.hash = "#/welcome"; return; }
     setRemoving(true); setRemoveError(false);
     try {
       await api.revokeClient(client.id);

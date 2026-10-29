@@ -395,3 +395,5 @@ form .notice { display: block; }
 @media (prefers-reduced-motion: no-preference) {
   button, .sidebar nav a { transition: background-color 140ms ease-out, border-color 140ms ease-out, color 140ms ease-out; }
 }
+.demo-badge { margin-inline-start: 8px; font-size: .75rem; font-weight: 600; color: var(--accent); }
+.demo-notice { font-size: .8125rem; margin-block: 0 24px; }

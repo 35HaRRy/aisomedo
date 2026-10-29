@@ -91,3 +91,4 @@
   .promotion-android-art p { font-size: 20px; }
   .promotion-footer { padding: 32px 24px; flex-direction: column; align-items: flex-start; gap: 8px; }
 }
+.promotion-demo-link { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 12px; color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 4px; }

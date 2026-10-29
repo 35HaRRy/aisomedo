@@ -1,10 +1,14 @@
 export type TourProgress = { version: 1; completed: string[]; dismissed: string[]; skipAll: boolean };
+import { getDemoRuntime, recoveryStorage } from "../demo/runtime";
 const memory = new Map<number, TourProgress>();
 const unpersisted = new Set<number>();
 const empty = (): TourProgress => ({ version: 1, completed: [], dismissed: [], skipAll: false });
 const key = (clientId: number) => `aisomedo:promotion:v1:${clientId}`;
 
 export function readTourProgress(clientId: number): TourProgress {
+  if (getDemoRuntime()) {
+    const raw = recoveryStorage()?.getItem(key(clientId)); return raw ? JSON.parse(raw) as TourProgress : empty();
+  }
   if (unpersisted.has(clientId)) return memory.get(clientId) ?? empty();
   try {
     const value: unknown = JSON.parse(localStorage.getItem(key(clientId)) ?? "null");
@@ -19,6 +23,7 @@ export function readTourProgress(clientId: number): TourProgress {
 
 export function writeTourProgress(clientId: number, progress: TourProgress): void {
   const value: TourProgress = { ...progress, completed: [...new Set(progress.completed)], dismissed: [...new Set(progress.dismissed)] };
+  if (getDemoRuntime()) { recoveryStorage()?.setItem(key(clientId), JSON.stringify(value)); return; }
   memory.set(clientId, value);
   try { localStorage.setItem(key(clientId), JSON.stringify(value)); unpersisted.delete(clientId); }
   catch { unpersisted.add(clientId); }

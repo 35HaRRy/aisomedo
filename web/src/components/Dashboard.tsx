@@ -8,6 +8,7 @@ import { api, ApiError } from "../api/client";
 import { formatDate, statusLabel, tr } from "../i18n";
 import { useLivePhase } from "../liveProvider";
 import { CollapsiblePanel } from "./CollapsiblePanel";
+import { workspaceHref } from "../demo/routing";
 
 function OneoffDateEditor({
   slot,
@@ -185,9 +186,9 @@ export function PendingActions({ data }: { data: DashboardOut }) {
               <a
                 className="action-link"
                 href={
-                  action.review_id
+                  workspaceHref(action.review_id
                     ? `#/package?review=${action.review_id}`
-                    : "#/package"
+                    : "#/package")
                 }
               >
                 {action.review_id ? tr.reviewSummary : tr.openPackage}
@@ -235,7 +236,7 @@ export function ConnectionSummary({ data }: { data: DashboardOut }) {
 }
 
 const openReview = (id: number) => {
-  window.location.hash = `#/package?review=${id}`;
+  window.location.hash = workspaceHref(`#/package?review=${id}`);
 };
 
 export function Dashboard({
@@ -389,7 +390,7 @@ export function Dashboard({
                 ? statusLabel(data.package.status)
                 : tr.noPackageHelp}
             </p>
-            <a href="#/package">{tr.openPackage}</a>
+            <a href={workspaceHref("#/package")}>{tr.openPackage}</a>
             <p>{tr.manualHelp}</p>
             <button
               disabled={
@@ -408,7 +409,7 @@ export function Dashboard({
             {occurrence !== null && (
               <p>
                 <a
-                  href={`#/package?occurrence=${occurrence}${data.package ? `&folder=${encodeURIComponent(data.package.folder_name)}` : ""}`}
+                  href={workspaceHref(`#/package?occurrence=${occurrence}${data.package ? `&folder=${encodeURIComponent(data.package.folder_name)}` : ""}`)}
                 >
                   {tr.manualContinue}
                 </a>

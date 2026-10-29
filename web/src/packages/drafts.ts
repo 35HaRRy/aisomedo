@@ -1,5 +1,6 @@
 import type { ActiveEditorOut } from "../api/openapi";
 import type { RangeInput } from "./ranges";
+import type { DemoRuntime } from "../demo/runtime";
 
 export type DraftKey = { origin: string; clientId: number; packageId: number };
 type Identity = Pick<DraftKey, "origin" | "clientId">;
@@ -154,6 +155,15 @@ export function createDraftStore(transaction: DraftTransaction, entries: Entries
       return result.sort((a, b) => b.packageId - a.packageId);
     },
   };
+}
+
+export function demoDraftStore(runtime: DemoRuntime) {
+  return createDraftStore(async (key, operation) => {
+    runtime.signal.throwIfAborted();
+    const outcome = operation(runtime.drafts.get(key) ?? null);
+    if (outcome.write) { if (outcome.next === null) runtime.drafts.delete(key); else runtime.drafts.set(key, structuredClone(outcome.next)); }
+    return outcome.result;
+  }, async prefix => { runtime.signal.throwIfAborted(); return [...runtime.drafts].filter(([key]) => key.startsWith(prefix)); });
 }
 
 let database: Promise<IDBDatabase> | null = null;

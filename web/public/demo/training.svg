@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#101827"/>
+  <rect x="64" y="64" width="592" height="1152" rx="12" fill="#172234" stroke="#5195ff" stroke-width="2"/>
+  <circle cx="360" cy="550" r="180" fill="none" stroke="#5195ff" stroke-width="24"/>
+  <path d="M240 550h240M360 430v240" stroke="#00c997" stroke-width="24"/>
+  <text x="100" y="160" fill="#f1f5fc" font-size="40" font-family="sans-serif">AISOMEDO</text>
+  <text x="100" y="920" fill="#f1f5fc" font-size="64" font-family="sans-serif" font-weight="bold">DEMO</text>
+  <text x="100" y="990" fill="#93a6c2" font-size="28" font-family="sans-serif">Sample media / Örnek medya</text>
+</svg>

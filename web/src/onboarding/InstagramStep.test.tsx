@@ -32,7 +32,9 @@ it.each([200, 422, 502, 503])("clears masked token without leaking secrets for s
   await waitFor(() => expect(input).toHaveValue(""));
   expect(document.body.textContent).not.toContain("private-token");
   expect(window.location.href).not.toContain("private-token");
-  expect(localStorage.length + sessionStorage.length).toBe(0);
+  expect(Object.keys(localStorage)).toEqual(["aisomedo:real-paired:v1"]);
+  expect(localStorage.getItem("aisomedo:real-paired:v1")).toBe("1");
+  expect(sessionStorage.length).toBe(0);
   if (status === 200) await screen.findByText(/@dojo · Bağlantı doğrulandı/);
   else await screen.findByRole("alert");
 });

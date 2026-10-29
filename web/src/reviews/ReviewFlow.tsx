@@ -9,6 +9,7 @@ import { CollapsiblePanel } from "../components/CollapsiblePanel";
 import { MediaActionIcon } from "../packages/MediaActionIcon";
 import { SavedReelPanel } from "../packages/SavedReelPanel";
 import { usePackageEditorContext } from "../packages/PackageEditorProvider";
+import { workspaceHref } from "../demo/routing";
 
 type Decision = "approve" | "skip" | "reschedule";
 const copy = tr.review;
@@ -102,7 +103,7 @@ function ReviewPanel({ id, onRefresh, stale }: { id: number; onRefresh: () => vo
         {message && <p role="alert" className="notice">{message}</p>}
         {review && <CollapsiblePanel className="summary-sheet review-sheet" title={review.package_folder} actions={<>
           <button className="media-icon-button" disabled={busy} onClick={refresh} aria-label={copy.refresh} title={copy.refresh}><MediaActionIcon action="refresh" /></button>
-          {!publishing && <a className="media-icon-button" href="#/package" aria-label={copy.edit} title={copy.edit}><MediaActionIcon action="edit" /></a>}
+          {!publishing && <a className="media-icon-button" href={workspaceHref("#/package")} aria-label={copy.edit} title={copy.edit}><MediaActionIcon action="edit" /></a>}
         </>}>
           {review.status in copy.statuses && <p role="status">{copy.statuses[review.status as keyof typeof copy.statuses]}</p>}
           <div className="review-content"><div data-tour="review-preview">
@@ -124,7 +125,7 @@ function ReviewPanel({ id, onRefresh, stale }: { id: number; onRefresh: () => vo
           </div></div>
         </CollapsiblePanel>}
       </>}
-    <div className="upload-actions review-navigation">{(!review || gone || done) && <button disabled={busy} onClick={refresh}>{copy.refresh}</button>}<a href="#/dashboard">{copy.back}</a></div>
+    <div className="upload-actions review-navigation">{(!review || gone || done) && <button disabled={busy} onClick={refresh}>{copy.refresh}</button>}<a href={workspaceHref("#/dashboard")}>{copy.back}</a></div>
   </>;
 }
 
@@ -138,8 +139,8 @@ function DueContinuation({ data, occurrenceId, packageFolder, onRefresh, stale }
   const boundReview = useRef<number | null>(null);
   if (!changed && action?.state === "review_ready" && action.review_id !== null) boundReview.current = action.review_id;
   if (boundReview.current !== null) return <ReviewPanel key={boundReview.current} id={boundReview.current} onRefresh={onRefresh} stale={stale || changed} />;
-  if (changed) return <p role="status" className="notice">{copy.changedPackage} <a href="#/dashboard">{copy.back}</a></p>;
-  if (!action) return <p role="status" className="notice">{tr.reviewGone} <a href="#/dashboard">{copy.back}</a></p>;
+  if (changed) return <p role="status" className="notice">{copy.changedPackage} <a href={workspaceHref("#/dashboard")}>{copy.back}</a></p>;
+  if (!action) return <p role="status" className="notice">{tr.reviewGone} <a href={workspaceHref("#/dashboard")}>{copy.back}</a></p>;
   return <><header className="page-heading"><h1>{tr.package}</h1><p>{tr.packageIntro}</p></header><PackageManager /><SavedReelPanel /></>;
 }
 
