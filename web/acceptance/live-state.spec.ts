@@ -40,6 +40,14 @@ test("live profiles merge drafts and recover without polling through the gateway
     await a.getByRole("listitem").filter({ hasText: "live-a.mp4" })
       .getByRole("button", { name: "Bölümleri kaydet" }).click();
     await expect(a.getByText("Bölümler kaydedildi.")).toBeVisible();
+    // Let the first save's worker previews finish before submitting the second
+    // draft: their invalidations temporarily disable writes during live resync.
+    await expect.poll(async () => {
+      const snapshot = await (await second.request.get("/api/packages/active/editor")).json() as ActiveEditorOut;
+      return snapshot.media.every(media => !!media.thumbnail_url)
+        && snapshot.media.find(media => media.media_id === idA)?.section_preview?.status === "ready";
+    }, { timeout: 60_000 }).toBe(true);
+    await expect(b.getByRole("listitem").filter({ hasText: "live-a.mp4" })).toContainText("5.00 s");
     await b.getByRole("listitem").filter({ hasText: "live-b.mp4" })
       .getByRole("button", { name: "Bölümleri kaydet" }).click();
     await expect(b.getByText("Bölümler kaydedildi.")).toBeVisible();
