@@ -17,12 +17,11 @@ export function useDraft<T>(source: T | null, initial: T) {
   const [draft, setDraft] = useState(initial);
   const [dirty, setDirty] = useState(false);
   const [baseline, setBaseline] = useState("");
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
   const fingerprint = JSON.stringify(source);
-  useEffect(() => {
-    if (source && !dirtyRef.current) { setDraft(source); setBaseline(fingerprint); }
-  }, [fingerprint]);
+  // Hydrate before committing enabled inputs; an effect leaves an editable empty draft.
+  if (source && !dirty && baseline !== fingerprint) {
+    setDraft(source); setBaseline(fingerprint);
+  }
   return { draft, dirty, changed: dirty && baseline !== fingerprint,
     edit: (value: T) => { setDirty(true); setDraft(value); },
     reload: () => { if (source) { setDraft(source); setBaseline(fingerprint); setDirty(false); } },
