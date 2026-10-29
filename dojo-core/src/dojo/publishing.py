@@ -2345,9 +2345,23 @@ class DojoPublishing:
         """Return a read-only manifest view of a completed package."""
         package = self._get_completed_package(folder_name)
         manifest = self._load_manifest(package)
+        selections = manifest_selections(manifest)
+        photo_seconds = self.get_montage_limits().photo_duration_seconds
+        media = []
+        for entry in manifest.get("media", []):
+            mid = entry["media_id"]
+            thumbnail = manifest.get("thumbnails", {}).get(mid, {})
+            media.append({
+                **public_media(entry),
+                "effective_duration": effective_duration(entry, selections.get(mid), photo_seconds)
+                    if not str(entry.get("content_type", "")).startswith("video/")
+                    or source_duration(entry) is not None else None,
+                "thumbnail_ref": thumbnail.get("artifact_ref")
+                    if thumbnail.get("status") == "ready" else None,
+            })
         return {
             "folder_name": package.folder_name,
-            "media": [public_media(entry) for entry in manifest.get("media", [])],
+            "media": media,
             "order": manifest.get("order", []),
             "caption": manifest.get("caption"),
             "render_revision": manifest.get("render_revision"),

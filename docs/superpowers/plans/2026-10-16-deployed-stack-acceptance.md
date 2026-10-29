@@ -33,7 +33,7 @@
 - `ops/acceptance/fixtures.py`: fixture-only HTTP service: clock, fake Graph API, notification collector, evidence.
 - `ops/acceptance/bootstrap.py`: test-only backend/worker composition and operator fixture setup.
 - `ops/acceptance/run.py`: disposable stack lifecycle, certificates, browser invocation, evidence and cleanup.
-- `ops/acceptance/Dockerfile.browser`: Node 22, existing npm lockfile dependencies, Chromium and certificate trust tools.
+- `ops/acceptance/Dockerfile.browser`: Node 26.13.0, existing npm lockfile dependencies, Chromium and certificate trust tools.
 - `ops/acceptance/gateway-tls.caddy`: HTTPS front door forwarding to the unchanged production gateway.
 - `ops/docker-compose.acceptance.yml`: override plus fixtures, TLS front door, and browser runner.
 - `ops/tests/test_acceptance.py`: focused fixture/wiring/runner checks using existing pytest environment.
@@ -81,7 +81,7 @@ Keep fixture/bootstrap sources mounted read-only into production backend/worker 
 - [ ] Run focused tests and confirm runner-dependent checks fail.
 - [ ] Implement runner with subprocess argument arrays, finite command timeouts, `try/finally`, unique project prefix `dojo-acceptance-`, fresh scratch directory, explicit `--env-file`, and production Compose plus acceptance override. Clear conflicting inherited Compose/application variables from subprocess environment. Keep scratch files until services have stopped. Inspect merged config to verify production services and project-scoped volumes.
 - [ ] Generate throwaway CA and SAN certificate for `dojo.acceptance.test`. TLS front door uses that certificate and proxies unchanged gateway HTTP. Network alias resolves hostname only inside test network. Python fake trusts CA explicitly; browser runner installs CA into OS and Chromium NSS trust stores. Never use global ignore-HTTPS flags. Preserve production `COOKIE_SECURE=true` and HTTPS URL validation.
-- [ ] Add browser tool image using Node 22, `web/package-lock.json`, Playwright Chromium installation and certificate tools. Run browser on Compose network, mounting output and test certificate material; no host ports are needed. Fixtures run from backend image; backend/worker bootstrap and fixture sources are read-only mounts. Override verification image references for init/backend/worker/gateway and shorten worker interval to 1 second.
+- [ ] Add browser tool image using Node 26.13.0, `web/package-lock.json`, Playwright Chromium installation and certificate tools. Run browser on Compose network, mounting output and test certificate material; no host ports are needed. Fixtures run from backend image; backend/worker bootstrap and fixture sources are read-only mounts. Override verification image references for init/backend/worker/gateway and shorten worker interval to 1 second.
 - [ ] Assert real stack readiness, run seed once, then browser runner; collect bounded logs/status and evidence on failure. Limit evidence directory permissions because seed pairing codes are sensitive even when synthetic. Always remove only invocation-owned containers/volumes/network; expose cleanup failures.
 - [ ] Verify unit checks/typechecks and `docker compose ... config --format json` through runner dry preparation tests. Build and start disposable stack; require real `/ready`, built web health asset and trusted HTTPS responses, then cleanup.
 - [ ] Commit: `test: run isolated production acceptance stack`.

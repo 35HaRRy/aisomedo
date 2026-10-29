@@ -15,7 +15,7 @@ export function initializeTheme() {
   document.documentElement.dataset.theme = storedTheme() ?? (window.matchMedia?.(systemQuery).matches ? "dark" : "light");
 }
 
-export function ThemeToggle() {
+export function ThemeToggle({ floating = false }: { floating?: boolean }) {
   const [preference, setPreference] = useState(storedTheme);
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.(systemQuery).matches ?? false);
   const theme = preference ?? (systemDark ? "dark" : "light");
@@ -26,9 +26,10 @@ export function ThemeToggle() {
     return () => query?.removeEventListener("change", change);
   }, []);
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
-  return <button type="button" className="theme-toggle" onClick={() => {
+  const label = theme === "dark" ? "Açık Mod" : "Koyu Mod";
+  return <button type="button" className={`theme-toggle${floating ? " theme-toggle-floating" : ""}`} aria-label={label} title={label} onClick={() => {
     const next = theme === "dark" ? "light" : "dark";
     setPreference(next);
     try { localStorage.setItem("dojo-theme", next); } catch { /* Appearance still works without browser storage. */ }
-  }}><MediaActionIcon action={theme === "dark" ? "sun" : "moon"} />{theme === "dark" ? "Açık Mod" : "Koyu Mod"}</button>;
+  }}><MediaActionIcon action={theme === "dark" ? "sun" : "moon"} />{!floating && label}</button>;
 }

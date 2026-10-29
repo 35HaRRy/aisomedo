@@ -1,265 +1,105 @@
 # Aisomedo
 
-> **Status: WIP / MVP** — this is an early, MVP-scoped implementation. Features listed as *out of scope* in the design spec are not built yet.
+**From instant captured media to Instagram Reels. You stay in control.**
 
-Aisomedo that helps administrators collect class photos and videos, prepare them, and publish them to Instagram as branded Reels — on a recurring schedule and with a human approval step before anything goes public.
+Aisomedo helps a class administrator turn photos and videos into branded Instagram Reels. Collect media, choose the order and video sections, review the result, then approve publication. A schedule helps you stay on track. It never replaces your approval.
 
-## What it does
+![Aisomedo dashboard with an active package and a review ready to open](web/public/promotion/web/dashboard.png)
 
-- Stores and manages the media files (photos and videos) intended for publication.
-- Lets administrators order, trim, and caption a package of media.
-- Schedules publication every other Monday on an `Yayın Planı`.
-- Renders an immutable, branded 1080x1920 Reel for review.
-- Requires approval (Review / Skip / Reschedule) before any post is published.
-- Publishes the exact reviewed artifact through the official Instagram Graph API.
-- Keeps an auditable history of every action, and renames a package `-completed` only after Instagram confirms publication.
+## Why Aisomedo?
 
-There are **no user accounts**. Trusted Android devices and browsers are paired once using short-lived, one-time codes; every paired client has equal permissions.
+- **One place to prepare a post.** Media, editing, branding, captions, and review belong to the same publishing flow.
+- **Keep your style.** Add your logo and optional opening and closing cards to a vertical Reel.
+- **Keep the final decision.** Approve, skip, or reschedule a review. Opening a preview does not publish it.
+- **Keep a clear history.** A package is completed only after Instagram confirms publication. You can view past packages and activity.
+- **Use web and Android.** Pair trusted browsers and phones with one-time codes. There are no passwords or user roles; paired clients have equal access.
 
-**Stack:** Kotlin (Android), React + TypeScript (web), FastAPI (backend), Python worker (scheduler/render/publisher), PostgreSQL.
+This is a self-hosted project under active development, not a managed social media service. No measured productivity claims are made.
 
-## Repository layout
+## Start locally on Windows
 
-| Path          | Purpose                                                        |
-| ------------- | -------------------------------------------------------------- |
-| `dojo-core/`  | Shared domain logic, adapters, SQLAlchemy models, Alembic migrations |
-| `backend/`    | FastAPI public API and CLI tools                               |
-| `worker/`     | Dedicated scheduler / render / publication process             |
-| `web/`        | React + Vite web dashboard                                     |
-| `android/`    | Kotlin Android app                                             |
-| `ops/`        | Docker Compose stack and environment templates                |
+Install **Git, PowerShell, and Docker Desktop**; start Docker's Linux container engine. The stack uses **Node.js 26.13.0/npm, React 19.3.1, TypeScript, Vite; Python 3.12/uv, FastAPI/Uvicorn; PostgreSQL 18, SQLAlchemy, psycopg, Alembic; FFmpeg/ffprobe, Pillow/pillow-heif; Caddy 2; Cryptography/Fernet, HTTPX, and the Meta Instagram API**. Docker installs these runtime/build dependencies; host Node is only needed for web development. Android (Kotlin/Jetpack Compose) and Firebase/FCM are optional.
 
-## Requirements
+1. Run in PowerShell (skip the first two lines if already in the repository):
 
-- Python 3.12
-- Node.js 22 (web)
-- Docker (ops stack)
-- FFmpeg (media rendering / tests)
+   ```powershell
+   git clone https://github.com/35HaRRy/aisomedo.git
+   Set-Location aisomedo
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\start-local.ps1 -PairingCode
+   ```
 
-## Getting started
+2. On first startup, the script creates private **`ops/.env.local`** with the required initial values below. No manual credentials are needed for the local demo. If the file already exists, check these assignments; the script preserves existing values and only adds a missing encryption key.
 
-### Full stack (Docker Compose)
+   | Required setting | Initial local value |
+   | --- | --- |
+   | `POSTGRES_PASSWORD` | Automatically generated database password |
+   | `SIGNED_URL_SECRET` | Automatically generated signing secret |
+   | `META_TOKEN_ENCRYPTION_KEY` | Automatically generated Fernet key; shared by API/worker |
+   | `PUBLIC_BASE_URL`, `PUBLIC_HTTPS_ORIGIN` | Both `http://localhost:9081` |
+   | `COOKIE_SECURE` | `false` for local HTTP only |
 
-```bash
-cp ops/.env.example ops/.env        # set POSTGRES_PASSWORD
-docker compose --env-file ops/.env -f ops/docker-compose.yml up --build
-```
+   Keep secrets stable and private; never commit this file or put secrets in `VITE_*`. Compose supplies `DATABASE_URL`; do not add a host database URL.
 
-The database listens on `5434` and the backend on `8000`.
+3. Open **http://localhost:9081**, choose **Uygulamayı aç**, then enter the printed one-time code and a browser name to **Eşleştir**.
+4. For rendering/scheduling, opt in separately and type `START` when prompted:
 
-### Backend from terminal (same `ops/.env`)
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\start-local.ps1 -StartWorker
+   ```
 
-```powershell
-docker compose --env-file ops/.env -f ops/docker-compose.yml up db
-powershell -File ops/run-backend.ps1
-```
+   Keep the test plan disabled: a configured worker can publish after approval. Real Instagram publishing requires a professional account, an Instagram Login token with publishing permissions, and publicly reachable HTTPS media URLs; localhost is not sufficient. Browser OAuth currently uses a stub; use **Instagram erişim tokenı → Token ile bağlan** instead.
 
-`ops/run-backend.ps1` loads `ops/.env` (shared with compose), then derives
-the local `DATABASE_URL` with `@localhost:5434` (compose uses `@db:5432`,
-so the URL itself can't be shared verbatim). CLI tools reuse it too:
+[Detailed Windows setup, environment/Meta settings, and native installation →](docs/guide/windows-local-setup.md) · [Browser setup, restart/stop, and Android connection →](docs/guide/getting-started.md)
 
-```powershell
-. ./ops/Load-Env.ps1
-uv run --project backend dojo-create-pairing-code create-code
-```
+## A simple publishing flow
 
-### Python workspace
+### 1. Upload and arrange your media
 
-```bash
-uv sync --all-packages
-```
+Open **Güncel Paket**. Expand **Fotoğraf ve video yükle** and select files. Wait until each file is accepted into the package. Then arrange the media and choose the video sections you want to keep.
 
-Admin CLI (after `uv sync`), for example to mint a pairing code:
+![The active package, media cards, and saved Reel preview](web/public/promotion/web/package.png)
 
-```bash
-uv run --project backend dojo-create-pairing-code create-code
-uv run --project backend dojo-consent set-policy --version 1 --text "..."
-uv run --project backend dojo-settings set-upload-limits --max-file-bytes 2147483648
-```
+Save your edits before rendering. An empty video selection means “use the whole video,” not “remove the video.” [Detailed upload and editing guide →](docs/guide/publishing-a-reel.md#1-upload-media)
 
-### Web dashboard
+### 2. Prepare and review the Reel
 
-```bash
-cd web
-npm ci
-npm run dev
-```
+Render the saved montage, then open the publication review from **Kontrol Paneli** when it is ready. Check both the Reel and its caption. Rendering a preview does not publish it.
 
-## Usage (simple flow)
+![Publication review with the Reel, caption, and three decision options](web/public/promotion/web/review.png)
 
-### Android package uploads
+[Rendering, manual review, and schedule details →](docs/guide/publishing-a-reel.md#3-render-and-open-a-review)
 
-In **Paket → Aktif Paket**, choose **Fotoğraf/video seç** from a document source
-with durable read access. Progress, **Duraklat**, **Devam et** and **Tekrar dene**
-share a persistent queue with the background notification. Accepted chunks are
-reconciled on recovery; Android suspension/force-stop restrictions still apply.
-Queued/processing is not finalized success.
+### 3. Approve, or choose another time
 
-[Turkish usage guide](docs/rehberler/issue-33-android-upload-deneme-rehberi.md) ·
-[Verification and blocked device checks](docs/verification/issue-33-android-upload.md).
+Choose **Onayla ve yayınla** only when you want to publish, then confirm. Or use **Bu zamanı atla** / **Başka zamana planla**. A failed or uncertain send is not a completed publication; refresh and check the result before trying again.
 
-### Guided browser setup
+After Instagram confirms success, find the package under **Tamamlanmış paketler**. [Decisions and completion →](docs/guide/publishing-a-reel.md#4-make-a-decision) · [Settings and recovery →](docs/guide/settings-and-recovery.md)
 
-After pairing, incomplete setup opens at `#/onboarding`; opening Settings or the
-dashboard redirects there until setup is complete. Once complete, Settings edits
-each section directly with no setup link. Configure Instagram, a Monday publication plan,
-media consent, logo, caption template, and optional intro/outro cards directly
-in the wizard. A valid disabled plan counts as configured without enabling
-publishing. Optional cards never block readiness; skipping retains existing cards.
+New-browser walkthroughs explain the important controls. Use **Tüm tanıtımları geç** to skip them all, or **Yardım → Tanıtımları yeniden başlat** to see them again. Tour preferences stay in that browser.
 
-Instagram supports OAuth account selection and a token obtained independently
-from Instagram: enter it in **Instagram erişim tokenı**, then **Token ile bağlan**.
-The backend verifies and encrypts the credential; the masked input clears after
-submission, and the application does not store it in browser storage or URLs.
+## Built with
 
-Installations start with a default media-consent policy (version 1) reading
-"Görsellerimin paylaşılmasını onaylıyorum." An administrator updates its text with
-`dojo-consent set-policy`; acceptance applies installation-wide to the displayed version. If a newer policy
-is committed before submission, the wizard reloads it and requires a new explicit
-acknowledgement; it never automatically accepts changed text.
+| Part | Technology |
+| --- | --- |
+| Web workspace | React 19.3.1, TypeScript, Vite, Node.js 26.13.0 |
+| Android client | Kotlin, Jetpack Compose |
+| API | FastAPI |
+| Domain and data | Python, SQLAlchemy, Alembic, PostgreSQL |
+| Background work | Dedicated scheduler, FFmpeg rendering, Instagram publishing |
+| Operations | Docker Compose, Caddy, GitHub Actions, signed Android releases |
 
-Logo uploads accept single-frame PNG/JPEG. Intro/outro cards also accept MP4,
-MOV, WebM, MKV and AVI videos. Each upload is limited to **10 MiB** and
-**4096 pixels per side**; card duration is a positive integer in seconds (blank
-uses the default photo duration). Setup uses an integrated step widget with
-shared actions; finishing replaces the resume-later action. Uploads are
-independent of active packages. Partial saves
-preserve other settings and existing package snapshots. Scheduling requires ready
-setup and an enabled valid plan.
+Repository: `web/`, `android/`, `backend/`, `dojo-core/`, `worker/`, and `ops/`. See [domain terms](CONTEXT.md), [product design](docs/specs/dojo-reel-publishing-mvp.md).
 
-Verification evidence: [issue #26](docs/verification/issue-26-web-onboarding.md).
+For web development, install Node.js 26.13.0, then run `npm ci` and `npm run dev` inside `web/`. For checks, use `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:browser`. The Python workspace uses Python 3.12 and `uv`; backend/domain/worker integration tests also need PostgreSQL through Docker and FFmpeg.
 
-### Package media in the browser
+## Android app
 
-In **Güncel Paket**, use **Paketten çıkar / Geri yükle** without deleting original
-files. Drag a media item's **Sürükle** handle or use **Yukarı / Aşağı** to persist
-montage order. Open **Bölümleri düzenle** on a video to drag retained sections on
-the timeline or enter exact start/end seconds. Selected sections play in source
-order; no selection means the whole video. Only one video editor opens at a time,
-but unsaved drafts across several videos are saved together with **Bölümleri kaydet**.
+Use the native Android client to upload media, follow your package, and open reviews from your phone.
 
-The proposed total includes photos and intro/outro cards. Correct invalid ranges
-or excess duration before saving. Edits mark the existing render stale; they do
-not automatically render or publish. Navigation asks before discarding unsaved
-drafts. If a write result is uncertain, refresh before sending it again.
+- [Download signed APK · v0.2.0](https://github.com/35HaRRy/aisomedo/releases/download/android-v0.2.0/aisomedo.apk)
+- [Download SHA-256 checksum](https://github.com/35HaRRy/aisomedo/releases/download/android-v0.2.0/aisomedo.apk.sha256)
+- [All Android releases](https://github.com/35HaRRy/aisomedo/releases)
 
-**Tamamlanmış paketler** is read-only: view processed media and available final
-Reels, or download original/processed/render files through authenticated
-same-origin links. Missing artifacts are shown as unavailable. Browsing archives
-never moves the active upload queue into an archived package.
+Download the APK to your phone, allow installation from that source when Android asks, and install it. Enter your installation’s **HTTPS server address**, then pair with a fresh one-time code. `localhost` on a phone is the phone itself, not your Windows computer. The local loopback-only demo above is not a phone-accessible HTTPS deployment.
 
-Verification evidence: [issue #29](docs/verification/issue-29-web-media-management.md).
-This package editor does not complete the separate #30/#35 web approval/publish work.
-
-### Publishing flow
-
-1. **Pair** an Android device or browser using a one-time pairing code.
-2. **Upload** photos and videos into the active package.
-3. **Order and trim** the media into the intended montage.
-4. **Preview** the rendered, branded Reel.
-5. **Approve** the review when the scheduled `Yayın Zamanı` is due.
-6. The package is **published** to Instagram and archived as `-completed`.
-
-## Tests
-
-The Python tests use a real PostgreSQL container (Testcontainers) and small FFmpeg media fixtures, so Docker and FFmpeg must be available.
-
-```bash
-# Run each package's test suite
-uv run --project dojo-core pytest dojo-core/tests -v
-uv run --project backend pytest backend/tests -v
-uv run --project worker pytest worker/tests -v
-```
-
-Lint and typecheck:
-
-```bash
-uv run --project dojo-core ruff check dojo-core/src dojo-core/tests
-uv run --project backend ruff check backend/src backend/tests
-uv run --project worker ruff check worker/src worker/tests
-
-uv run --project dojo-core mypy dojo-core/src/dojo
-uv run --project backend mypy backend/src/backend
-uv run --project worker mypy worker/src/worker
-```
-
-Web build and typecheck:
-
-```bash
-cd web
-npm run typecheck
-npm run build
-npm test
-npx playwright install chromium
-npm run test:browser
-```
-
-Browser tests run desktop and touch/mobile Chromium against synthetic MP4 media
-and deterministic API fixtures. If port 3000 is occupied, use
-`PLAYWRIGHT_PORT=3100 npm run test:browser` (PowerShell:
-`$env:PLAYWRIGHT_PORT='3100'; npm run test:browser`).
-
-Deployment verification (needs Docker; uses a disposable project and synthetic
-env, never reads `ops/.env`):
-
-```bash
-bash ops/verify-prod.sh        # health checks, log bounds, both proxy modes
-bash ops/verify-monitoring.sh  # runtime gateway checks, secret mount, safe JSON logs
-```
-
-## Production monitoring
-
-Every production service has a container health probe and bounded JSON logs
-(3 × 10 MiB per service). Operational alerts — low disk, disk recovery, failed
-job — are opt-in via `ops/docker-compose.monitoring.yml`, which enables real
-FCM delivery and mounts its credentials read-only:
-
-```bash
-docker compose --env-file ops/.env -p dojo-prod \
-  -f ops/docker-compose.prod.yml -f ops/docker-compose.<mode>.yml \
-  -f ops/docker-compose.monitoring.yml up -d --build
-```
-
-Operator runbook: [`docs/rehberler/production-monitoring.md`](docs/rehberler/production-monitoring.md)
-(settings, health diagnosis, disk coverage, hosted HTTPS checks, drills).
-Client message contract:
-[`docs/contracts/operational-alerts.md`](docs/contracts/operational-alerts.md).
-
-## Domain language
-
-Canonical terminology (`Paylaşım Paketi`, `Yayın Planı`, `Yayın Zamanı`, `Yayın İncelemesi`, `Tamamlanmış Paket`) is defined in [`CONTEXT.md`](CONTEXT.md). The full product spec lives in [`docs/specs/dojo-reel-publishing-mvp.md`](docs/specs/dojo-reel-publishing-mvp.md).
-# Web dashboard worker health
-
-## Browser dashboard
-
-Run `npm ci` and `npm run dev` under `web/` alongside the backend on port 8000.
-The browser uses same-origin HttpOnly session cookies. Get a one-time pairing
-code from an already paired client or the operator pairing CLI documented below,
-then enter the code and a recognizable browser name. No password or local-storage
-token is used.
-
-Web and Android foreground views subscribe to authenticated server-sent events.
-Committed changes invalidate affected snapshots; idle views do not poll or fall
-back to periodic refresh. Android closes its stream in the background. Transport
-loss disables editing and mutations until the stream and required snapshots have
-resynchronized. Existing background uploads and push registration are unchanged.
-
-Editor drafts, including incomplete range input and uncertain saves, persist on
-the same device/profile, scoped to the server, paired identity, and package.
-Independent edit groups merge; conflicting groups require an explicit choice and
-a new conditional save. Restored drafts never submit automatically. Storage
-failure is visible and blocks unprotected commands. Revocation removes access,
-not another identity's drafts; Android's explicit change-server action clears
-that pairing's local drafts.
-Browser/app data deletion is not a backup mechanism. Verification evidence and
-environment limitations are recorded in [live-state verification](docs/verification/live-state-sse.md).
-
-The worker writes progress to the `worker-health` runtime volume. The backend
-mounts it read-only; dashboard health never substitutes API readiness for worker
-progress. Both Compose bases use `/run/dojo-worker/health.json`.
-
-When upgrading an existing `.env`, replace the old
-`WORKER_HEALTH_PATH=/tmp/dojo-worker-health.json` value with
-`WORKER_HEALTH_PATH=/run/dojo-worker/health.json`. Custom container paths must stay
-inside `/run/dojo-worker`. Outside Compose, configure the backend and worker to
-use the same local file. Missing records show unknown; stale records show unhealthy.
+[Android installation and connection steps →](docs/guide/getting-started.md#android-installation-and-connection)

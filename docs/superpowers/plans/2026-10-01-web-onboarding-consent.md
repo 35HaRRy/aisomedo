@@ -6,7 +6,7 @@
 
 **Architecture:** Extend the existing setup, publishing, and Meta facades rather than introduce another service. Independent branding assets and partial settings operations feed a step-based wizard inside the current session-protected shell; OpenAPI generates browser DTOs.
 
-**Tech Stack:** Existing Python 3.12, FastAPI/Pydantic, SQLAlchemy/PostgreSQL, Pillow, React 18/TypeScript/Vite, pytest, Vitest/Testing Library.
+**Tech Stack:** Existing Python 3.12, FastAPI/Pydantic, SQLAlchemy/PostgreSQL, Pillow, React 19.3.1/TypeScript/Vite, pytest, Vitest/Testing Library.
 
 **Spec:** `docs/superpowers/specs/2026-10-01-web-onboarding-consent-design.md` (user approved).
 

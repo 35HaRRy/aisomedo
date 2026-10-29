@@ -701,6 +701,17 @@
             "title": "Content Type",
             "type": "string"
           },
+          "effective_duration": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Duration"
+          },
           "filename": {
             "title": "Filename",
             "type": "string"
@@ -741,6 +752,17 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "thumbnail_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thumbnail Url"
           },
           "uploaded_at": {
             "format": "date-time",
@@ -1275,9 +1297,9 @@
           "processed",
           "preview_url",
           "artifacts",
+          "effective_duration",
           "is_video",
-          "source_duration",
-          "effective_duration"
+          "source_duration"
         ],
         "title": "EditorMediaOut",
         "type": "object"

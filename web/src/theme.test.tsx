@@ -35,6 +35,16 @@ it("responds to system changes when no preference is stored", () => {
   expect(screen.getByRole("button", { name: "Koyu Mod" })).toBeVisible();
 });
 
+it("keeps the floating toggle icon-only with an accessible action name", () => {
+  render(<ThemeToggle floating />);
+  const toggle = screen.getByRole("button", { name: "Açık Mod" });
+  expect(toggle).toHaveTextContent(/^$/);
+  expect(toggle.querySelector("svg")).not.toBeNull();
+  fireEvent.click(toggle);
+  expect(screen.getByRole("button", { name: "Koyu Mod" })).toBeVisible();
+  expect(document.documentElement).toHaveAttribute("data-theme", "light");
+});
+
 it("ignores invalid preferences and still switches when browser storage is blocked", () => {
   localStorage.setItem("dojo-theme", "invalid");
   vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });

@@ -6,7 +6,7 @@
 
 **Architecture:** PostgreSQL owns editable package state and commits durable invalidations together with changes. One notification listener per API process fans out SSE signals; one foreground coordinator per client instance refreshes affected views and locks editing when synchronization is unhealthy. Existing HTTP reads and domain validation remain in use.
 
-**Tech Stack:** Python 3.12+, SQLAlchemy 2, PostgreSQL 18, existing Psycopg 3, FastAPI/Starlette; React 18, TypeScript, browser Fetch/IndexedDB; Kotlin, coroutines, existing OkHttp 4.12 and app-private files. Existing pytest, Vitest, Playwright, JUnit, and MockWebServer test infrastructure.
+**Tech Stack:** Python 3.12+, SQLAlchemy 2, PostgreSQL 18, existing Psycopg 3, FastAPI/Starlette; React 19.3.1, TypeScript, browser Fetch/IndexedDB; Kotlin, coroutines, existing OkHttp 4.12 and app-private files. Existing pytest, Vitest, Playwright, JUnit, and MockWebServer test infrastructure.
 
 **Spec:** `docs/superpowers/specs/2026-10-20-live-state-sse-design.md`
 

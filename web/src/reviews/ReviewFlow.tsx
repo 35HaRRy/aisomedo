@@ -105,12 +105,12 @@ function ReviewPanel({ id, onRefresh, stale }: { id: number; onRefresh: () => vo
           {!publishing && <a className="media-icon-button" href="#/package" aria-label={copy.edit} title={copy.edit}><MediaActionIcon action="edit" /></a>}
         </>}>
           {review.status in copy.statuses && <p role="status">{copy.statuses[review.status as keyof typeof copy.statuses]}</p>}
-          <div className="review-content"><div>
+          <div className="review-content"><div data-tour="review-preview">
             {detail?.render_ready && detail.preview_url ? <video key={`${detail.preview_url}-${reload}`} src={detail.preview_url} controls playsInline preload="auto" aria-label={copy.video}
               onLoadedData={() => { setPreviewReady(true); setPreviewFailed(false); }} onError={() => { setPreviewFailed(true); setPreviewReady(false); }} />
               : <p role="status">{copy.stale}</p>}
             {previewFailed && <p role="status" className="notice">{tr.editor.previewFailed}</p>}
-          </div><div className="review-decision"><h3>{copy.caption}</h3><p className="review-caption">{review.caption ?? copy.noCaption}</p>
+          </div><div className="review-decision" data-tour="review-decision"><h3>{copy.caption}</h3><p className="review-caption">{review.caption ?? copy.noCaption}</p>
             <p className="muted">{copy.previewHelp}</p>
             <div className="upload-actions"><button className="primary icon-label-button" disabled={blocked || !previewReady} onClick={() => setDecision("approve")}><MediaActionIcon action="approve" />{copy.approve}</button>
               <button className="icon-label-button" disabled={blocked} onClick={() => setDecision("skip")}><MediaActionIcon action="skip" />{copy.skip}</button>

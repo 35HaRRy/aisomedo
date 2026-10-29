@@ -6,7 +6,7 @@
 
 **Architecture:** Keep existing backend upload/worker semantics; add a read-only limits endpoint and generated browser DTOs. A React-independent controller owns a sequential transfer queue and client-scoped metadata; a paired-shell provider preserves selected files across navigation and renders controls in Current Package.
 
-**Tech Stack:** Existing Python 3.12, FastAPI/Pydantic, React 18, TypeScript/Vite, Web Crypto, localStorage, pytest, Vitest/Testing Library.
+**Tech Stack:** Existing Python 3.12, FastAPI/Pydantic, React 19.3.1, TypeScript/Vite, Web Crypto, localStorage, pytest, Vitest/Testing Library.
 
 **Spec:** `docs/superpowers/specs/2026-10-01-web-resumable-upload-design.md` (user approved).
 

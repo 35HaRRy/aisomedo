@@ -16,7 +16,7 @@ changes. The user explicitly accepted a five-second refresh interval.
 
 ## Existing foundations
 
-- React 18, TypeScript, and Vite already exist under `web/`; `App.tsx` is a placeholder.
+- React 19.3.1, TypeScript, and Vite already exist under `web/`; `App.tsx` is a placeholder.
 - Pairing validates one-time codes and issues HttpOnly browser cookies.
   `/api/pairing/me` restores and verifies the session.
 - Package, review, plan, activity, and Instagram APIs already exist.

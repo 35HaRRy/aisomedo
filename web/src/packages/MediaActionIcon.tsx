@@ -21,6 +21,7 @@ const paths = {
   restore: "M8 4 3 9l5 5M3 9h11a6 6 0 0 1 0 12h-3",
   drag: "M12 2v20M2 12h20m-13-7 3-3 3 3m-6 14 3 3 3-3M5 9l-3 3 3 3m14-6 3 3-3 3",
   add: "M12 5v14M5 12h14",
+  download: "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5",
 };
 
 export function MediaActionIcon({ action }: { action: keyof typeof paths }) {

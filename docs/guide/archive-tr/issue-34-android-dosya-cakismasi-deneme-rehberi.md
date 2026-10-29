@@ -47,7 +47,7 @@ geçerlidir. Genel aktarım davranışının bütün eski sorunlarının çözü
 ## 2. Deneme ortamını hazırlayın
 
 Bu dalın kodunu içeren ayrı sunucunuz hazırsa bölüm 3'e geçin. Yeni yerel kurulum
-için Docker Desktop Linux motoru, Node.js 22/npm, Android Studio, SDK 35 ve
+için Docker Desktop Linux motoru, Node.js 26.13.0/npm, Android Studio, SDK 35 ve
 Android 10/API 29+ emülatör gerekir. Komutlar Windows PowerShell içindir.
 Uzak hazır ortamda tarayıcı adreslerini ve `$Base` değerini kendi deneme HTTPS
 adresinizle değiştirin; yerel Compose başlatma/durdurma komutlarını uygulamayın.

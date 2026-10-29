@@ -198,6 +198,7 @@ export type ClientRefOut = {
 export type CompletedMediaOut = {
   "artifacts": Array<PackageArtifactOut>;
   "content_type": string;
+  "effective_duration"?: number | null;
   "filename": string;
   "media_id": string;
   "preview_url": string | null;
@@ -205,6 +206,7 @@ export type CompletedMediaOut = {
   "removed_position"?: number | null;
   "size_bytes": number;
   "status": string;
+  "thumbnail_url"?: string | null;
   "uploaded_at": string;
 };
 

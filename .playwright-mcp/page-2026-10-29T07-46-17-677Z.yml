@@ -1,0 +1,32 @@
+- generic [ref=e2]:
+  - link "İçeriğe geç" [ref=e3] [cursor=pointer]:
+    - /url: "#content"
+  - generic [ref=e125]:
+    - button "Koyu Mod" [ref=e126] [cursor=pointer]
+    - generic [ref=e129]:
+      - generic [aria-hidden] [ref=e130]: A
+      - strong [ref=e131]: Aisomedo
+      - paragraph [ref=e132]: Paylaşmadan önce, birlikte gözden geçirin.
+      - generic [ref=e133]:
+        - link "Kişisel web sitesi" [ref=e134] [cursor=pointer]:
+          - /url: https://hayrihabip.com/
+        - link "GitHub" [ref=e138] [cursor=pointer]:
+          - /url: https://github.com/35HaRRy/aisomedo
+        - link "LinkedIn" [ref=e141] [cursor=pointer]:
+          - /url: https://www.linkedin.com/in/hayri-habip/
+        - link "X" [ref=e144] [cursor=pointer]:
+          - /url: https://x.com/35_HaRRy
+        - link "Instagram" [ref=e147] [cursor=pointer]:
+          - /url: https://www.instagram.com/hayrihabip/
+    - main [ref=e150]:
+      - heading "Tarayıcıyı eşleştir" [level=1] [ref=e151]
+      - paragraph [ref=e152]: Yayınlarını bu tarayıcıdan takip edin. Eşleştirilmiş bir cihazdan veya sistem yöneticinizden tek kullanımlık kod alın.
+      - generic [ref=e153]:
+        - generic [ref=e154]: Eşleştirme kodu
+        - textbox "Eşleştirme kodu" [ref=e155]: vrm9fztb
+        - generic [ref=e156]: Tarayıcı adı
+        - textbox "Tarayıcı adı" [ref=e157]: Test Tarayıcı
+        - generic [ref=e158]: Diğer cihazlarda tanıyabileceğiniz bir ad seçin.
+        - alert [ref=e161]: Bağlantı kurulamadı. Bağlantınızı kontrol edip tekrar deneyin.
+        - button "Eşleştir" [ref=e159] [cursor=pointer]
+      - paragraph [ref=e160]: Hesap veya parola gerekmez. Eşleştirilen tüm cihazlar aynı yetkilere sahiptir.

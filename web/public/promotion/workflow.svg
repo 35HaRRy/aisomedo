@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="400" viewBox="0 0 680 400" fill="none">
+  <rect width="680" height="400" rx="16" fill="#172b4b"/>
+  <g stroke="#93a6c2" stroke-width="2"><path d="M110 200H570" stroke-dasharray="6 8"/><rect x="38" y="115" width="133" height="166" rx="8" fill="#101827"/><rect x="252" y="140" width="176" height="120" rx="8" fill="#101827"/><rect x="518" y="78" width="120" height="244" rx="16" fill="#101827"/></g>
+  <g stroke="#5195ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m61 223 27-36 24 24 20-23 16 35M67 152h.1"/><path d="M275 174h130M275 227h130M296 165v18M384 218v18"/><rect x="278" y="190" width="47" height="19" rx="2"/><rect x="335" y="190" width="68" height="19" rx="2"/></g>
+  <circle cx="470" cy="200" r="25" fill="#008568"/><path d="m458 200 9 9 15-18" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="533" y="112" width="90" height="171" rx="4" fill="#2563eb"/><path d="m565 179 31 19-31 19v-38Z" fill="#fff"/><path d="M560 94h36M563 304h30" stroke="#93a6c2" stroke-width="3" stroke-linecap="round"/>
+  <g fill="#f1f5fc" font-family="sans-serif" font-size="14" text-anchor="middle"><text x="105" y="310">Medya</text><text x="340" y="289">Kurgu</text><text x="470" y="249">Onay</text><text x="578" y="350">Reel</text></g>
+</svg>

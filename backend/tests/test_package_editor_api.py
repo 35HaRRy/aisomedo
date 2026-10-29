@@ -271,6 +271,34 @@ def test_artifact_missing_unknown_and_traversal_responses(tmp_path):
     assert render["url"] is None and render["available"] is False
 
 
+def test_completed_cards_expose_saved_duration_and_private_thumbnail(tmp_path):
+    client, publishing, _, _, mid = app(tmp_path)
+    package = publishing.get_active_package()
+    publishing.set_selections({mid: [{"start": 0, "end": 5}]},
+                              expected_folder_name=package.folder_name)
+    manifest = publishing._load_manifest(package)
+    generation = "a" * 32
+    ref = f"media/{mid}/previews/{generation}.jpg"
+    thumbnail = tmp_path / package.folder_name / ref
+    thumbnail.parent.mkdir(parents=True, exist_ok=True)
+    thumbnail.write_bytes(b"thumbnail")
+    manifest["thumbnails"] = {mid: {"status": "ready", "generation": generation,
+                                    "artifact_ref": ref}}
+    with publishing._packages.command_transaction():
+        publishing._packages.write_package_state(package.id, manifest, content_changed=False)
+    complete_confirmed_package(publishing)
+    package = publishing.list_completed_packages()[0]
+    before = publishing._load_manifest(publishing.list_completed_packages()[0])
+    response = client.get(f"/api/packages/{quote(package.folder_name)}")
+    assert response.status_code == 200
+    media = response.json()["media"][0]
+    assert media["effective_duration"] == 5
+    assert client.get(media["thumbnail_url"]).content == b"thumbnail"
+    assert publishing._load_manifest(publishing.list_completed_packages()[0]) == before
+    client.cookies.clear()
+    assert client.get(media["thumbnail_url"]).status_code == 401
+
+
 def test_unknown_nonfinite_duration_is_readable_without_json_failure(tmp_path):
     client, publishing, _, _, _ = app(tmp_path)
     path = tmp_path / publishing.get_active_package().folder_name / "manifest.json"

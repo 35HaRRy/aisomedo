@@ -6,7 +6,7 @@
 
 **Architecture:** A read-only domain summary feeds one authenticated dashboard endpoint. A cookie-authenticated browser refresh controller drives the shell; worker status comes from the existing progress record through a shared read-only mount. Browser DTOs are generated from OpenAPI.
 
-**Tech Stack:** Existing React 18/TypeScript/Vite, FastAPI/Pydantic, Python 3.12, dojo-core, pytest; add Vitest, jsdom, and Testing Library for behavioral web tests, using versions compatible with the existing Vite and React versions.
+**Tech Stack:** Existing React 19.3.1/TypeScript/Vite, FastAPI/Pydantic, Python 3.12, dojo-core, pytest; add Vitest, jsdom, and Testing Library for behavioral web tests, using versions compatible with the existing Vite and React versions.
 
 **Spec:** `docs/superpowers/specs/2026-09-30-web-dashboard-design.md` (user approved).
 

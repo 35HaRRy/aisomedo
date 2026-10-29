@@ -36,6 +36,17 @@ it.each([200, 422, 502, 503])("clears masked token without leaking secrets for s
   if (status === 200) await screen.findByText(/@dojo · Bağlantı doğrulandı/);
   else await screen.findByRole("alert");
 });
+it("missing Meta configuration does not lock live data", async () => {
+  vi.stubGlobal("fetch", async (url: string) => {
+    if (url.endsWith("/me")) return json(client);
+    if (url === "/api/setup") return json(setupState("instagram"));
+    if (url === "/api/meta/status") return json({ detail: "Instagram connection is not configured" }, 503);
+    return json({ health: "healthy" });
+  });
+  render(<SessionProvider><OnboardingProvider><InstagramStep onSaved={vi.fn()} /></OnboardingProvider></SessionProvider>);
+  await screen.findByText(/Instagram bağlantısı sunucuda yapılandırılmamış/);
+  expect(live.getSnapshot()).toBe("live");
+});
 it("disables duplicate token submit and discards pending result on unmount", async () => {
   const { unmount, onSaved } = await mount();
   let complete: (value: { health: string }) => void = () => {};

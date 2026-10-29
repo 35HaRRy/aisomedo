@@ -354,7 +354,7 @@ export function Dashboard({
   return (
     <>
       <header className="page-heading">
-        <h1>{tr.dashboard}</h1>
+        <h1 data-tour="dashboard-overview">{tr.dashboard}</h1>
         <p>{tr.dashboardIntro}</p>
       </header>
       <PendingActions data={data} />

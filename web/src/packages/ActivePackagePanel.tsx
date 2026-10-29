@@ -63,7 +63,7 @@ export function ActivePackagePanel() {
   const excess = snapshot && editor.proposedTotal !== null ? editor.proposedTotal - snapshot.montage.max_duration_seconds : null;
   return <>
     <fieldset className="package-upload-controls" disabled={editor.busy || editor.offline || !!editor.pendingClear} aria-label={tr.upload.title}><UploadPanel defaultExpanded={false} /></fieldset>
-    <CollapsiblePanel className="summary-sheet package-editor" title={copy.activeMedia} actions={<>
+    <CollapsiblePanel className="summary-sheet package-editor" tourTarget="package-media" title={copy.activeMedia} actions={<>
       <button className="media-icon-button" aria-label={copy.refresh} title={copy.refresh} disabled={editor.busy || editor.offline} onClick={() => void editor.refresh()}><MediaActionIcon action="refresh" /></button>
       <button className="media-icon-button danger" aria-label={editor.pendingClear ? copy.retryClear : copy.clear} title={editor.pendingClear ? copy.retryClear : copy.clear} disabled={editor.busy || editor.offline || !editor.pendingClear && (!snapshot || editor.loading || editor.stale)} onClick={() => void clearPackage()}><MediaActionIcon action="remove" /></button></>}>
       {editor.loading && !snapshot && <p role="status">{tr.loading}</p>}

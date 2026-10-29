@@ -667,7 +667,15 @@ def browse_completed(
                  and a["artifact_ref"].split("/")[1] == media["media_id"]]
         media["artifacts"] = items
         media["preview_url"] = next((a["preview_url"] for a in items
-                                     if a["kind"] == "processed" and a["available"]), None)
+                                      if a["kind"] == "processed" and a["available"]), None)
+        thumbnail = media.pop("thumbnail_ref", None)
+        media["thumbnail_url"] = None
+        if thumbnail:
+            try:
+                publishing.resolve_completed_artifact(folder_name, thumbnail)
+                media["thumbnail_url"] = _artifact_url(folder_name, thumbnail, download=False)
+            except (MediaNotFound, ValueError):
+                pass  # Older archives may no longer contain their generated thumbnail.
     return view
 
 

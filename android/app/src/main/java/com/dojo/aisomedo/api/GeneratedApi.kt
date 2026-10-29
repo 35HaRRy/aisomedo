@@ -127,6 +127,7 @@ data class CompatInfo(
 data class CompletedMediaOut(
     @SerialName("artifacts") val artifacts: List<PackageArtifactOut>,
     @SerialName("content_type") val contentType: String,
+    @SerialName("effective_duration") val effectiveDuration: Double? = null,
     @SerialName("filename") val filename: String,
     @SerialName("media_id") val mediaId: String,
     @SerialName("preview_url") val previewUrl: String?,
@@ -134,6 +135,7 @@ data class CompletedMediaOut(
     @SerialName("removed_position") val removedPosition: Int? = null,
     @SerialName("size_bytes") val sizeBytes: Long,
     @SerialName("status") val status: String,
+    @SerialName("thumbnail_url") val thumbnailUrl: String? = null,
     @SerialName("uploaded_at") val uploadedAt: String,
 )
 

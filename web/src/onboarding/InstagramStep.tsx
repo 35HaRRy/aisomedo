@@ -7,10 +7,21 @@ import { useLiveData } from "../useLiveData";
 import { useOnboarding } from "./useOnboarding";
 import { StepActions } from "./forms";
 
+// A missing Meta configuration is an expected 503 for this read. Treat it as a
+// normal status so an optional integration cannot lock the live workspace.
+const loadStatus = async (signal: AbortSignal): Promise<StatusOut> => {
+  try { return await api.instagram(signal); }
+  catch (failure) {
+    if (failure instanceof ApiError && failure.status === 503
+      && failure.detail === "Instagram connection is not configured") return { health: "unconfigured" };
+    throw failure;
+  }
+};
+
 export function InstagramStep({ onSaved }: { onSaved: () => void }) {
   const formId = useId();
   const { save } = useOnboarding();
-  const snapshot = useLiveData(api.instagram, true, ["settings", "setup"]);
+  const snapshot = useLiveData(loadStatus, true, ["settings", "setup"]);
   const [verified, setVerified] = useState<StatusOut | null>(null);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -93,7 +104,8 @@ export function InstagramStep({ onSaved }: { onSaved: () => void }) {
   return <div className="onboarding-form">
     <p>Instagram’dan kendi aldığınız erişim tokenını tanımlayın veya yeni pencerede yetkilendirin. Mevcut hesap yeni bağlantı doğrulanana kadar korunur.</p>
     {status?.ig_username && <p>@{status.ig_username} · {status.health === "healthy" ? "Bağlantı doğrulandı" : "Yeniden bağlantı gerekli"}</p>}
-    {status && !status.ig_username && <p>{tr.noAccount}</p>}
+    {status?.health === "unconfigured" && <p role="alert">{tr.instagramUnconfigured}</p>}
+    {status && status.health !== "unconfigured" && !status.ig_username && <p>{tr.noAccount}</p>}
     {!status && !snapshot.error && <p role="status">{tr.loading}</p>}
     {snapshot.error && <div role="alert">{tr.instagramUnavailable}<StepActions><button onClick={snapshot.retry}>{tr.retry}</button></StepActions></div>}
     {error && <p role="alert">{error}</p>}
