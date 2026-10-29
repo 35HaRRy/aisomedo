@@ -147,10 +147,13 @@ export function ReviewFlow(props: { data: DashboardOut; reviewId: number | null;
   const editor = usePackageEditorContext(), snapshot = editor.snapshot;
   const requested = useRef<string | null>(null);
   const continuation = useRef(props.occurrenceId);
+  const openedReview = useRef(false);
   const action = props.data.pending_actions.find(item => continuation.current !== null
     ? item.occurrence_id === continuation.current : props.reviewId !== null
     ? item.review_id === props.reviewId : item.occurrence_id === props.occurrenceId);
-  if (action && ["preparing", "empty_package"].includes(action.state)) continuation.current = action.occurrence_id;
+  if (action?.state === "review_ready") openedReview.current = true;
+  // Publishing can briefly mark an opened review as preparing. Keep its result mounted.
+  if (!openedReview.current && action && ["preparing", "empty_package"].includes(action.state)) continuation.current = action.occurrence_id;
   useEffect(() => {
     if (props.stale || !editor.canEdit || !snapshot || !action ||
       !["empty_package", "preparing"].includes(action.state) || !(Date.parse(action.due_at) <= Date.now()) ||
