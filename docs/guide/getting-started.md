@@ -32,7 +32,9 @@ powershell -NoProfile -File .\ops\start-local.ps1 -CheckOnly
 2. In **Tarayıcı adı**, enter a name you will recognize.
 3. Choose **Eşleştir**.
 
-If the code expires or has been used, rerun the startup command with `-PairingCode`. A code works once. Every paired client has equal permissions; pair only trusted devices. No password or personal account is required.
+If the code expires or has been used, rerun the startup command with `-PairingCode`. A code works once and connects you to its organization. Clients in that organization have equal permissions; pair only trusted devices. No password or personal account is required. The local script uses **Kaizen Aikido Akademi** by default; pass `-OrganizationName "Your organization"` for another existing organization.
+
+Packages, settings, Instagram connections, and publication work belong to that organization. If the operator deactivates it, existing sessions and background work stop too. See [organization commands and the upgrade procedure](../../README.md#organizations). Never stop/rebuild only the API while an old worker remains connected during a schema upgrade.
 
 ## 3. Complete the setup wizard
 

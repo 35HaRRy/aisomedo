@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from backend.deps import COOKIE_NAME, SESSION_MAX_AGE, get_current_client
+from backend.organizations import get_organization_services
 
 TTL_SECONDS = int(CODE_TTL.total_seconds())
 
@@ -74,6 +75,7 @@ class ValidateIn(BaseModel):
 
 class ClientOut(BaseModel):
     id: int
+    organization_id: int
     name: str
     kind: str
     created_at: datetime
@@ -93,7 +95,8 @@ def create_code(
     requester: Client = Depends(get_current_client),
     pairing: DojoPairing = Depends(get_pairing),
 ) -> CodeOut:
-    issued = pairing.create_pairing_code(requester=str(requester.id))
+    issued = pairing.create_pairing_code(requester=str(requester.id),
+                                         organization_id=requester.organization_id)
     return CodeOut(code=issued.raw_code, expires_at=issued.expires_at, ttl_seconds=TTL_SECONDS)
 
 
@@ -127,7 +130,9 @@ def list_clients(
     _requester: Client = Depends(get_current_client),
     pairing: DojoPairing = Depends(get_pairing),
 ) -> list[ClientOut]:
-    return [ClientOut(**vars(c)) for c in pairing.list_clients()]
+    return [ClientOut(**vars(c)) for c in pairing.list_clients(
+        organization_id=_requester.organization_id,
+    )]
 
 
 @router.post("/clients/{client_id}/revoke")
@@ -137,7 +142,8 @@ def revoke_client(
     pairing: DojoPairing = Depends(get_pairing),
 ) -> dict[str, bool]:
     try:
-        pairing.revoke_client(client_id=client_id, requester=str(requester.id))
+        pairing.revoke_client(client_id=client_id, requester=str(requester.id),
+                              organization_id=requester.organization_id)
     except ClientNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"revoked": True}
@@ -149,7 +155,7 @@ def me(client: Client = Depends(get_current_client)) -> ClientOut:
 
 
 def get_publishing(request: Request) -> DojoPublishing:
-    return request.app.state.publishing
+    return get_organization_services(request).publishing
 
 
 class PushTokenIn(BaseModel):

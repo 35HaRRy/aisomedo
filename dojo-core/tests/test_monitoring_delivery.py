@@ -23,7 +23,7 @@ from dojo.monitoring_models import (
     DELIVERY_PENDING,
     DELIVERY_SKIPPED,
 )
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 from firebase_admin import messaging
 from sqlalchemy import text
 
@@ -79,7 +79,7 @@ def attempts_of(store, client_id: int) -> int:
 
 
 def contract(pg_store, memory: bool):
-    return InMemoryStore() if memory else pg_store
+    return scoped_memory_store() if memory else pg_store
 
 
 class FakeMessaging:

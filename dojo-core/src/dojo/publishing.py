@@ -43,6 +43,9 @@ from dojo.exceptions import (
     NoActivePackage,
     OccurrenceChanged,
     OccurrenceNotFound,
+    OrganizationInactive,
+    OrganizationNotFound,
+    OrganizationScopeRequired,
     PackageChanged,
     PackageCompleted,
     PackageEditConflict,
@@ -103,6 +106,7 @@ from dojo.model import (
     YayinZamani,
 )
 from dojo.montage import effective_duration, manifest_selections, source_duration, validate_ranges
+from dojo.organizations import DojoOrganizations
 from dojo.package_media import describe_artifacts, extension_for, public_media, resolve_artifact
 from dojo.package_state import GroupEdit, content_fields, export_document, merge_edit_groups
 from dojo.ports import (
@@ -135,6 +139,7 @@ def _package_operation[**P, T](method: Callable[P, T]) -> Callable[P, T]:
     @wraps(method)
     def locked(*args: P.args, **kwargs: P.kwargs) -> T:
         seam = cast("DojoPublishing", args[0])
+        seam._require_active_organization()
         with seam._packages.package_lock():
             return method(*args, **kwargs)
     return locked
@@ -145,7 +150,7 @@ def _package_edit[**P, T](method: Callable[P, T]) -> Callable[P, T]:
     @wraps(method)
     def edit(*args: P.args, **kwargs: P.kwargs) -> T:
         seam = cast("DojoPublishing", args[0])
-        with seam._packages.package_lock(), seam._packages.command_transaction():
+        with seam._packages.package_lock(), seam._pairing.organization_transaction():
             return method(*args, **kwargs)
     return edit
 
@@ -155,6 +160,7 @@ def _review_decision[**P, T](method: Callable[P, T]) -> Callable[P, T]:
     @wraps(method)
     def decide(*args: P.args, **kwargs: P.kwargs) -> T:
         seam = cast("DojoPublishing", args[0])
+        seam._require_active_organization()
         with seam._packages.package_lock(wait=False) as acquired:
             if not acquired:
                 raise PublicationInProgress(
@@ -276,6 +282,35 @@ class DojoPublishing:
         )
         self._media = media
         self._renderer = renderer
+
+    def _require_active_organization(self) -> None:
+        organization_id = self._pairing.organization_id
+        if organization_id is None:
+            raise OrganizationScopeRequired("organization scope is required")
+        DojoOrganizations(self._pairing).require_active(organization_id)
+
+    def organization_active(self) -> bool:
+        try:
+            self._require_active_organization()
+        except (OrganizationInactive, OrganizationNotFound):
+            return False
+        return True
+
+    def _organization_cancelled(self) -> Callable[[], bool]:
+        next_check = 0.0
+        cancelled = False
+
+        def check() -> bool:
+            nonlocal next_check, cancelled
+            if not cancelled and monotonic() >= next_check:
+                try:
+                    cancelled = not self.organization_active()
+                except Exception:  # noqa: BLE001 - inability to verify activity cancels local work
+                    cancelled = True
+                next_check = monotonic() + 1.0
+            return cancelled
+
+        return check
 
     @_package_edit
     def ensure_active_package(self, *, requester: str | None = None) -> Package:
@@ -533,7 +568,7 @@ class DojoPublishing:
         for entry in self.media_root.iterdir():
             if not entry.is_dir():
                 continue
-            if entry.name in ("tmp", "branding") or entry.name.startswith(".clearing-"):
+            if entry.name in ("tmp", "branding", "organizations") or entry.name.startswith("."):
                 continue
             if self._is_settled(entry.name):
                 continue
@@ -596,6 +631,8 @@ class DojoPublishing:
             data={"type": "package_recovery", "package_folder": active, "recovered": recovered},
         )
         try:
+            if not self.organization_active():
+                return
             result = self._notifier.send(notification, tokens)
         except Exception:  # noqa: BLE001
             logging.getLogger(__name__).exception("recovery notification failed")
@@ -1110,9 +1147,27 @@ class DojoPublishing:
         )
 
     def claim_next_job(self) -> Job | None:
+        if not self.organization_active():
+            return None
         return self._jobs.claim_next(self._clock.now())
 
     def process_job(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise JobNotFound(f"job {job_id} not found")
+        try:
+            self._require_active_organization()
+            self._process_active_job(job_id)
+        except (OrganizationInactive, PreviewCancelled):
+            self._jobs.finish_if_processing(job_id, status="cancelled",
+                finished_at=self._clock.now(), error_reason="organization_inactive")
+            prefixes = {"render": "render", "thumbnail": "thumbnail",
+                        "section_preview": "section-preview"}
+            if job.kind in prefixes:
+                shutil.rmtree(self.media_root / "tmp" / f"{prefixes[job.kind]}-{job_id}",
+                              ignore_errors=True)
+
+    def _process_active_job(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is None:
             raise JobNotFound(f"job {job_id} not found")
@@ -1146,11 +1201,14 @@ class DojoPublishing:
 
                 processor = PillowFFmpegProcessor()
             processed = processor.process(
-                upload, original, self.media_root / "tmp" / upload.upload_id
+                upload, original, self.media_root / "tmp" / upload.upload_id,
+                cancelled=self._organization_cancelled(),
             )
         except MediaValidationError as exc:
             self._fail_job(job, str(exc))
             return
+        except (OrganizationInactive, PreviewCancelled):
+            raise
         except Exception as exc:  # noqa: BLE001 - a crashed processor must not strand the upload
             self._fail_job(job, f"media processing failed: {exc}")
             return
@@ -1326,6 +1384,8 @@ class DojoPublishing:
         deadline = monotonic() + 900 - age
 
         def cancelled() -> bool:
+            if not self.organization_active():
+                return True
             with self._packages.read_snapshot():
                 if self._preview_job_snapshot(job) is None:
                     return True
@@ -1356,7 +1416,7 @@ class DojoPublishing:
                     for r in job.payload["ranges"]]
                 renderer.render_sections(clips, work, staged, cancelled=cancelled)
                 duration = renderer.probe_duration(staged, cancelled=cancelled)
-            with self._packages.package_lock(), self._packages.command_transaction():
+            with self._packages.package_lock(), self._pairing.organization_transaction():
                 current = self._preview_job_snapshot(job)
                 if current is None:
                     raise PreviewCancelled()
@@ -1374,9 +1434,11 @@ class DojoPublishing:
                                                   finished_at=self._clock.now()) is None:
                     raise PreviewCancelled()
                 self._write_manifest(package, manifest)
-        except PreviewCancelled:
+        except (PreviewCancelled, OrganizationInactive):
             self._jobs.finish_if_processing(job.job_id, status="cancelled",
-                                             finished_at=self._clock.now())
+                                             finished_at=self._clock.now(),
+                                             error_reason=(None if self.organization_active()
+                                                           else "organization_inactive"))
         except Exception as exc:
             with self._packages.package_lock(), self._packages.command_transaction():
                 current = self._preview_job_snapshot(job)
@@ -1840,6 +1902,8 @@ class DojoPublishing:
                 "package": folder,
             })
             try:
+                if not self.organization_active():
+                    return
                 result = self._notifier.send(notification, tokens)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("reminder send failed for %s", identity)
@@ -3545,9 +3609,11 @@ class DojoPublishing:
         out = self.media_root / package.folder_name / "render" / "reel.mp4"
         work = self.media_root / "tmp" / f"render-{job.job_id}"
         staged = work / "reel.mp4"
-        renderer.render(build, work, staged)
-        duration = renderer.probe_duration(staged, cancelled=lambda: False)
-        with self._packages.package_lock(), self._packages.command_transaction():
+        cancelled = self._organization_cancelled()
+        renderer.render(build, work, staged, cancelled=cancelled)
+        self._require_active_organization()
+        duration = renderer.probe_duration(staged, cancelled=cancelled)
+        with self._packages.package_lock(), self._pairing.organization_transaction():
             if self._jobs.get(job.job_id) is None:
                 shutil.rmtree(work, ignore_errors=True)
                 return  # Cleanup won the race; never recreate its deleted records/artifacts.
@@ -3888,6 +3954,8 @@ class DojoPublishing:
                   "package_folder": package_folder},
         )
         try:
+            if not self.organization_active():
+                return
             result = self._notifier.send(notification, tokens)
         except Exception:  # noqa: BLE001
             logging.getLogger(__name__).exception("publication notification failed")
@@ -4062,6 +4130,13 @@ class DojoPublishing:
             path = Path(resolver(url_or_token))
         except ValueError as exc:
             raise MediaNotFound(str(exc)) from exc
+        try:
+            relative = path.resolve().relative_to(self.media_root.resolve())
+        except ValueError as exc:
+            raise MediaNotFound("signed artifact is outside this organization") from exc
+        if (len(relative.parts) != 3 or relative.parts[-2:] != ("render", "reel.mp4")
+                or self._packages.get_by_folder(relative.parts[0]) is None):
+            raise MediaNotFound("signed artifact does not belong to this organization")
         self._audit.append(
             AuditEvent(
                 action="publication.artifact_fetched",

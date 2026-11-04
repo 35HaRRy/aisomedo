@@ -49,7 +49,7 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
     <main id="content" tabIndex={-1}>
       <section className="promotion-hero" data-section="intro" data-anchor="intro" tabIndex={-1}>
         <div className="promotion-hero-copy"><h1>Antrenmandan paylaşmaya.<br /><span>Kontrol sende.</span></h1>
-          <p>Biriken fotoğraf ve videoları markana ait Instagram Reels’lerine dönüştür. Aisomedo hazırlığı bir araya getirir, son söz sende kalır.</p>
+          <p>Organizasyonunun fotoğraf ve videolarını markana ait Instagram Reels’lerine dönüştür. Paketlerin, yayın planın ve Instagram bağlantın kendi çalışma alanında kalır; son söz sende.</p>
           <div className="promotion-actions"><button className="primary" onClick={onOpenApp}>Uygulamayı aç</button><button onClick={() => go("workflow")}>Akışı keşfet</button></div>
           <p className="promotion-note">Yükle. Düzenle. İncele. Onayla ve yayınla.</p>
         </div>
@@ -60,7 +60,7 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
       <section className="promotion-benefits" data-section="benefits" data-anchor="benefits" tabIndex={-1}>
         <h2>İçeriğe odaklan.<br />Dağınık sürece değil.</h2>
         <div className="promotion-benefit-grid">
-          <article><Icon kind="collect" /><h3>Tek Paylaşım Paketi</h3><p>Fotoğraf, video, sıralama ve açıklama aynı akışta. Dosyalar arasında kaybolmadan hazırlan.</p></article>
+          <article><Icon kind="collect" /><h3>Organizasyonuna ait alan</h3><p>Medya, Paylaşım Paketleri ve ayarlar organizasyonuna özeldir. Kendi ekibinle aynı yayın akışında çalış.</p></article>
           <article><Icon kind="edit" /><h3>Sana ait bir kurgu</h3><p>Kalacak bölümleri seç. Logonu ve kartlarını ekle. Hazırlanan dikey Reel’i yayın öncesinde gör.</p></article>
           <article><Icon kind="approve" /><h3>Planlı, ama kontrolsüz değil</h3><p>Yayın Planı zamanı hatırlatır. İnceleme ve onay adımı, neyin paylaşılacağına senin karar vermeni sağlar.</p></article>
         </div>
@@ -84,7 +84,7 @@ export function LandingPage({ onOpenApp }: { onOpenApp: () => void }) {
         <div><h2>Bilgisayarda hazırla.<br />Android’den de yanında olsun.</h2><p>Yerel Android uygulamasıyla aynı çalışma alanına bağlan. Medyanı yükle, paketini takip et ve Yayın İncelemesi’ni telefonundan aç.</p>
           <a className="promotion-download" href="https://github.com/35HaRRy/aisomedo/releases/download/android-v0.2.0/aisomedo.apk">Android APK indir · v0.2.0</a>
           <p><a href="https://github.com/35HaRRy/aisomedo/releases/download/android-v0.2.0/aisomedo.apk.sha256">SHA-256 doğrulama dosyası</a></p>
-          <p className="promotion-note">Kendi sunucuna bağlanır. İlk bağlantıda tek kullanımlık eşleştirme kodu gerekir.</p>
+          <p className="promotion-note">Kendi sunucuna bağlanır. İlk bağlantıda organizasyonuna ait tek kullanımlık eşleştirme kodu gerekir.</p>
         </div><div className="promotion-android-art" aria-hidden="true"><svg viewBox="0 0 280 340" fill="none"><rect x="64" y="15" width="152" height="306" rx="22" stroke="currentColor" strokeWidth="3" /><path d="M110 32h60M127 303h26" stroke="currentColor" strokeWidth="3" strokeLinecap="round" /><rect x="83" y="61" width="114" height="142" rx="5" fill="var(--accent-soft)" /><path d="m106 132 24 24 45-52" stroke="var(--accent)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" /><path d="M86 226h108M86 244h80M86 262h93" stroke="currentColor" strokeWidth="3" strokeLinecap="round" /></svg><p>Web ve Android.<br />Aynı Paylaşım Paketi.</p></div>
       </section>
       <section className="promotion-close" data-anchor="start" tabIndex={-1}><h2>Bir sonraki paylaşımın<br />buradan başlasın.</h2><p>Hazırlığı bir araya getir. Yayını elinde tut.</p><button className="primary" onClick={onOpenApp}>Uygulamayı aç</button></section>

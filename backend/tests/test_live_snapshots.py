@@ -44,8 +44,10 @@ def test_read_boundary_keeps_data_and_version_on_same_snapshot_across_stores(liv
     with writer.command_transaction():
         first = writer.write_package_state(package.id, {"caption": "first"}, content_changed=True)
         before = writer.record_change([key]).versions[key]
-    reader = PostgresStore(writer._engine.url.render_as_string(hide_password=False))
-    sibling = PostgresStore(writer._engine.url.render_as_string(hide_password=False))
+    reader = PostgresStore(writer._engine.url.render_as_string(hide_password=False),
+                           organization_id=writer.organization_id)
+    sibling = PostgresStore(writer._engine.url.render_as_string(hide_password=False),
+                            organization_id=writer.organization_id)
     try:
         with reader.read_snapshot():
             assert reader.get_resource_version(key) == before

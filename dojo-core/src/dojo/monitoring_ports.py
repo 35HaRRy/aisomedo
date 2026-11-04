@@ -17,6 +17,7 @@ from dojo.monitoring_models import DeliveryLease, DeliveryOutcome, DiskSample
 
 @runtime_checkable
 class MonitoringStore(Protocol):
+    def alert_delivery_active(self, lease: DeliveryLease) -> bool: ...
     def record_disk_sample(
         self, sample: DiskSample, *, low_percent: float, recovery_percent: float,
     ) -> None:

@@ -6,6 +6,9 @@ from dojo.adapters.clock import SystemClock
 from dojo.adapters.secrets import RandomSecretGenerator, Sha256Hasher
 from dojo.exceptions import (
     ClientNotFound,
+    OrganizationInactive,
+    OrganizationNotFound,
+    OrganizationScopeRequired,
     PairingCodeConsumed,
     PairingCodeExpired,
     PairingCodeInvalid,
@@ -42,7 +45,27 @@ class DojoPairing:
         self._hasher = hasher or Sha256Hasher()
         self._generator = generator or RandomSecretGenerator()
 
-    def create_pairing_code(self, *, requester: str) -> PairingCodeIssued:
+    def _scope(self, organization_id: int | None = None) -> DojoPairing:
+        organization_id = organization_id if organization_id is not None \
+            else self._pairing.organization_id
+        if organization_id is None:
+            raise OrganizationScopeRequired("organization scope is required")
+        if self._pairing.organization_id == organization_id:
+            return self
+        return DojoPairing(
+            pairing=self._pairing.for_organization(organization_id),
+            audit=self._audit.for_organization(organization_id), clock=self._clock,
+            hasher=self._hasher, generator=self._generator,
+        )
+
+    def create_pairing_code(
+        self, *, requester: str, organization_id: int | None = None,
+    ) -> PairingCodeIssued:
+        scope = self._scope(organization_id)
+        with scope._pairing.organization_transaction():
+            return scope._create_pairing_code(requester=requester)
+
+    def _create_pairing_code(self, *, requester: str) -> PairingCodeIssued:
         raw = self._generator.generate_code()
         now = self._clock.now()
         code = self._pairing.create_code(
@@ -65,6 +88,17 @@ class DojoPairing:
         return PairingCodeIssued(raw_code=raw, expires_at=code.expires_at)
 
     def validate_code(self, *, code: str, kind: str, name: str) -> PairingResult:
+        found = self._pairing.find_code_by_hash(self._hasher.hash(code))
+        if found is None:
+            raise PairingCodeInvalid("invalid pairing code")
+        try:
+            scope = self._scope(found.organization_id)
+            with scope._pairing.organization_transaction():
+                return scope._validate_code(code=code, kind=kind, name=name)
+        except (OrganizationInactive, OrganizationNotFound) as exc:
+            raise PairingCodeInvalid("invalid pairing code") from exc
+
+    def _validate_code(self, *, code: str, kind: str, name: str) -> PairingResult:
         if kind not in SUPPORTED_KINDS:
             raise ValueError(f"unsupported client kind: {kind}")
         now = self._clock.now()
@@ -100,10 +134,19 @@ class DojoPairing:
         )
         return PairingResult(client_id=client.id, kind=kind, raw_credential=raw_credential)
 
-    def list_clients(self) -> list[Client]:
-        return self._pairing.list_clients()
+    def list_clients(self, *, organization_id: int | None = None) -> list[Client]:
+        scope = self._scope(organization_id)
+        with scope._pairing.organization_transaction():
+            return scope._pairing.list_clients()
 
-    def revoke_client(self, *, client_id: int, requester: str) -> None:
+    def revoke_client(
+        self, *, client_id: int, requester: str, organization_id: int | None = None,
+    ) -> None:
+        scope = self._scope(organization_id)
+        with scope._pairing.organization_transaction():
+            scope._revoke_client(client_id=client_id, requester=requester)
+
+    def _revoke_client(self, *, client_id: int, requester: str) -> None:
         client = self._pairing.find_client_by_id(client_id)
         if client is None:
             raise ClientNotFound(f"no client {client_id}")
@@ -139,5 +182,10 @@ class DojoPairing:
             last = client.last_seen_at
             if last is None or (now - last) > IDLE_TTL:
                 return None
-        self._pairing.touch_client(client.id, now)
+        try:
+            scope = self._scope(client.organization_id)
+            with scope._pairing.organization_transaction():
+                scope._pairing.touch_client(client.id, now)
+        except (OrganizationInactive, OrganizationNotFound):
+            return None
         return client

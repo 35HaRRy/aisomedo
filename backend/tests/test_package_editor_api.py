@@ -9,11 +9,11 @@ from threading import Event
 from urllib.parse import quote
 
 import pytest
-from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
+from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.signed_urls import HmacSignedUrlStore
 from dojo.adapters.stubs import StubMediaProcessor, StubReelRenderer
 from dojo.model import BrandingConfig
-from dojo.testing import FIXED_AT, FakeClock, complete_confirmed_package
+from dojo.testing import FIXED_AT, FakeClock, complete_confirmed_package, scoped_memory_store
 from fastapi.testclient import TestClient
 from live_helpers import include_displayed_revision
 
@@ -21,7 +21,7 @@ from backend.main import create_app
 
 
 def app(tmp_path, *, kind="browser", finalize=True, include_revision=True):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = DojoPublishing(
         packages=store, audit=store, settings=store, media_root=tmp_path, clock=FakeClock(),
         media=StubMediaProcessor(content_type="video/mp4", duration=30.0),

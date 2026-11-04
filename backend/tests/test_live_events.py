@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from dojo.adapters.db import PostgresStore
+from dojo.organizations import DojoOrganizations
 from sqlalchemy import text
 from testcontainers.postgres import PostgresContainer
 
@@ -27,10 +28,14 @@ def live_store(live_database):
             "TRUNCATE TABLE live_change_events, live_resource_versions, package_states, "
             "operational_deliveries, operational_alerts, monitoring_incidents, "
             "push_registrations, consent_acceptances, consent_policies, pairing_codes, "
-            "clients, audit_events, packages, uploads, jobs, settings, yayin_zamani, "
+            "organizations, clients, audit_events, packages, uploads, jobs, settings, "
+            "yayin_zamani, "
             "yayin_incelemesi RESTART IDENTITY CASCADE",
         ))
-    return live_database
+    organization = DojoOrganizations(live_database).create(
+        name="Live Test", email="test@example.com",
+    )
+    return live_database.for_organization(organization.id)
 
 
 async def change(store, resources=None, revoked=None):
@@ -249,7 +254,8 @@ async def test_sixty_four_message_overflow_is_not_silent(live_store):
         # Fanout on the actual loop without letting the deliberately slow
         # consumer drain its bounded queue.
         for i in range(65):
-            hub.deliver("change", {"event_id": str(i), "versions": {"dashboard": i + 1}})
+            hub.deliver("change", {"event_id": str(i), "versions": {"dashboard": i + 1}},
+                         organization_id=live_store.organization_id)
         message = await next_message(stream)
         assert message.event == "resync" and message.data == {"reason": "overflow"}
         with pytest.raises(StopAsyncIteration):

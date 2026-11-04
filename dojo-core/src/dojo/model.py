@@ -13,6 +13,15 @@ class VideoRange(TypedDict):
 
 VideoSelections = dict[str, list[VideoRange]]
 
+
+@dataclass(frozen=True)
+class Organization:
+    id: int
+    name: str
+    email: str
+    phone: str | None
+    active: bool = True
+
 PACKAGE_FOLDER_FORMAT = "%d-%m-%Y %H-%M"
 
 KEEP_BOTH = "keep_both"
@@ -77,6 +86,7 @@ class PairingCode:
     created_by: str
     created_at: datetime
     consumed_at: datetime | None = None
+    organization_id: int = 0  # Unsaved values are bound by the scoped store on insertion.
 
 
 @dataclass(frozen=True)
@@ -94,6 +104,7 @@ class Client:
     created_by: str
     last_seen_at: datetime | None = None
     revoked_at: datetime | None = None
+    organization_id: int = 0  # Unsaved values are bound by the scoped store on insertion.
 
 
 @dataclass(frozen=True)

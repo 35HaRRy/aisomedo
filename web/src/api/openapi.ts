@@ -186,6 +186,7 @@ export type ClientOut = {
   "kind": string;
   "last_seen_at": string | null;
   "name": string;
+  "organization_id": number;
   "revoked_at": string | null;
 };
 

@@ -14,6 +14,7 @@ from dojo.adapters.db import PostgresStore
 from dojo.adapters.fcm import FcmNotifier
 from dojo.monitoring import DojoMonitoring
 from dojo.observability import configure_logging
+from dojo.organizations import DojoOrganizations, organization_media_root
 from dojo.scheduler import try_emission_leadership
 
 from worker.health import DEFAULT_PATH as WORKER_HEALTH_DEFAULT_PATH
@@ -158,14 +159,20 @@ def build_notifier() -> FcmNotifier | None:
         ) from None
 
 
-def build_publishing() -> DojoPublishing:
+def build_publishing(
+    *, organization_id: int | None = None, registry: PostgresStore | None = None,
+) -> DojoPublishing:
     resolve_public_base_url()  # fail fast on non-https origin while secure
     url = os.environ.get(
         "DATABASE_URL", "postgresql+psycopg://dojo:dojo@localhost:5432/dojo"
     )
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
-    store = PostgresStore(url)
-    _maybe_create_all(store)
+    store = registry if registry is not None else PostgresStore(url)
+    if registry is None:
+        _maybe_create_all(store)
+    if organization_id is not None:
+        store = store.for_organization(organization_id)
+        media_root = organization_media_root(media_root, organization_id)
     kwargs: dict = {}
     notifier = build_notifier()
     if notifier is not None:
@@ -193,6 +200,8 @@ def build_publishing() -> DojoPublishing:
             kwargs["signed_urls"] = HmacSignedUrlStore(
                 base_url=resolve_public_base_url(),
                 secret=secret,
+                media_root=Path(os.environ.get("MEDIA_ROOT", "media")),
+                organization_id=store.organization_id,
             )
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -207,12 +216,15 @@ def build_publishing() -> DojoPublishing:
         settings=store,
         media_root=media_root,
         setup=DojoSetup(
-            setup=store, audit=store, pairing=store, meta=build_meta(),
+            setup=store, audit=store, pairing=store, meta=build_meta(store=store),
         ),
         **kwargs,
     )
     try:
-        publishing.repair_open_folders(requester="system")
+        if organization_id is None:
+            for organization in DojoOrganizations(store).list(active_only=True):
+                scoped = build_publishing(organization_id=organization.id, registry=store)
+                scoped.repair_open_folders(requester="system")
     except Exception:  # noqa: BLE001 - startup repair never blocks boot
         logger.exception(
             "open-folder repair failed",
@@ -221,7 +233,7 @@ def build_publishing() -> DojoPublishing:
     return publishing
 
 
-def build_meta() -> object | None:
+def build_meta(*, store: PostgresStore | None = None) -> object | None:
     try:
         from dojo.adapters.meta import (
             FernetCipher,
@@ -231,8 +243,9 @@ def build_meta() -> object | None:
         from dojo.meta_connection import DojoMetaConnection
 
         url = os.environ.get("DATABASE_URL", "postgresql+psycopg://dojo:dojo@localhost:5432/dojo")
-        store = PostgresStore(url)
-        _maybe_create_all(store)
+        if store is None:
+            store = PostgresStore(url)
+            _maybe_create_all(store)
         key = os.environ.get("META_TOKEN_ENCRYPTION_KEY", "")
         if not key:
             raise RuntimeError("META_TOKEN_ENCRYPTION_KEY is required")
@@ -308,6 +321,8 @@ def _run_singleton_turn(publishing: DojoPublishing, meta: object | None) -> None
     workers merely because followers can claim jobs. Gating on the emission
     leader flag coordinates them as singletons without sharing transactions.
     """
+    if not publishing.organization_active():
+        return
     if meta is not None:
         try:
             meta.maintain()  # type: ignore[attr-defined]
@@ -322,6 +337,8 @@ def _run_singleton_turn(publishing: DojoPublishing, meta: object | None) -> None
         ("sweep_stale_uploads", lambda: publishing.sweep_stale_uploads()),
     ):
         try:
+            if not publishing.organization_active():
+                return
             call()
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -388,6 +405,24 @@ def run_tick(publishing: DojoPublishing, meta: object | None = None) -> None:
     cannot kill the worker; the main loop keeps the normal interval instead
     of tight-looping on DB-unavailable.
     """
+    try:
+        registry = publishing._pairing
+        if registry.organization_id is None:
+            for organization in DojoOrganizations(registry).list(active_only=True):
+                try:
+                    scoped = build_publishing(organization_id=organization.id, registry=registry)
+                    scoped_meta = scoped._setup._meta if scoped._setup is not None else None
+                    run_tick(scoped, scoped_meta)
+                except Exception:  # noqa: BLE001 - one organization cannot stop the others
+                    logger.exception("organization turn failed",
+                                     extra={"event": "worker.organization_failed"})
+            return
+        if not publishing.organization_active():
+            return
+    except Exception:  # noqa: BLE001 - access-check failure never permits background work
+        logger.exception("organization access check failed",
+                         extra={"event": "worker.organization_access_failed"})
+        return
     leader = _run_emission_turn(publishing)
     if leader:
         _run_singleton_turn(publishing, meta)

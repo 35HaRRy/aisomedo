@@ -4,6 +4,7 @@ import hashlib
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from dojo.adapters.clock import SystemClock
 from dojo.exceptions import (
@@ -14,6 +15,8 @@ from dojo.exceptions import (
     MetaReturnUriInvalid,
     MetaTokenEncryptionError,
     MetaTokenInvalid,
+    OrganizationInactive,
+    OrganizationScopeRequired,
 )
 from dojo.model import (
     META_HEALTH_HEALTHY,
@@ -25,7 +28,8 @@ from dojo.model import (
     MetaConnectionStatus,
     MetaOAuthAttempt,
 )
-from dojo.ports import InstagramTokenProvider
+from dojo.organizations import DojoOrganizations
+from dojo.ports import InstagramTokenProvider, OrganizationStore
 
 REFRESH_WINDOW = timedelta(days=7)
 ATTEMPT_TTL = timedelta(minutes=10)
@@ -83,7 +87,14 @@ class DojoMetaConnection:
         self._oauth_scope = oauth_scope
         self._instagram_provider = instagram_provider
 
+    def _require_active_organization(self) -> None:
+        store = cast(OrganizationStore, self._store)
+        if store.organization_id is None:
+            raise OrganizationScopeRequired("organization scope is required")
+        DojoOrganizations(store).require_active(store.organization_id)
+
     def connect_instagram_token(self, client_id: int, token: str) -> MetaConnectionStatus:
+        self._require_active_organization()
         if (
             not token.strip() or not token.isascii() or len(token) > 16384
             or any(c.isspace() for c in token.strip())
@@ -128,6 +139,7 @@ class DojoMetaConnection:
             raise MetaReturnUriInvalid(f"return_uri not allowlisted: {return_uri}")
 
     def start(self, client_id: int, return_uri: str | None = None) -> tuple[str, str]:
+        self._require_active_organization()
         self._validate_return_uri(return_uri)
         now = self._now()
         raw_state = secrets.token_urlsafe(32)
@@ -156,6 +168,7 @@ class DojoMetaConnection:
         return auth_url, attempt_id
 
     def complete_callback(self, state: str, code: str) -> str:
+        self._require_active_organization()
         now = self._now()
         state_hash = _hash_state(state)
         rec = self._store.find_attempt_by_state_hash(state_hash)  # type: ignore[attr-defined]
@@ -170,7 +183,9 @@ class DojoMetaConnection:
         # mark as processing; we will complete or fail
         try:
             short_token, short_exp = self._provider.exchange_code(code, self._redirect_uri)  # type: ignore[attr-defined]
+            self._require_active_organization()
             long_token, long_exp = self._provider.exchange_long_lived(short_token)  # type: ignore[attr-defined]
+            self._require_active_organization()
             candidates = self._provider.list_eligible_accounts(long_token)  # type: ignore[attr-defined]
             if not candidates:
                 raise MetaOAuthFailed("no eligible Instagram Professional accounts")
@@ -178,7 +193,7 @@ class DojoMetaConnection:
             # store candidates + temp token
             self._store.mark_attempt_completed(rec["id"], candidates, enc, long_exp)  # type: ignore[attr-defined]
             return rec["id"]
-        except MetaOAuthFailed:
+        except (MetaOAuthFailed, OrganizationInactive):
             raise
         except MetaOAuthStateInvalid:
             raise
@@ -191,6 +206,7 @@ class DojoMetaConnection:
             raise MetaOAuthFailed(sanitized) from exc
 
     def get_attempt(self, client_id: int, attempt_id: str) -> MetaOAuthAttempt:
+        self._require_active_organization()
         now = self._now()
         rec = self._store.get_meta_attempt(attempt_id)  # type: ignore[attr-defined]
         if rec is None:
@@ -218,6 +234,7 @@ class DojoMetaConnection:
     def select_account(
         self, client_id: int, attempt_id: str, ig_user_id: str
     ) -> MetaConnectionStatus:
+        self._require_active_organization()
         now = self._now()
         rec = self._store.get_meta_attempt(attempt_id)  # type: ignore[attr-defined]
         if rec is None:
@@ -284,6 +301,7 @@ class DojoMetaConnection:
         return status
 
     def get_status(self) -> MetaConnectionStatus:
+        self._require_active_organization()
         now = self._now()
         rec = self._store.get_meta_status()  # type: ignore[attr-defined]
         if rec is None:
@@ -311,6 +329,7 @@ class DojoMetaConnection:
         )
 
     def get_valid_token(self) -> str | None:
+        self._require_active_organization()
         snapshot = self._store.get_active_snapshot()  # type: ignore[attr-defined]
         if snapshot is None:
             return None
@@ -325,6 +344,7 @@ class DojoMetaConnection:
             return None
 
     def maintain(self) -> MetaConnectionStatus:
+        self._require_active_organization()
         now = self._now()
         snapshot = self._store.get_active_snapshot()  # type: ignore[attr-defined]
         if snapshot is None:
@@ -344,6 +364,7 @@ class DojoMetaConnection:
         try:
             plain = self._cipher.decrypt(encrypted)  # type: ignore[attr-defined]
             if needs_refresh:
+                self._require_active_organization()
                 token, expiry = self._provider.refresh_token(plain)  # type: ignore[attr-defined]
                 refreshed = self._cipher.encrypt(token)  # type: ignore[attr-defined]
                 updated = self._store.update_token(  # type: ignore[attr-defined]
@@ -353,6 +374,7 @@ class DojoMetaConnection:
                     return self.get_status()
                 encrypted = refreshed
             else:
+                self._require_active_organization()
                 valid, _ = self._provider.inspect_token(plain)  # type: ignore[attr-defined]
                 if not valid:
                     raise MetaTokenInvalid("token invalid")
@@ -391,11 +413,13 @@ class DojoMetaConnection:
             if self._instagram_provider is None:
                 raise MetaProviderUnavailable("Instagram Login is not configured")
             plain = self._cipher.decrypt(encrypted)  # type: ignore[attr-defined]
+            self._require_active_organization()
             account = self._instagram_provider.get_account(plain)
             if account.ig_user_id != rec.ig_user_id:
                 raise MetaTokenInvalid("Instagram account changed; reconnect required")
             due = rec.expires_at is None or rec.expires_at - now <= REFRESH_WINDOW
             if due:
+                self._require_active_organization()
                 token, expiry = self._instagram_provider.refresh_token(plain)
                 refreshed = self._cipher.encrypt(token)  # type: ignore[attr-defined]
                 updated = self._store.update_token(  # type: ignore[attr-defined]

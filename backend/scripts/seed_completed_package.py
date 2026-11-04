@@ -114,8 +114,14 @@ if __name__ == "__main__":
                         required=not os.environ.get("DATABASE_URL"))
     parser.add_argument("--media-root", type=Path,
                         default=Path(os.environ.get("MEDIA_ROOT", "media")))
+    parser.add_argument("--organization", required=True)
     args = parser.parse_args()
     database = require_local_database(args.database_url)
-    result, created = seed_completed_package(PostgresStore(database), args.media_root)
+    from dojo.organizations import DojoOrganizations, organization_media_root
+
+    registry = PostgresStore(database)
+    organization = DojoOrganizations(registry).require_name(args.organization)
+    media_root = organization_media_root(args.media_root, organization.id)
+    result, created = seed_completed_package(registry.for_organization(organization.id), media_root)
     print(f"{'Created' if created else 'Already exists, unchanged'}: {result.folder_name}")
-    print(f"Media root: {args.media_root.resolve()}")
+    print(f"Media root: {media_root.resolve()}")

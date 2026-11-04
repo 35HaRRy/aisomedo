@@ -4,13 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore, MediaNotFound
+from dojo import DojoPublishing, MediaNotFound
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path: Path, **overrides):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     seam = DojoPublishing(
         packages=store,
         audit=store,

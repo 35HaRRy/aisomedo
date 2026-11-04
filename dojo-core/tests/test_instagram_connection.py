@@ -4,9 +4,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 from dojo.adapters import meta as adapters
-from dojo.adapters.memory import InMemoryStore
 from dojo.meta_connection import DojoMetaConnection
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 
 NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
 TOKEN = "instagram-private-token"
@@ -19,7 +18,7 @@ def make_connection(handler, store=None, clock=None):
     provider = provider_class(
         http_client=httpx.Client(transport=httpx.MockTransport(handler)), clock=clock
     )
-    store = store or InMemoryStore()
+    store = store or scoped_memory_store()
     cipher = adapters.FernetCipher(adapters.FernetCipher.generate_key())
     facebook = adapters.StubMetaOAuthProvider()
     service = DojoMetaConnection(

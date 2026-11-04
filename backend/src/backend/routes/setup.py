@@ -11,8 +11,11 @@ from backend.snapshots import versioned_snapshot
 
 
 def get_setup(request: Request) -> DojoSetup:
-    setup: DojoSetup = request.app.state.setup
-    meta = getattr(request.app.state, "meta", None)
+    from backend.organizations import get_organization_services
+
+    services = get_organization_services(request)
+    setup = services.setup
+    meta = services.meta
     if meta is not None and getattr(setup, "_meta", None) is None:
         setup.attach_meta(meta)
     return setup

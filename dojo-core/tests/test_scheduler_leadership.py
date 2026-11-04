@@ -12,9 +12,8 @@ from threading import Barrier
 import pytest
 from dojo import DojoPublishing
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
 from dojo.model import AuditEvent, Job, SchedulePlan, YayinZamani
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -23,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "worker" / "src"))
 
 @pytest.fixture
 def observer(pg_store: PostgresStore) -> Iterator[PostgresStore]:
-    other = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False))
+    other = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False),
+                          organization_id=pg_store.organization_id)
     try:
         yield other
     finally:
@@ -188,7 +188,7 @@ def test_nested_scopes_rejected_without_releasing_outer_leadership(
 ) -> None:
     from dojo.scheduler import try_emission_leadership
 
-    store = InMemoryStore() if memory else pg_store
+    store = scoped_memory_store() if memory else pg_store
     with try_emission_leadership(store) as leader:
         assert leader is True
         with pytest.raises(RuntimeError, match="nested"):

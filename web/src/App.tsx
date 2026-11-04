@@ -57,7 +57,7 @@ function PairedShell() {
       <div className="sidebar-foot"><details className="promotion-help" data-tour="help"><summary>Yardım</summary><button onClick={() => { void navigate("#/welcome"); }}>Uygulama tanıtımı</button><button onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); if (client) replayTours(client.id); }}>Tanıtımları yeniden başlat</button></details><div className="paired-client"><span>{tr.client}</span><strong>{client?.name}</strong></div><SocialLinks /><ThemeToggle /></div>
     </aside>
     <main id="content" className="main-content" tabIndex={-1}>
-      {getDemoRuntime() && <p className="notice demo-notice">Demo: işlemler yalnızca bu tarayıcı oturumunda simüle edilir. Örnek önizleme; yüklediğiniz dosya işlenmedi. Gerçek paylaşım yapılmaz.</p>}
+      {getDemoRuntime() && <p className="notice demo-notice">Örnek Stüdyo organizasyonunun demo çalışma alanı: işlemler yalnızca bu tarayıcı oturumunda simüle edilir. Örnek önizleme; yüklediğiniz dosya işlenmedi. Gerçek paylaşım yapılmaz.</p>}
       {area !== "onboarding" && onboarding.error && <ErrorNotice stale={!!onboarding.setup} retry={() => void onboarding.refresh().catch(() => {})} />}
       {dashboardVisible && snapshot.error && <ErrorNotice stale={!!snapshot.data} retry={snapshot.retry} />}
       {dashboardVisible && !snapshot.data && !snapshot.error && <p role="status">{tr.loading}</p>}

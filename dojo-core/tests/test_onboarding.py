@@ -5,13 +5,13 @@ from types import SimpleNamespace
 import pytest
 from dojo import DojoSetup
 from dojo.adapters.memory import InMemoryStore
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 
 from tests.test_setup import add_client
 
 
 def configured_setup() -> tuple[DojoSetup, InMemoryStore]:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     clock = FakeClock()
     setup = DojoSetup(
         setup=store,

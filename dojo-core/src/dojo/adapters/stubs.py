@@ -15,7 +15,8 @@ class StubReelRenderer:
         self.thumbnail_calls: list[tuple[Path, Path]] = []
         self._durations: dict[Path, float] = {}
 
-    def render(self, build: object, work_dir: Path, out_path: Path) -> Path:
+    def render(self, build: object, work_dir: Path, out_path: Path, *,
+               cancelled: Callable[[], bool] | None = None) -> Path:
         from dojo.exceptions import RenderFailed
 
         self.calls.append((build, out_path))
@@ -177,7 +178,8 @@ class StubMediaProcessor:
         self.fail_reason = fail_reason
         self.duration = duration
 
-    def process(self, upload: object, original_path: Path, work_dir: Path) -> object:
+    def process(self, upload: object, original_path: Path, work_dir: Path, *,
+                cancelled: Callable[[], bool] | None = None) -> object:
         from dojo.model import ProcessedMedia
 
         self.calls.append((upload, original_path))

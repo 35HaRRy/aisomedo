@@ -6,7 +6,6 @@ import json
 import pytest
 from dojo import (
     DojoPublishing,
-    InMemoryStore,
     UploadConflict,
     UploadDecisionInvalid,
     UploadNotFound,
@@ -17,11 +16,11 @@ from dojo.adapters.stubs import (
     StubNotifier,
     StubSignedUrlStore,
 )
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path, **overrides):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     return (
         store,
         DojoPublishing(

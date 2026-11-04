@@ -22,7 +22,7 @@ def _pg_session() -> Iterator[PostgresStore]:
 
 
 @pytest.fixture
-def pg_store(_pg_session: PostgresStore) -> Iterator[PostgresStore]:
+def pg_registry(_pg_session: PostgresStore) -> Iterator[PostgresStore]:
     """Truncate both tables before each DB test so the shared container stays isolated.
 
     Only tests that request ``pg_store`` touch PostgreSQL; unit tests and the
@@ -34,7 +34,16 @@ def pg_store(_pg_session: PostgresStore) -> Iterator[PostgresStore]:
             text("TRUNCATE TABLE live_change_events, live_resource_versions, package_states, "
                  "operational_deliveries, operational_alerts, monitoring_incidents, "
                  "push_registrations, consent_acceptances, consent_policies, pairing_codes, "
-                 "clients, audit_events, packages, uploads, jobs, settings, yayin_zamani, "
+                 "organizations, clients, audit_events, packages, uploads, jobs, settings, "
+                 "yayin_zamani, "
                  "yayin_incelemesi RESTART IDENTITY CASCADE")
         )
     yield store
+
+
+@pytest.fixture
+def pg_store(pg_registry: PostgresStore) -> PostgresStore:
+    from dojo.organizations import DojoOrganizations
+
+    organization = DojoOrganizations(pg_registry).create(name="Test Dojo", email="test@example.com")
+    return pg_registry.for_organization(organization.id)

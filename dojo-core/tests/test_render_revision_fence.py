@@ -86,7 +86,7 @@ def test_edit_during_render_is_not_blocked_or_overwritten(tmp_path):
     entered, release, edited = Event(), Event(), Event()
     original = renderer.render
 
-    def render(*args):
+    def render(*args, **kwargs):
         entered.set()
         assert release.wait(5), "test must release the renderer"
         return original(*args)
@@ -125,7 +125,7 @@ def test_duplicate_render_job_does_not_replace_ready_artifact(tmp_path):
     before = artifact.path.read_bytes()
     original = renderer.render
 
-    def render(*args):
+    def render(*args, **kwargs):
         output = original(*args)
         output.write_bytes(b"must-not-replace-reviewed-output")
         return output
@@ -144,7 +144,7 @@ def test_superseded_render_failure_does_not_mark_new_content_failed(tmp_path):
     seam.render_preview()
     job = seam.claim_next_job()
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         seam.set_caption("new content is not the failed render input")
         raise RenderFailed("old input failed")
 
@@ -169,7 +169,7 @@ def test_concurrent_same_digest_completion_keeps_first_ready_artifact(tmp_path):
     entered, release = Event(), Event()
     original = renderer.render
 
-    def render(build, work, staged):
+    def render(build, work, staged, *, cancelled=None):
         if "duplicate" in str(work):
             entered.set()
             assert release.wait(5)

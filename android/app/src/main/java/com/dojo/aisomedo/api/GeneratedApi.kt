@@ -105,6 +105,7 @@ data class ClientOut(
     @SerialName("kind") val kind: String,
     @SerialName("last_seen_at") val lastSeenAt: String?,
     @SerialName("name") val name: String,
+    @SerialName("organization_id") val organizationId: Int,
     @SerialName("revoked_at") val revokedAt: String?,
 )
 

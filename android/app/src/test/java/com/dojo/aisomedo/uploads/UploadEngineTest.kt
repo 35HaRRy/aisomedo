@@ -69,7 +69,7 @@ class UploadEngineTest {
                     }
                     if (path == "/api/pairing/me") {
                         phasesAtAuthentication = store.rows.value.map { it.phase }
-                        return MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
+                        return MockResponse().setBody("""{"id":1,"organization_id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
                     }
                     if (path == "/api/activity") {
                         val events = resolved.filterValues { it == "aborted" }.keys.mapIndexed { index, id -> buildJsonObject {
@@ -692,7 +692,7 @@ class UploadEngineTest {
             assertEquals(0, f.server.requestCount)
             f.server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = if (request.path == "/api/pairing/me")
-                    MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
+                    MockResponse().setBody("""{"id":1,"organization_id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}""")
                 else {
                     f.putStarted.complete(Unit)
                     MockResponse().setBody("preview").setBodyDelay(1, TimeUnit.SECONDS)

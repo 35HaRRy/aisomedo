@@ -14,7 +14,7 @@ from dojo.adapters.memory import InMemoryStore
 from dojo.adapters.secrets import Sha256Hasher
 from dojo.model import AuditEvent, PairingCodeIssued, PairingResult
 from dojo.pairing import CODE_TTL, IDLE_TTL
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 class MutableClock:
@@ -29,7 +29,7 @@ class MutableClock:
 
 
 def make_pairing() -> tuple[DojoPairing, InMemoryStore, MutableClock]:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     clock = MutableClock()
     pairing = DojoPairing(pairing=store, audit=store, clock=clock)
     return pairing, store, clock

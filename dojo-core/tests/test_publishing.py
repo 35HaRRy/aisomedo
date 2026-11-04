@@ -7,16 +7,15 @@ from dojo import (
     ActivePackageExists,
     BrandingConfig,
     DojoPublishing,
-    InMemoryStore,
     LogoNotConfigured,
     NoActivePackage,
 )
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path, **overrides):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     return (
         store,
         DojoPublishing(

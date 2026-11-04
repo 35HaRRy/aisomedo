@@ -13,8 +13,19 @@ FIXED_AT = datetime(2026, 8, 6, 14, 30, tzinfo=ISTANBUL)
 FFMPEG_IMAGE = "jrottenberg/ffmpeg:8-alpine"
 
 if TYPE_CHECKING:
+    from dojo.adapters.memory import InMemoryStore
     from dojo.model import Package
     from dojo.publishing import DojoPublishing
+
+
+def scoped_memory_store() -> InMemoryStore:
+    """Create an explicit test workspace; production stores have no default tenant."""
+    from dojo.adapters.memory import InMemoryStore
+    from dojo.organizations import DojoOrganizations
+
+    registry = InMemoryStore()
+    organization = DojoOrganizations(registry).create(name="Test Dojo", email="test@example.com")
+    return registry.for_organization(organization.id)
 
 
 def complete_confirmed_package(

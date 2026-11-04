@@ -6,7 +6,6 @@ import json
 import pytest
 from dojo import (
     DojoPublishing,
-    InMemoryStore,
     LegacyTrimConflict,
     MontageDurationExceeded,
     MontageTrimInvalid,
@@ -20,11 +19,11 @@ from dojo.adapters.stubs import (
     StubNotifier,
     StubSignedUrlStore,
 )
-from dojo.testing import FIXED_AT, FakeClock, complete_confirmed_package
+from dojo.testing import FIXED_AT, FakeClock, complete_confirmed_package, scoped_memory_store
 
 
 def make_seam(tmp_path):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     return store, DojoPublishing(
         packages=store, audit=store, uploads=store, jobs=store, settings=store,
         media_root=tmp_path, clock=FakeClock(), meta=StubMetaPublisher(),

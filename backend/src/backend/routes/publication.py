@@ -22,7 +22,9 @@ from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
-    return request.app.state.publishing
+    from backend.organizations import get_organization_services
+
+    return get_organization_services(request).publishing
 
 
 # Unauthenticated: Meta fetches the approved render with an unguessable token.
@@ -31,10 +33,25 @@ fetch_router = APIRouter(tags=["publication"])
 
 @fetch_router.get("/pub/{token}")
 def fetch_artifact(token: str, request: Request) -> FileResponse:
-    publishing: DojoPublishing = request.app.state.publishing
+    from dojo.exceptions import OrganizationInactive, OrganizationNotFound
+    from dojo.organizations import DojoOrganizations
+
+    from backend.organizations import services_for_organization
+
+    template = getattr(request.app.state, "publishing", None)
+    if template is None:
+        raise HTTPException(status_code=404, detail="signed artifact not found")
     try:
+        owner_reader = getattr(template._signed_urls, "token_owner", None)
+        owner = owner_reader(token) if owner_reader is not None else None
+        if owner is None:
+            owner = template._packages.organization_id
+        if owner is None:
+            raise MediaNotFound("signed artifact not found")
+        DojoOrganizations(request.app.state.pairing._pairing).require_active(owner)
+        publishing = services_for_organization(request, owner).publishing
         path = publishing.serve_signed_artifact(token)
-    except MediaNotFound as exc:
+    except (MediaNotFound, ValueError, OrganizationInactive, OrganizationNotFound) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FileResponse(str(path), media_type="video/mp4", filename="reel.mp4")
 

@@ -42,7 +42,7 @@ async def test_stalled_event_lookup_stops_heartbeats_and_readiness():
         heartbeat_seconds=0.2,
     )
     await hub.start()
-    stream = hub.subscribe(1, expires_at=None)
+    stream = hub.subscribe(1, expires_at=None, organization_id=1)
     assert (await asyncio.wait_for(anext(stream), 3)).event == "ready"
     assert await asyncio.to_thread(entered.wait, 2)
 

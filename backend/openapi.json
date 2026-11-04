@@ -588,6 +588,10 @@
             "title": "Name",
             "type": "string"
           },
+          "organization_id": {
+            "title": "Organization Id",
+            "type": "integer"
+          },
           "revoked_at": {
             "anyOf": [
               {
@@ -603,6 +607,7 @@
         },
         "required": [
           "id",
+          "organization_id",
           "name",
           "kind",
           "created_at",

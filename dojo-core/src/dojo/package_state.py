@@ -50,9 +50,15 @@ def _validate_group_value(key: str, value: dict, media: dict | None) -> None:
                 if isinstance(setting, bool) or not isinstance(setting, (int, float)) \
                         or not isfinite(setting) or setting < 1 / 25:
                     raise MontageTrimInvalid("branding duration must be finite and positive")
-            elif not isinstance(setting, str) or "\\" in setting \
-                    or Path(setting).is_absolute() or ".." in Path(setting).parts:
-                raise MontageTrimInvalid("branding asset must be a relative artifact reference")
+            else:
+                from dojo.branding_assets import validate_asset_reference
+
+                try:
+                    validate_asset_reference(setting)
+                except ValueError as exc:
+                    raise MontageTrimInvalid(
+                        "branding asset must be a relative artifact reference",
+                    ) from exc
 
 
 def merge_edit_groups(

@@ -49,7 +49,18 @@ def initialize_database(url: str | None = None) -> None:
                 preflight_emission_conflicts(connection)
                 # The unversioned shape may already carry 0015's objects, so the
                 # validator reports the revision the schema actually matches.
-                command.stamp(config, validate_legacy_schema(connection))
+                recognized = validate_legacy_schema(connection)
+                command.stamp(config, recognized)
+                if recognized == "0022_organizations":
+                    # create_all supplies DDL, not the installation seeds.
+                    connection.execute(text("""INSERT INTO organizations (name, name_key, email)
+                        VALUES ('Kaizen Aikido Akademi', 'kaizen aikido akademi',
+                                'kaizenaikidoakademi@gmail.com')
+                        ON CONFLICT (name_key) DO NOTHING"""))
+                    connection.execute(text("""INSERT INTO consent_policies
+                        (version, text, created_at, created_by)
+                        SELECT 1, 'Görsellerimin paylaşılmasını onaylıyorum.', now(), 'installation'
+                        WHERE NOT EXISTS (SELECT 1 FROM consent_policies)"""))
             command.upgrade(config, "head")
     finally:
         engine.dispose()

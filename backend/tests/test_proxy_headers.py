@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dojo import DojoPairing, InMemoryStore
-from dojo.testing import FakeClock
+from dojo import DojoPairing
+from dojo.testing import FakeClock, scoped_memory_store
 from fastapi import Request
 from fastapi.testclient import TestClient
 
@@ -22,7 +22,7 @@ def _scheme(request: Request) -> dict:
 
 
 def make_client(trusted_proxies: str, tmp_path: Path, **kwargs) -> TestClient:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
     app = create_app(None, pairing, cookie_secure=True, trusted_proxies=trusted_proxies, **kwargs)
     # Test-only scheme echo: observes ASGI scheme after normalization.
@@ -131,7 +131,7 @@ def test_public_origin_rejects_http_when_secure(monkeypatch, tmp_path: Path) -> 
     with pytest.raises(RuntimeError, match="non-https public origin"):
         deps.resolve_public_base_url()
     # Startup fails fast through create_app.
-    store = InMemoryStore()
+    store = scoped_memory_store()
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
     with pytest.raises(RuntimeError, match="non-https public origin"):
         _create(None, pairing, cookie_secure=True, trusted_proxies="testclient")
@@ -170,7 +170,7 @@ def test_build_publishing_bad_origin_raises_despite_secret(
 
 def test_trusted_proxies_typo_fails_at_startup(tmp_path: Path) -> None:
     import pytest
-    from dojo import DojoPairing, InMemoryStore
+    from dojo import DojoPairing
     from dojo.testing import FakeClock
 
     from backend.main import create_app as _create
@@ -180,7 +180,7 @@ def test_trusted_proxies_typo_fails_at_startup(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="invalid TRUSTED_PROXIES"):
         ProxyHeadersMiddleware(_noop, trusted_proxies="not-a-cidr")
-    store = InMemoryStore()
+    store = scoped_memory_store()
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
     with pytest.raises(ValueError, match="invalid TRUSTED_PROXIES"):
         _create(None, pairing, cookie_secure=True, trusted_proxies="not-a-cidr")

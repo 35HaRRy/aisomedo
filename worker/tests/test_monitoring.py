@@ -19,7 +19,7 @@ from dojo.adapters.memory import InMemoryStore
 from dojo.adapters.stubs import StubNotifier
 from dojo.model import Client
 from dojo.monitoring import DojoMonitoring
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 from worker.monitoring import (
     DEFAULT_INTERVAL_SECONDS,
     DEFAULT_LOW_PERCENT,
@@ -100,7 +100,7 @@ def make_runner(
     monitor: object | None = None,
     monotonic: object | None = None,
 ) -> tuple[MonitoringRunner, InMemoryStore, StubNotifier, FakeUsage]:
-    store = store if store is not None else InMemoryStore()
+    store = store if store is not None else scoped_memory_store()
     notifier = notifier if notifier is not None else StubNotifier()
     usage = FakeUsage(readings if readings is not None else {"/media": 50.0, "/": 60.0})
     config = MonitoringConfig(
@@ -397,7 +397,7 @@ def test_low_target_opens_one_incident_and_alerts_once() -> None:
 
 def test_hysteresis_holds_the_incident_open_between_thresholds() -> None:
     clock = FakeClock()
-    store = InMemoryStore()
+    store = scoped_memory_store()
     runner, _store, _notifier, _usage = make_runner(
         readings={"/media": 10.0, "/": 60.0}, store=store
     )
@@ -417,7 +417,7 @@ def test_hysteresis_holds_the_incident_open_between_thresholds() -> None:
 
 
 def test_one_failed_mount_never_reads_as_recovery_and_others_still_sample() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     clock = FakeClock()
     runner, _store, _notifier, _usage = make_runner(
         readings={"/media": 10.0, "/": 10.0}, store=store
@@ -442,7 +442,7 @@ def test_one_failed_mount_never_reads_as_recovery_and_others_still_sample() -> N
 
 
 def test_a_failed_sample_leaves_the_open_incident_and_retries_next_turn() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     clock = FakeClock()
     runner, _store, _notifier, _usage = make_runner(
         readings={"/media": 10.0, "/": 10.0}, store=store
@@ -476,7 +476,11 @@ def test_a_rejected_sample_is_logged_and_never_escapes_the_turn() -> None:
 
 
 def test_delivery_failure_is_logged_and_never_escapes_the_turn() -> None:
-    store = ExplodingStore()
+    from dojo.organizations import DojoOrganizations
+
+    registry = ExplodingStore()
+    organization = DojoOrganizations(registry).create(name="Test", email="test@example.com")
+    store = registry.for_organization(organization.id)
     register_device(store)
     runner, _store, _notifier, _usage = make_runner(
         readings={"/media": 10.0, "/": 10.0}, store=store
@@ -627,7 +631,7 @@ def test_a_target_that_samples_again_forgets_its_earlier_failure(
 
 def test_a_restart_while_still_low_opens_no_second_incident() -> None:
     """Incident state is durable, so a restart is not a new incident."""
-    store = InMemoryStore()
+    store = scoped_memory_store()
     first, _store, _notifier, _usage = make_runner(
         readings={"/media": 10.0, "/": 60.0}, store=store
     )

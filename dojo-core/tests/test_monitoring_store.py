@@ -26,7 +26,7 @@ from dojo.monitoring_models import (
     retry_delay_seconds,
     token_fingerprint,
 )
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
@@ -39,7 +39,8 @@ SECOND = timedelta(seconds=1)
 @pytest.fixture
 def other(pg_store):
     """A second store/engine: real concurrent database connections."""
-    store = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False))
+    store = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False),
+                          organization_id=pg_store.organization_id)
     yield store
     store.dispose()
 
@@ -129,7 +130,7 @@ def drain(store, now=FIXED_AT):
 
 
 def contract(pg_store, memory):
-    return InMemoryStore() if memory else pg_store
+    return scoped_memory_store() if memory else pg_store
 
 
 # --- job failure events -----------------------------------------------------
@@ -685,7 +686,7 @@ def test_memory_store_registration_writes_are_serialized_with_snapshots():
     does not take that same lock can therefore be observed half-applied. While
     this thread holds the lock, a concurrent rotation must not complete.
     """
-    store = InMemoryStore()
+    store = scoped_memory_store()
     store.create(queued_job())
     fail_job(store)
     client = register_device(store, "phone", "token-1")
