@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import pytest
 from dojo import (
     DojoPublishing,
-    InMemoryStore,
     RescheduleTimeInvalid,
     ReviewAlreadyHandled,
     ReviewNotFound,
@@ -20,11 +19,11 @@ from dojo.adapters.stubs import (
     StubReelRenderer,
     StubSignedUrlStore,
 )
-from dojo.testing import FIXED_AT, ISTANBUL, FakeClock
+from dojo.testing import FIXED_AT, ISTANBUL, FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     renderer = StubReelRenderer()
     seam = DojoPublishing(
         packages=store,

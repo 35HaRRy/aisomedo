@@ -73,7 +73,11 @@ class AccountProvider:
 
 
 def store() -> PostgresStore:
-    return PostgresStore(os.environ.get("DATABASE_URL", ""))
+    from dojo.organizations import INITIAL_ORGANIZATION_NAME, DojoOrganizations
+
+    registry = PostgresStore(os.environ.get("DATABASE_URL", ""))
+    organization = DojoOrganizations(registry).require_name(INITIAL_ORGANIZATION_NAME)
+    return registry.for_organization(organization.id)
 
 
 def build_meta() -> DojoMetaConnection:
@@ -102,7 +106,9 @@ def build_publishing() -> DojoPublishing:
                                cipher=FernetCipher(os.environ["META_TOKEN_ENCRYPTION_KEY"]),
                                host="http://fixtures:8000"),
         signed_urls=HmacSignedUrlStore(base_url=ORIGIN,
-                                       secret=os.environ["SIGNED_URL_SECRET"], clock=clock),
+                                       secret=os.environ["SIGNED_URL_SECRET"], clock=clock,
+                                       media_root=Path(os.environ["MEDIA_ROOT"]),
+                                       organization_id=db.organization_id),
     )
 
 
@@ -142,10 +148,10 @@ def main(argv: list[str] | None = None) -> int:
 
         set_consent_policy(build_setup(), version=1, text="Acceptance media consent policy")
         pairing = build_pairing()
-        print(json.dumps({"browser_code": mint_code(pairing).raw_code,
-                          "device_code": mint_code(pairing).raw_code,
-                          "live_browser_a": mint_code(pairing).raw_code,
-                          "live_browser_b": mint_code(pairing).raw_code}))
+        organization_id = store().organization_id
+        print(json.dumps({key: mint_code(pairing, organization_id=organization_id).raw_code
+                          for key in ("browser_code", "device_code",
+                                      "live_browser_a", "live_browser_b")}))
     else:
         root = Path(os.environ["MEDIA_ROOT"])
         print(json.dumps({"completed": [p.name for p in root.glob("*-completed")

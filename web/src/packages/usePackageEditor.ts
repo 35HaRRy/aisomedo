@@ -86,6 +86,9 @@ function rememberClear(clientId: number | undefined, target: ClearTarget | null,
   catch { /* Blocked storage does not prevent an in-session cleanup retry. */ }
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+// A live refresh briefly reports "syncing"; a click made while the UI was usable
+// must still write instead of being discarded by a guard that re-reads the phase.
+const writable = () => ["live", "syncing"].includes(live.getSnapshot());
 function inputs(snapshot: ActiveEditorOut): Record<string, RangeInput[]> {
   return Object.fromEntries(snapshot.media.map(m => [m.media_id,
     m.is_video ? (snapshot.montage.selections[m.media_id] ?? []).map(r => ({ start: String(r.start), end: String(r.end) }))
@@ -170,9 +173,9 @@ function cardValues(data: Data, id: string) {
 }
 
 function cardSaveReason(data: Data, id: string, enabled: boolean): SaveBlockedReason {
-  if (data.busy || data.loading || data.restoring) return "busy";
+  if (data.busy || data.restoring) return "busy";
   if (data.persistenceError) return "storage";
-  if (!enabled || !navigator.onLine || live.getSnapshot() !== "live") return "offline";
+  if (!enabled || !navigator.onLine || !writable()) return "offline";
   if (data.stale || data.readRequired || !data.snapshot) return "refresh";
   if (!data.snapshot.media.some(m => m.media_id === id && m.status === "finalized") || !changed(data, id)) return "unchanged";
   const values = cardValues(data, id);
@@ -312,7 +315,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     const old = current.current;
     const clearing = change.kind === "clear";
     const target = old.pendingClear ?? old.snapshot?.package;
-    if (!enabled || !alive.current || !navigator.onLine || live.getSnapshot() !== "live" || old.busy || !target
+    if (!enabled || !alive.current || !navigator.onLine || !writable() || old.busy || !target
       || old.restoring || old.persistenceError || !clearing && (old.stale || old.readRequired || !old.snapshot)) return false;
     const expected = old.snapshot ? expectedWrite(old.snapshot, change) : undefined;
     read.current?.abort();
@@ -326,7 +329,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
         groups: {}, inputs: {}, uncertain: false };
       if (!await persist({ ...current.current, storedDraft: { ...draft, uncertain: true,
         pendingRemovals: change.kind === "remove" ? [...new Set([...(draft.pendingRemovals ?? []), change.id])] : draft.pendingRemovals } })) return false;
-      if (!alive.current || controller.signal.aborted || live.getSnapshot() !== "live") return false;
+      if (!alive.current || controller.signal.aborted || !writable()) return false;
       const response = await operation(target.folder_name, controller.signal);
       if (!alive.current || controller.signal.aborted) return false;
       if (clearing) {
@@ -377,19 +380,19 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     void persist({ ...next, storedDraft: editedDraft(next) });
   }, [persist]);
   const setRanges = useCallback((id: string, ranges: VideoRange[]) => {
-    if (!navigator.onLine || live.getSnapshot() !== "live" || current.current.busy || current.current.restoring || current.current.stale || !current.current.snapshot) return;
+    if (!navigator.onLine || !writable() || current.current.busy || current.current.restoring || current.current.stale || !current.current.snapshot) return;
     edit({ ...current.current, draftInputs: { ...current.current.draftInputs,
       [id]: [...ranges].sort((a, b) => a.start - b.start).map(r => ({ start: String(r.start), end: String(r.end) })) } });
   }, [edit]);
   const setInput = useCallback((id: string, index: number, bound: "start" | "end", value: string) => {
     const old = current.current;
-    if (!navigator.onLine || live.getSnapshot() !== "live" || old.busy || old.restoring || old.stale || !old.snapshot || !old.draftInputs[id]?.[index]) return;
+    if (!navigator.onLine || !writable() || old.busy || old.restoring || old.stale || !old.snapshot || !old.draftInputs[id]?.[index]) return;
     edit({ ...old, draftInputs: { ...old.draftInputs,
       [id]: old.draftInputs[id].map((r, i) => i === index ? { ...r, [bound]: value } : r) } });
   }, [edit]);
   const discard = useCallback((id?: string) => {
     const old = current.current;
-    if (live.getSnapshot() !== "live" || old.busy) return;
+    if (!writable() || old.busy) return;
     // A draft retained from a replaced package is deleted before the editor is
     // rebound, so later edits cannot be written under the old package key.
     const rollover = !!old.draftKey && !!old.snapshot && old.draftKey.packageId !== old.snapshot.package.id;
@@ -433,7 +436,7 @@ export function usePackageEditor(enabled = true): PackageEditorState {
     loadStoredDraft,
     resolveConflict: (key, choice) => {
       const old = current.current;
-      if (live.getSnapshot() !== "live" || old.busy || !old.storedDraft || !old.snapshot || !old.conflicts[key]) return;
+      if (!writable() || old.busy || !old.storedDraft || !old.snapshot || !old.conflicts[key]) return;
       const draft = resolveDraftConflict(old.storedDraft, key, old.conflicts[key], choice, old.snapshot.content_revision);
       const conflicts = { ...old.conflicts }; delete conflicts[key];
       const fresh = inputs(old.snapshot);

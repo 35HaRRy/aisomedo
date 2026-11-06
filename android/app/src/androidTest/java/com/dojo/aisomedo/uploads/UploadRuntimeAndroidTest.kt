@@ -52,7 +52,7 @@ internal class UploadDeviceFixture : AutoCloseable {
                 if (path == "/api/dashboard") dashboardReads.incrementAndGet()
                 val body = when (path) {
                     "/api/compat" -> """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":5,"update_url":"https://example.com/update"}"""
-                    "/api/pairing/me" -> """{"id":1,"kind":"device","name":"Synthetic test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}"""
+                    "/api/pairing/me" -> """{"id":1,"organization_id":1,"kind":"device","name":"Synthetic test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}"""
                     "/api/setup" -> """{"checklist":[],"ready":true}"""
                     "/api/dashboard" -> """{"generated_at":"2026-10-09T00:00:00Z","package":null,"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"idle"}}"""
                     "/api/activity" -> """{"events":[],"next_cursor":null}"""

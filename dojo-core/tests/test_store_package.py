@@ -6,13 +6,12 @@ from pathlib import Path
 import pytest
 from dojo import DojoPublishing
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
 from dojo.model import Package
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 
 
 def test_memory_update_replaces_row() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     created = store.create(
         Package(id=0, folder_name="06-08-2026 14-30", created_at=FIXED_AT)
     )
@@ -39,7 +38,7 @@ def test_pg_update_replaces_row(pg_store: PostgresStore) -> None:
 
 
 def test_memory_update_missing_raises_value_error() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     with pytest.raises(ValueError, match="package 999 not found"):
         store.update(Package(id=999, folder_name="missing", created_at=FIXED_AT))
 

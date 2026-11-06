@@ -25,6 +25,8 @@ import { Walkthrough, replayTours } from "./promotion/Walkthrough";
 import { getDemoRuntime, startDemo, stopDemo } from "./demo/runtime";
 import { isDemoHash, normalHref, readPairingMarker, workspaceHref } from "./demo/routing";
 import { live } from "./live";
+import { BrandLogo } from "./components/BrandLogo";
+import { demoAssetUrl } from "./demo/assets";
 
 function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
   return <div role="alert" className="notice"><p>{stale ? tr.stale : tr.loadError}</p>
@@ -33,6 +35,11 @@ function ErrorNotice({ stale, retry }: { stale: boolean; retry: () => void }) {
 
 function PairedShell() {
   const { client } = useSession();
+  const organization = useLiveData(api.organization, true, ["settings"]);
+  const logoAsset = organization.data?.logo_asset;
+  const logo = logoAsset && getDemoRuntime() ? demoAssetUrl(logoAsset)
+    : logoAsset && /^branding\/assets\/[0-9a-f]{32}\.(png|jpg)$/.test(logoAsset)
+      ? `/api/settings/branding/assets/${logoAsset.split("/").pop()}` : null;
   const editor = usePackageEditorContext();
   const { area, reviewId, occurrenceId, packageFolder, navigate } = editor.navigation;
   const onboarding = useOnboarding();
@@ -52,12 +59,12 @@ function PairedShell() {
   useEffect(() => { document.title = `${area === "onboarding" ? "Kurulum" : area === "welcome" ? "Tanıtım" : tr[area]} · ${tr.app}`; }, [area]);
   if (area === "welcome") return <LandingPage onOpenApp={() => { void navigate("#/dashboard"); }} />;
   return <UploadProvider><div className="app-shell">
-    <aside className="sidebar"><a className="brand" href={workspaceHref("#/dashboard")} onClick={event => { event.preventDefault(); void navigate("#/dashboard"); }}><span className="brand-mark" aria-hidden="true">A</span><span>{tr.app}{getDemoRuntime() && <span className="demo-badge">demo</span>}<small>Video &amp; Reel Stüdyosu</small></span></a>
+    <aside className="sidebar"><a className="brand" href={workspaceHref("#/dashboard")} onClick={event => { event.preventDefault(); void navigate("#/dashboard"); }}><BrandLogo src={logo} /><span>{organization.data?.name ?? tr.app}{getDemoRuntime() && <span className="demo-badge">demo</span>}<small>Video &amp; Reel Stüdyosu</small></span></a>
       <nav aria-label={tr.navigation}>{areas.map(item => <a key={item} data-tour={item === "package" ? "package-link" : undefined} href={workspaceHref(`#/${item}`)} onClick={event => { event.preventDefault(); void navigate(`#/${item}`); }} aria-current={area === item ? "page" : undefined}><MediaActionIcon action={item} /><span>{tr[item]}</span></a>)}</nav>
       <div className="sidebar-foot"><details className="promotion-help" data-tour="help"><summary>Yardım</summary><button onClick={() => { void navigate("#/welcome"); }}>Uygulama tanıtımı</button><button onClick={event => { event.currentTarget.closest("details")?.removeAttribute("open"); if (client) replayTours(client.id); }}>Tanıtımları yeniden başlat</button></details><div className="paired-client"><span>{tr.client}</span><strong>{client?.name}</strong></div><SocialLinks /><ThemeToggle /></div>
     </aside>
     <main id="content" className="main-content" tabIndex={-1}>
-      {getDemoRuntime() && <p className="notice demo-notice">Demo: işlemler yalnızca bu tarayıcı oturumunda simüle edilir. Örnek önizleme; yüklediğiniz dosya işlenmedi. Gerçek paylaşım yapılmaz.</p>}
+      {getDemoRuntime() && <p className="notice demo-notice">Örnek Stüdyo organizasyonunun demo çalışma alanı: işlemler yalnızca bu tarayıcı oturumunda simüle edilir. Örnek önizleme; yüklediğiniz dosya işlenmedi. Gerçek paylaşım yapılmaz.</p>}
       {area !== "onboarding" && onboarding.error && <ErrorNotice stale={!!onboarding.setup} retry={() => void onboarding.refresh().catch(() => {})} />}
       {dashboardVisible && snapshot.error && <ErrorNotice stale={!!snapshot.data} retry={snapshot.retry} />}
       {dashboardVisible && !snapshot.data && !snapshot.error && <p role="status">{tr.loading}</p>}

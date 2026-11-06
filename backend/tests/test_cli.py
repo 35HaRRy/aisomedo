@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from dojo import BrandingConfig, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 
 from backend.cli import (
     consent_main,
@@ -13,9 +13,9 @@ from backend.cli import (
 
 
 def test_mint_code_audits_cli_actor() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
-    issued = mint_code(pairing)
+    issued = mint_code(pairing, organization_id=store.organization_id)
     assert len(issued.raw_code) == 8
     events = [e for e in store.list_recent() if e.action == "pairing.code_created"]
     assert len(events) == 1
@@ -23,7 +23,7 @@ def test_mint_code_audits_cli_actor() -> None:
 
 
 def test_set_consent_policy_audits_cli_actor() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock())
     policy = set_consent_policy(setup, version=1, text="Riza metni")
     assert policy.version == 1
@@ -51,7 +51,7 @@ def make_publishing(store: InMemoryStore):
 
 
 def test_set_branding_defaults_audits_cli_actor(tmp_path) -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = make_publishing(store)
     config = set_branding_defaults(
         publishing,
@@ -65,7 +65,7 @@ def test_set_branding_defaults_audits_cli_actor(tmp_path) -> None:
 
 
 def test_set_caption_template_audits_cli_actor(tmp_path) -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = make_publishing(store)
     config = set_branding_defaults(
         publishing, config=BrandingConfig(caption_template="Bugün {{isim}}")

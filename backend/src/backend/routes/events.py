@@ -27,7 +27,8 @@ async def events(
         if generation != hub.generation:
             yield 'event: resync\ndata: {"reason": "listener_lost"}\n\n'
             return
-        async for message in hub.subscribe(client.id, expires_at=expires_at):
+        async for message in hub.subscribe(client.id, expires_at=expires_at,
+                                            organization_id=client.organization_id):
             yield f"event: {message.event}\ndata: {json.dumps(message.data)}\n\n"
 
     stream = StreamingResponse(frames(), media_type="text/event-stream", headers={

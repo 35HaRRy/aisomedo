@@ -4,9 +4,8 @@ from dataclasses import replace
 
 import pytest
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
 from dojo.model import Job, Package, Upload
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 def make_job(job_id: str = "j-1", upload_id: int = 7) -> Job:
@@ -22,7 +21,7 @@ def make_job(job_id: str = "j-1", upload_id: int = 7) -> Job:
 
 
 def test_memory_job_roundtrip() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     created = store.create(make_job())
     assert created.id > 0
     assert store.get("j-1") == created
@@ -31,7 +30,7 @@ def test_memory_job_roundtrip() -> None:
 
 
 def test_memory_claim_next_marks_processing() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     store.create(make_job("j-1"))
     claimed = store.claim_next(FIXED_AT)
     assert claimed is not None
@@ -68,7 +67,9 @@ def test_pg_job_roundtrip_and_claim(pg_store: PostgresStore) -> None:
 
 @pytest.fixture(params=["memory", "postgres"])
 def preview_store(request):
-    return InMemoryStore() if request.param == "memory" else request.getfixturevalue("pg_store")
+    if request.param == "memory":
+        return scoped_memory_store()
+    return request.getfixturevalue("pg_store")
 
 
 def preview_job(job_id="preview-a", media_id="a", kind="section_preview", package_id=1):

@@ -5,7 +5,6 @@ from datetime import date, datetime, time, timedelta
 import pytest
 from dojo import (
     DojoPublishing,
-    InMemoryStore,
     ManualPublishConflict,
     PlanInvalid,
     SchedulePlan,
@@ -15,11 +14,11 @@ from dojo.adapters.stubs import (
     StubNotifier,
     StubSignedUrlStore,
 )
-from dojo.testing import ISTANBUL, FakeClock
+from dojo.testing import ISTANBUL, FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     seam = DojoPublishing(
         packages=store,
         audit=store,

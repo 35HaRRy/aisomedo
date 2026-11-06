@@ -6,15 +6,14 @@ from threading import Barrier, Event
 import dojo
 import pytest
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 from sqlalchemy import event
 
 from tests.test_setup import add_client, make_setup
 
 
 def test_displayed_version_rejects_new_policy() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     client = add_client(setup, store)
     setup.set_policy(version=1, text="v1", requester="cli")
@@ -27,7 +26,7 @@ def test_displayed_version_rejects_new_policy() -> None:
 
 
 def test_versioned_acceptance_is_inherited_and_idempotent() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     first = add_client(setup, store, name="First")
     second = add_client(setup, store, name="Second")
@@ -46,7 +45,7 @@ def test_versioned_acceptance_is_inherited_and_idempotent() -> None:
 def test_concurrent_same_version_accepts_once(
     persistent: bool, request: pytest.FixtureRequest
 ) -> None:
-    store = request.getfixturevalue("pg_store") if persistent else InMemoryStore()
+    store = request.getfixturevalue("pg_store") if persistent else scoped_memory_store()
     setup = dojo.DojoSetup(setup=store, audit=store, pairing=store, clock=FakeClock())
     client = add_client(setup, store)
     setup.set_policy(version=1, text="v1", requester="cli")
@@ -104,7 +103,7 @@ def test_postgres_policy_update_serializes_waiting_acceptance(pg_store: Postgres
 
 
 def test_memory_policy_update_serializes_waiting_acceptance() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     client = add_client(setup, store)
     setup.set_policy(version=1, text="v1", requester="cli")

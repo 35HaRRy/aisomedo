@@ -134,6 +134,11 @@ test.beforeAll(async ({ browser, playwright }) => {
   await page.getByRole("checkbox", { name: "Metni okudum ve medya kullanımına rıza veriyorum." }).check();
   await page.getByRole("button", { name: "Rızayı kaydet", exact: true }).click();
   await expect.poll(async () => (await json<{ ready: boolean }>("/api/setup")).ready).toBe(true);
+  // The app runs its own /api/setup read after the consent save; navigating while
+  // that read is still in flight makes the unfinished-setup guard bounce
+  // #/settings back to #/onboarding. "Kurulumu bitir" only renders once the app
+  // itself knows setup is ready.
+  await expect(page.getByRole("link", { name: "Kurulumu bitir", exact: true })).toBeVisible();
   // Bring the due boundary inside the actual configured notification delivery window.
   await page.goto("/#/settings");
   await page.getByLabel("Bildirim başlangıcı", { exact: true }).fill("06:00");

@@ -10,7 +10,7 @@ import java.nio.file.Files
 class SnapshotStoreTest {
     private val origin = "https://dojo.example"
     private val binding = "a".repeat(64)
-    private fun content() = CachedContent(binding, ClientOut("now", "cli", 1, "device", null, "Telefon", null), SetupOut(emptyList(), true),
+    private fun content() = CachedContent(binding, ClientOut("now", "cli", 1, "device", null, "Telefon", 1, null), SetupOut(emptyList(), true),
         activity = ActivityPageOut(emptyList(), null), activityFetchedAt = 1234)
 
     @Test fun roundtripDoesNotPersistDraftsOrCredentials() {

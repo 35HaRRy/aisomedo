@@ -4,9 +4,9 @@ from datetime import timedelta
 from threading import Barrier
 
 import pytest
-from dojo import InMemoryStore, ManualPublishConflict, RescheduleTimeInvalid, SchedulePlan
+from dojo import ManualPublishConflict, RescheduleTimeInvalid, SchedulePlan
 from dojo.model import YayinIncelemesi, YayinZamani
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 from sqlalchemy.exc import IntegrityError
 
 from tests.test_review import claim_render, finalize_media, make_seam, monday_dt, set_logo
@@ -207,7 +207,9 @@ def test_future_exception_blocks_manual_even_when_regular_is_earlier(tmp_path):
 
 @pytest.fixture(params=["memory", "postgres"])
 def invariant_store(request):
-    return InMemoryStore() if request.param == "memory" else request.getfixturevalue("pg_store")
+    if request.param == "memory":
+        return scoped_memory_store()
+    return request.getfixturevalue("pg_store")
 
 
 @pytest.mark.parametrize("kinds", [("regular", "regular"), ("manual", "oneoff"),

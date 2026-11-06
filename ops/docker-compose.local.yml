@@ -9,6 +9,9 @@ services:
   db:
     restart: "no"
   backend:
+    # Vite dev server and Playwright proxy /api to host port 8000.
+    ports:
+      - "127.0.0.1:8000:8000"
     restart: "no"
   worker:
     restart: "no"

@@ -32,7 +32,7 @@ def serve(url, root, pipe):
     from backend.live import LiveHub
     from backend.main import create_app
 
-    store = PostgresStore(url)
+    store = PostgresStore(url, organization_id=1)
     app = create_app(
         publishing(store, root), DojoPairing(pairing=store, audit=store, clock=FakeClock()),
         DojoActivity(audit=store, pairing=store),
@@ -55,7 +55,7 @@ def serve(url, root, pipe):
 
 
 def worker(url, root, captions, previews=False, now=None):
-    store = PostgresStore(url)
+    store = PostgresStore(url, organization_id=1)
     try:
         domain = publishing(store, root)
         if now is not None:

@@ -134,6 +134,13 @@ class DojoMonitoring:
             return None
 
     def _deliver(self, lease: DeliveryLease) -> int:
+        try:
+            if not self._store.alert_delivery_active(lease):
+                return 0
+        except Exception:  # noqa: BLE001 - failure to verify access never permits a send
+            logger.exception("alert access check failed",
+                             extra={"event": "monitoring.access_failed"})
+            return 0
         alert = lease.alert
         notification = Notification(
             title=alert.title, body=alert.body, data=dict(alert.data)

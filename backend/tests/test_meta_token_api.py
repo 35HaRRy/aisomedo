@@ -1,21 +1,26 @@
+from pathlib import Path
+
 import httpx
 import pytest
-from dojo import DojoMetaConnection, DojoPairing, InMemoryStore
+from dojo import DojoMetaConnection, DojoPairing, DojoPublishing
 from dojo.adapters import meta as adapters
+from dojo.testing import scoped_memory_store
 from fastapi.testclient import TestClient
 
 from backend.main import create_app
 
 
 def make_api():
-    store = InMemoryStore()
+    store = scoped_memory_store()
     pairing = DojoPairing(pairing=store, audit=store)
     meta = DojoMetaConnection(
         store=store, provider=adapters.StubMetaOAuthProvider(),
         cipher=adapters.FernetCipher(adapters.FernetCipher.generate_key()),
         app_id="app", app_secret="secret", redirect_uri="https://example.test/callback",
     )
-    client = TestClient(create_app(pairing=pairing, meta=meta, cookie_secure=False))
+    publishing = DojoPublishing(packages=store, audit=store, media_root=Path("unused"))
+    client = TestClient(create_app(publishing=publishing, pairing=pairing, meta=meta,
+                                   cookie_secure=False))
     code = pairing.create_pairing_code(requester="cli").raw_code
     result = client.post("/api/pairing/validate", json={
         "code": code, "kind": "device", "name": "PowerShell",

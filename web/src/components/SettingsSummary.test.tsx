@@ -31,6 +31,7 @@ beforeEach(() => {
     if (url === "/api/events") return liveResponse();
     if (url === "/api/compat") return json({ api_version: "0.1.0" });
     if (url === "/api/pairing/me") return json(client);
+    if (url === "/api/pairing/organization") return json({ name: "Test Dojo", logo_asset: branding.logo_asset });
     if (url === "/api/pairing/clients/1/revoke") { revocations++; return json({ revoked: true }); }
     if (url === "/api/setup") return json(setupState(), setupStatus);
     if (url === "/api/dashboard") return json({ ...dashboard(), plan }, dashboardStatus);

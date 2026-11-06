@@ -62,6 +62,7 @@ export async function handleDemoRequest(state: DemoState, path: string, init: Re
   if (method === "GET") {
     if (p === "/api/events") return demoEvents(state, signal);
     const reads: Record<string, unknown> = {
+      "/api/pairing/organization": { name: "Örnek Stüdyo", logo_asset: state.branding.logo_asset },
       "/api/compat": { api_version: CONTRACT_VERSION }, "/api/pairing/me": state.client,
       "/api/dashboard": state.dashboard, "/api/activity": state.activity, "/api/setup": state.setup,
       "/api/setup/consent": state.consent, "/api/settings/branding": state.branding, "/api/settings/plan": state.plan,

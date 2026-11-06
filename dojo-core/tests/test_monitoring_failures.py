@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore
+from dojo import DojoPublishing
 from dojo.adapters.stubs import (
     StubMediaProcessor,
     StubMetaPublisher,
@@ -22,11 +22,11 @@ from dojo.adapters.stubs import (
     StubSignedUrlStore,
 )
 from dojo.monitoring_models import ALERT_KIND_JOB_FAILED
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     renderer = StubReelRenderer()
     return (
         store,

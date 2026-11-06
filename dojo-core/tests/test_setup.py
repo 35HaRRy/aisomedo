@@ -8,7 +8,7 @@ from dojo import ConsentPolicyDowngrade, DojoPairing, DojoSetup, NoConsentPolicy
 from dojo.adapters.db import PostgresStore
 from dojo.adapters.memory import InMemoryStore
 from dojo.model import Client, ConsentAcceptance
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 
 
 def make_setup(store: InMemoryStore) -> DojoSetup:
@@ -36,7 +36,7 @@ def add_client(setup: DojoSetup, store: InMemoryStore, *, name: str = "Phone") -
 
 
 def test_set_policy_creates_current_policy_and_audits() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     policy = setup.set_policy(version=1, text="Riza metni", requester="cli")
     assert policy.version == 1
@@ -49,7 +49,7 @@ def test_set_policy_creates_current_policy_and_audits() -> None:
 
 
 def test_set_policy_same_version_updates_text_in_place() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     setup.set_policy(version=1, text="v1", requester="cli")
     setup.set_policy(version=1, text="v1b", requester="cli")
@@ -60,7 +60,7 @@ def test_set_policy_same_version_updates_text_in_place() -> None:
 
 
 def test_set_policy_rejects_downgrade() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     setup.set_policy(version=3, text="v3", requester="cli")
     with pytest.raises(ConsentPolicyDowngrade):
@@ -68,7 +68,7 @@ def test_set_policy_rejects_downgrade() -> None:
 
 
 def test_accept_current_policy_records_once_and_is_idempotent() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     setup.set_policy(version=1, text="v1", requester="cli")
     client = add_client(setup, store)
@@ -89,7 +89,7 @@ def test_accept_current_policy_records_once_and_is_idempotent() -> None:
 
 
 def test_accept_without_policy_raises() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     client = add_client(setup, store)
     with pytest.raises(NoConsentPolicy):
@@ -97,7 +97,7 @@ def test_accept_without_policy_raises() -> None:
 
 
 def test_new_version_requires_fresh_acceptance() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     setup.set_policy(version=1, text="v1", requester="cli")
     client = add_client(setup, store)
@@ -109,7 +109,7 @@ def test_new_version_requires_fresh_acceptance() -> None:
 
 
 def test_checklist_pairing_tracks_non_revoked_clients() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     assert setup.checklist_item("pairing").complete is False
     client = add_client(setup, store)
@@ -119,7 +119,7 @@ def test_checklist_pairing_tracks_non_revoked_clients() -> None:
 
 
 def test_checklist_consent_requires_current_version_accepted() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     add_client(setup, store)
     assert setup.checklist_item("consent").complete is False
@@ -131,7 +131,7 @@ def test_checklist_consent_requires_current_version_accepted() -> None:
 
 
 def test_checklist_branding_tracks_logo_and_caption_template() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     assert setup.checklist_item("logo").complete is False
     assert setup.checklist_item("caption_template").complete is False
@@ -145,7 +145,7 @@ def test_checklist_branding_tracks_logo_and_caption_template() -> None:
 
 
 def test_is_ready_requires_all_items() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     setup = make_setup(store)
     assert setup.is_ready() is False
     add_client(setup, store)

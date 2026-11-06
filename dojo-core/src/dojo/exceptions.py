@@ -2,6 +2,26 @@ class DojoError(Exception):
     pass
 
 
+class OrganizationInvalid(DojoError):
+    pass
+
+
+class OrganizationNotFound(DojoError):
+    pass
+
+
+class OrganizationInactive(DojoError):
+    pass
+
+
+class OrganizationNameTaken(DojoError):
+    pass
+
+
+class OrganizationScopeRequired(DojoError):
+    pass
+
+
 class ActivePackageExists(DojoError):
     pass
 

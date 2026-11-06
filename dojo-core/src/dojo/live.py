@@ -34,6 +34,7 @@ class ChangeEvent:
     event_id: str
     versions: dict[str, int]
     revoked_client_ids: list[int]
+    organization_id: int
 
 
 def _result_resources(value: object, store: "PackageStore") -> list[str]:

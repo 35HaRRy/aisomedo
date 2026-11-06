@@ -42,7 +42,7 @@ class LiveHub:
         self._thread: Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._started = asyncio.Event()
-        self._subscribers: dict[asyncio.Queue[StreamMessage], int] = {}
+        self._subscribers: dict[asyncio.Queue[StreamMessage], tuple[int, int]] = {}
         self._revoked_clients: set[int] = set()
         self._last_progress = time.monotonic()
         self.generation = 0
@@ -126,15 +126,19 @@ class LiveHub:
             self.deliver("resync", {"reason": "missing_event"})
             return
         self._revoked_clients.update(event.revoked_client_ids)
-        for queue, client_id in list(self._subscribers.items()):
+        for queue, (client_id, _organization_id) in list(self._subscribers.items()):
             if client_id in event.revoked_client_ids:
                 self._terminate(queue, "unauthorized")
                 self._subscribers.pop(queue, None)
-        self.deliver("change", {"event_id": event.event_id, "versions": event.versions})
+        self.deliver("change", {"event_id": event.event_id, "versions": event.versions},
+                     organization_id=event.organization_id)
 
-    def deliver(self, event: str, data: dict[str, Any]) -> None:
+    def deliver(self, event: str, data: dict[str, Any], *,
+                organization_id: int | None = None) -> None:
         """Loop-local fanout. Overflow is terminal, not dropped correctness data."""
         for queue in list(self._subscribers):
+            if event != "resync" and self._subscribers[queue][1] != organization_id:
+                continue
             if event == "resync" or queue.full():
                 self._terminate(queue, str(data["reason"]) if event == "resync" else "overflow")
                 self._subscribers.pop(queue, None)
@@ -142,8 +146,13 @@ class LiveHub:
                 queue.put_nowait(StreamMessage(event, data))
 
     async def subscribe(
-        self, client_id: int, *, expires_at: datetime | None,
+        self, client_id: int, *, expires_at: datetime | None, organization_id: int | None = None,
     ) -> AsyncIterator[StreamMessage]:
+        organization_id = organization_id if organization_id is not None \
+            else self._store.organization_id
+        if organization_id is None:
+            yield StreamMessage("resync", {"reason": "unauthorized"})
+            return
         if client_id in self._revoked_clients:
             yield StreamMessage("resync", {"reason": "unauthorized"})
             return
@@ -153,7 +162,7 @@ class LiveHub:
             yield StreamMessage("resync", {"reason": "listener_lost"})
             return
         queue: asyncio.Queue[StreamMessage] = asyncio.Queue(maxsize=QUEUE_SIZE)
-        self._subscribers[queue] = client_id
+        self._subscribers[queue] = (client_id, organization_id)
         try:
             yield StreamMessage("ready", {"protocol": 1})
             while True:

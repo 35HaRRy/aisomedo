@@ -7,7 +7,7 @@ import subprocess
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
 from zlib import crc32
 
@@ -18,6 +18,19 @@ from dojo.exceptions import BrandingAssetInvalid, BrandingAssetNotFound, Brandin
 MAX_BRANDING_BYTES = 10 * 1024**2
 MAX_BRANDING_SIDE = 4096
 _ASSET_ID = re.compile(r"[0-9a-f]{32}\.(png|jpg|mp4|mov|webm|mkv|avi)")
+
+
+def validate_asset_reference(value: str | None) -> str | None:
+    """Validate untrusted workspace-relative references, not operator-owned legacy paths."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or "\\" in value or any(ord(c) < 32 for c in value):
+        raise ValueError("asset must be a workspace-relative reference")
+    path = PurePosixPath(value)
+    if (not path.parts or path.is_absolute() or PureWindowsPath(value).drive
+            or ".." in path.parts or path.parts[0].casefold() == "organizations"):
+        raise ValueError("asset must belong to this workspace")
+    return value
 
 
 def _validate_png_container(data: bytes) -> None:

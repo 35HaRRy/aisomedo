@@ -33,7 +33,7 @@ from dojo import (
 from dojo.package_state import GroupEdit
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from backend.deps import get_current_client
 from backend.routes.package_models import (
@@ -54,7 +54,9 @@ from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
-    return request.app.state.publishing
+    from backend.organizations import get_organization_services
+
+    return get_organization_services(request).publishing
 
 
 def require_package_revision(
@@ -111,6 +113,19 @@ class CaptionIn(BaseModel):
 
 class BrandingIn(BaseModel):
     branding: dict[str, object]
+
+    @field_validator("branding")
+    @classmethod
+    def workspace_assets(cls, value: dict[str, object]) -> dict[str, object]:
+        from dojo.branding_assets import validate_asset_reference
+
+        for key in ("logo_asset", "intro_asset", "outro_asset"):
+            if key in value:
+                asset = value[key]
+                if asset is not None and not isinstance(asset, str):
+                    raise ValueError("asset must be text or null")
+                validate_asset_reference(asset)
+        return value
 
 
 @router.get("/active", response_model=PackageOut)

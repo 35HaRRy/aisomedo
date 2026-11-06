@@ -37,6 +37,19 @@ try {
     if ([Convert]::FromBase64String($Matches[1].Replace('-', '+').Replace('_', '/')).Length -ne 32) { throw 'Invalid encryption key length' }
     & (Join-Path $sandbox 'start-local.ps1')
     if ([IO.File]::ReadAllText((Join-Path $sandbox '.env.local')) -cne $updated) { throw 'Repeat startup changed secrets' }
+    $global:pairingArguments = @()
+    function global:docker {
+        if ($args -contains 'create-code') { $global:pairingArguments = @($args) }
+        $global:LASTEXITCODE = 0
+    }
+    & (Join-Path $sandbox 'start-local.ps1') -PairingCode -OrganizationName 'Test Dojo With Spaces'
+    $position = [array]::IndexOf($global:pairingArguments, '--organization')
+    if ($position -lt 0 -or $global:pairingArguments[$position + 1] -cne 'Test Dojo With Spaces') {
+        throw 'Pairing did not receive the organization as one argument'
+    }
+    $failed = $false
+    try { & (Join-Path $sandbox 'start-local.ps1') -CheckOnly -OrganizationName ' ' } catch { $failed = $true }
+    if (-not $failed) { throw 'An empty organization name was accepted' }
     Write-Host 'PASS: read-only validation, preserved secrets, failed Docker blocks startup/pairing'
 } finally {
     Remove-Item Function:\docker -ErrorAction SilentlyContinue

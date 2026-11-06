@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 from dojo import (
     DojoPublishing,
-    InMemoryStore,
     MontageTrimInvalid,
     ReelBuild,
     ReelClip,
@@ -17,13 +16,13 @@ from dojo import (
 )
 from dojo.adapters import render as render_module
 from dojo.adapters.stubs import StubMediaProcessor, StubReelRenderer
-from dojo.testing import FIXED_AT, ISTANBUL, FakeClock
+from dojo.testing import FIXED_AT, ISTANBUL, FakeClock, scoped_memory_store
 
 from tests.ffmpeg_transport import FfmpegTransport, docker_available
 
 
 def make_video(tmp_path, duration=30.0):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     renderer = StubReelRenderer()
     store.set("branding.logo_asset", "logo.png", updated_at=FIXED_AT)
     seam = DojoPublishing(

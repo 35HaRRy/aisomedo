@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
+from dojo.adapters.preview_process import PreviewCancelled, run_preview_process
 from dojo.exceptions import MediaValidationError
 from dojo.model import ProcessedMedia, Upload
 
@@ -28,19 +30,33 @@ def detect_container(data: bytes) -> str:
     raise MediaValidationError("unrecognized file content")
 
 
+def _run_command(
+    args: list[str], cancelled: Callable[[], bool] | None,
+) -> subprocess.CompletedProcess[str]:
+    if cancelled is None:
+        return subprocess.run(args, capture_output=True, text=True)
+    return subprocess.CompletedProcess(args, 0, run_preview_process(args, cancelled=cancelled), "")
+
+
 class PillowFFmpegProcessor:
     """Validate real media content, normalize images, and transcode video."""
 
-    def process(self, upload: Upload, original_path: Path, work_dir: Path) -> ProcessedMedia:
+    def process(self, upload: Upload, original_path: Path, work_dir: Path, *,
+                cancelled: Callable[[], bool] | None = None) -> ProcessedMedia:
+        if cancelled is not None and cancelled():
+            raise PreviewCancelled()
         data = original_path.read_bytes()[:64]
         try:
             kind = detect_container(data)
         except MediaValidationError as exc:
             raise MediaValidationError(f"{exc}: {upload.filename}") from exc
         if kind in IMAGE_TYPES:
-            return self._process_image(original_path, work_dir)
+            result = self._process_image(original_path, work_dir)
+            if cancelled is not None and cancelled():
+                raise PreviewCancelled()
+            return result
         if kind in VIDEO_TYPES:
-            return self._process_video(original_path, work_dir)
+            return self._process_video(original_path, work_dir, cancelled=cancelled)
         raise MediaValidationError(f"unsupported media type: {kind}")
 
     @staticmethod
@@ -76,9 +92,9 @@ class PillowFFmpegProcessor:
         )
 
     @staticmethod
-    def _probe(path: Path) -> dict[str, str | None]:
+    def _probe(path: Path, cancelled: Callable[[], bool] | None = None) -> dict[str, str | None]:
         def probe_stream(stream: str) -> str | None:
-            result = subprocess.run(
+            result = _run_command(
                 [
                     "ffprobe",
                     "-v",
@@ -91,8 +107,7 @@ class PillowFFmpegProcessor:
                     "csv=p=0",
                     str(path),
                 ],
-                capture_output=True,
-                text=True,
+                cancelled,
             )
             if result.returncode != 0:
                 raise MediaValidationError(f"could not probe video: {result.stderr.strip()}")
@@ -109,8 +124,8 @@ class PillowFFmpegProcessor:
         }
 
     @staticmethod
-    def _probe_duration(path: Path) -> float:
-        result = subprocess.run(
+    def _probe_duration(path: Path, cancelled: Callable[[], bool] | None = None) -> float:
+        result = _run_command(
             [
                 "ffprobe",
                 "-v",
@@ -120,8 +135,7 @@ class PillowFFmpegProcessor:
                 "-show_format",
                 str(path),
             ],
-            capture_output=True,
-            text=True,
+            cancelled,
         )
         if result.returncode != 0:
             raise MediaValidationError(
@@ -134,10 +148,11 @@ class PillowFFmpegProcessor:
             raise MediaValidationError("could not read video duration")
         return float(duration)
 
-    def _process_video(self, original_path: Path, work_dir: Path) -> ProcessedMedia:
-        source = self._probe(original_path)
+    def _process_video(self, original_path: Path, work_dir: Path, *,
+                       cancelled: Callable[[], bool] | None = None) -> ProcessedMedia:
+        source = self._probe(original_path, cancelled)
         processed_path = work_dir / "processed.mp4"
-        result = subprocess.run(
+        result = _run_command(
             [
                 "ffmpeg",
                 "-y",
@@ -153,14 +168,13 @@ class PillowFFmpegProcessor:
                 "+faststart",
                 str(processed_path),
             ],
-            capture_output=True,
-            text=True,
+            cancelled,
         )
         if result.returncode != 0 or not processed_path.is_file():
             raise MediaValidationError(
                 f"video transcoding failed: {result.stderr.strip()[:200]}"
             )
-        probe = self._probe(processed_path)
+        probe = self._probe(processed_path, cancelled)
         if probe["codec"] != "h264":
             raise MediaValidationError(f"transcoded video is not H.264: {probe['codec']}")
         if probe["width"] != source["width"] or probe["height"] != source["height"]:
@@ -172,7 +186,7 @@ class PillowFFmpegProcessor:
             raise MediaValidationError(
                 f"audio is {probe['audio']}, expected aac"
             )
-        duration = self._probe_duration(processed_path)
+        duration = self._probe_duration(processed_path, cancelled)
         return ProcessedMedia(
             original_path=original_path,
             processed_path=processed_path,

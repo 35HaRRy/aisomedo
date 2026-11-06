@@ -4,14 +4,13 @@ from copy import deepcopy
 import psycopg
 import pytest
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
 from dojo.model import Package
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 @pytest.fixture(params=["memory", "postgres"])
 def store(request, pg_store):
-    return InMemoryStore() if request.param == "memory" else pg_store
+    return scoped_memory_store() if request.param == "memory" else pg_store
 
 
 @pytest.fixture
@@ -22,7 +21,8 @@ def package(store):
 
 @pytest.fixture
 def other(pg_store):
-    value = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False))
+    value = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False),
+                          organization_id=pg_store.organization_id)
     yield value
     value.dispose()
 
@@ -55,7 +55,7 @@ def test_nested_commands_join_outer_rollback(store, package):
 
 
 def test_memory_nested_command_rollback(package):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     package = store.create(package)
     with pytest.raises(ValueError, match="reject"):
         with store.command_transaction():
@@ -152,7 +152,7 @@ def test_concurrent_resource_versions_are_serialized(pg_store, other):
 
 
 def test_memory_rollback_restores_replaced_domain_values():
-    store = InMemoryStore()
+    store = scoped_memory_store()
     before = store.upsert_active(
         ig_user_id="ig-1", ig_username="dojo", page_id=None, page_name=None,
         encrypted_token="encrypted", token_expires_at=FIXED_AT, health="healthy",

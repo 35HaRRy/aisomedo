@@ -1,13 +1,23 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ApiError } from "../api/client";
 import { tr } from "../i18n";
 import { useSession } from "../session";
 import { ThemeToggle } from "../theme";
 import { SocialLinks } from "./SocialLinks";
+import { BrandLogo } from "./BrandLogo";
 
 export function PairingForm() {
   const { pair } = useSession();
   const [code, setCode] = useState("");
+  const [previewCode, setPreviewCode] = useState("");
+  const trimmedCode = code.trim();
+  useEffect(() => {
+    if (trimmedCode.length !== 8) return;
+    const timer = window.setTimeout(() => setPreviewCode(trimmedCode), 350);
+    return () => window.clearTimeout(timer);
+  }, [trimmedCode]);
+  const logo = trimmedCode.length === 8 && previewCode === trimmedCode
+    ? `/api/pairing/branding/logo?code=${encodeURIComponent(trimmedCode)}` : null;
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -24,7 +34,7 @@ export function PairingForm() {
   }
   return <div className="pairing-layout">
     <ThemeToggle floating />
-    <div className="pairing-brand"><span className="brand-mark" aria-hidden="true">A</span><strong>{tr.app}</strong><p>{tr.tagline}</p><SocialLinks /></div>
+    <div className="pairing-brand"><BrandLogo key={trimmedCode} src={logo} /><strong>{tr.app}</strong><p>{tr.tagline}</p><SocialLinks /></div>
     <main className="pairing-form" id="content" tabIndex={-1}>
       <h1>{tr.pairTitle}</h1><p>{tr.pairIntro}</p>
       <form onSubmit={event => void submit(event)}>

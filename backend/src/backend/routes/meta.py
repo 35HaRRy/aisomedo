@@ -19,7 +19,9 @@ from backend.deps import get_current_client
 
 
 def get_meta(request: Request) -> object:
-    meta = getattr(request.app.state, "meta", None)
+    from backend.organizations import get_organization_services
+
+    meta = get_organization_services(request).meta
     if meta is None:
         raise HTTPException(status_code=503, detail="Instagram connection is not configured")
     return meta
@@ -114,9 +116,27 @@ def oauth_callback(
     code: str,
     request: Request,
 ) -> object:
-    meta = request.app.state.meta  # type: ignore[attr-defined]
+    from dojo.exceptions import OrganizationInactive, OrganizationNotFound
+    from dojo.meta_connection import _hash_state
+    from dojo.organizations import DojoOrganizations
+
+    from backend.organizations import services_for_organization
+
+    registry = request.app.state.pairing._pairing
+    attempt = registry.find_attempt_by_state_hash(_hash_state(state))
+    if attempt is None:
+        raise HTTPException(status_code=400, detail="invalid state")
+    try:
+        DojoOrganizations(registry).require_active(attempt["organization_id"])
+    except (OrganizationInactive, OrganizationNotFound) as exc:
+        raise HTTPException(status_code=400, detail="invalid state") from exc
+    meta = services_for_organization(request, attempt["organization_id"]).meta
+    if meta is None:
+        raise HTTPException(status_code=503, detail="Instagram connection is not configured")
     try:
         attempt_id = meta.complete_callback(state, code)  # type: ignore[attr-defined]
+    except OrganizationInactive as exc:
+        raise HTTPException(status_code=400, detail="invalid state") from exc
     except MetaOAuthStateInvalid as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except MetaOAuthFailed as exc:

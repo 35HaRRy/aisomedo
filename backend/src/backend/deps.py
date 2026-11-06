@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from dojo import Client, DojoActivity, DojoMetaConnection, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.db import PostgresStore
 from dojo.adapters.meta import FernetCipher, HttpInstagramTokenProvider, StubMetaOAuthProvider
+from dojo.organizations import organization_media_root
 from fastapi import HTTPException, Request, Response
 
 DEFAULT_URL = "postgresql+psycopg://dojo:dojo@localhost:5434/dojo"
@@ -56,11 +57,18 @@ def _maybe_create_all(store: PostgresStore) -> None:
     store.create_all()
 
 
-def build_publishing() -> DojoPublishing:
-    url = os.environ.get("DATABASE_URL", DEFAULT_URL)
+def _configured_store(store: PostgresStore | None = None) -> PostgresStore:
+    if store is None:
+        store = PostgresStore(os.environ.get("DATABASE_URL", DEFAULT_URL))
+        _maybe_create_all(store)
+    return store
+
+
+def build_publishing(store: PostgresStore | None = None) -> DojoPublishing:
     media_root = Path(os.environ.get("MEDIA_ROOT", "media"))
-    store = PostgresStore(url)
-    _maybe_create_all(store)
+    store = _configured_store(store)
+    if store.organization_id is not None:
+        media_root = organization_media_root(media_root, store.organization_id)
     kwargs: dict = {}
     try:
         from dojo.adapters.meta import FernetCipher, HttpMetaPublisher
@@ -86,6 +94,8 @@ def build_publishing() -> DojoPublishing:
             kwargs["signed_urls"] = HmacSignedUrlStore(
                 base_url=base_url,
                 secret=secret,
+                media_root=Path(os.environ.get("MEDIA_ROOT", "media")),
+                organization_id=store.organization_id,
             )
     except Exception:  # noqa: BLE001
         pass
@@ -107,17 +117,13 @@ def build_pairing() -> DojoPairing:
     return DojoPairing(pairing=store, audit=store)
 
 
-def build_activity() -> DojoActivity:
-    url = os.environ.get("DATABASE_URL", DEFAULT_URL)
-    store = PostgresStore(url)
-    _maybe_create_all(store)
+def build_activity(store: PostgresStore | None = None) -> DojoActivity:
+    store = _configured_store(store)
     return DojoActivity(audit=store, pairing=store)
 
 
-def build_meta() -> DojoMetaConnection:
-    url = os.environ.get("DATABASE_URL", DEFAULT_URL)
-    store = PostgresStore(url)
-    _maybe_create_all(store)
+def build_meta(store: PostgresStore | None = None) -> DojoMetaConnection:
+    store = _configured_store(store)
     key = os.environ.get("META_TOKEN_ENCRYPTION_KEY", "")
     if not key:
         raise RuntimeError("META_TOKEN_ENCRYPTION_KEY is required")
@@ -131,8 +137,9 @@ def build_meta() -> DojoMetaConnection:
         ),
         cipher=cipher,
         audit=store,
-        app_id=os.environ.get("META_APP_ID", "dev_app_id"),
-        app_secret=os.environ.get("META_APP_SECRET", "dev_secret"),
+        # Compose passes unset values as ""; fall back like a missing key.
+        app_id=os.environ.get("META_APP_ID") or "dev_app_id",
+        app_secret=os.environ.get("META_APP_SECRET") or "dev_secret",
         redirect_uri=os.environ.get("META_REDIRECT_URI", "").strip()
         or f"{resolve_public_base_url()}/api/meta/oauth/callback",
         graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),
@@ -143,10 +150,9 @@ def build_meta() -> DojoMetaConnection:
     )
 
 
-def build_setup(meta: DojoMetaConnection | None = None) -> DojoSetup:
-    url = os.environ.get("DATABASE_URL", DEFAULT_URL)
-    store = PostgresStore(url)
-    _maybe_create_all(store)
+def build_setup(meta: DojoMetaConnection | None = None,
+                store: PostgresStore | None = None) -> DojoSetup:
+    store = _configured_store(store)
     return DojoSetup(setup=store, audit=store, pairing=store, meta=meta)
 
 
@@ -158,12 +164,14 @@ def get_current_client(request: Request, response: Response) -> Client:
     if authorization.lower().startswith("bearer "):
         client = pairing.authenticate_bearer(authorization[7:].strip())
         if client is not None:
+            request.state.current_client = client
             request.state.authorization_expires_at = pairing.authorization_deadline(client)
             return client
     session_id = request.cookies.get(COOKIE_NAME)
     if session_id:
         client = pairing.authenticate_session(session_id)
         if client is not None:
+            request.state.current_client = client
             request.state.authorization_expires_at = pairing.authorization_deadline(client)
             response.set_cookie(
                 COOKIE_NAME,

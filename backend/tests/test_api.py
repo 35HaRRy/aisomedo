@@ -4,14 +4,14 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
-from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
+from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.stubs import (
     StubMediaProcessor,
     StubMetaPublisher,
     StubNotifier,
     StubSignedUrlStore,
 )
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 from fastapi.testclient import TestClient
 from live_helpers import include_displayed_revision
 
@@ -19,7 +19,7 @@ from backend.main import create_app
 
 
 def make_app(tmp_path: Path) -> tuple[TestClient, DojoPublishing, DojoPairing, DojoSetup]:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = DojoPublishing(
         packages=store,
         audit=store,
@@ -150,7 +150,7 @@ def test_browser_session_cookie_refreshed_on_auth(tmp_path: Path) -> None:
 
 
 def test_browser_validate_sets_secure_http_only_cookie(tmp_path: Path) -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
     client = TestClient(create_app(None, pairing, cookie_secure=True))
     code = pairing.create_pairing_code(requester="cli").raw_code

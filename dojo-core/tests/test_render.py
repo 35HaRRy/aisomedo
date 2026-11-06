@@ -6,7 +6,6 @@ import json
 import pytest
 from dojo import (
     DojoPublishing,
-    InMemoryStore,
     LogoNotConfigured,
     MontageDurationExceeded,
     NoActivePackage,
@@ -20,11 +19,11 @@ from dojo.adapters.stubs import (
     StubReelRenderer,
     StubSignedUrlStore,
 )
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path, **overrides):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     renderer = StubReelRenderer()
     return (
         store,

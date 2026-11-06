@@ -4,6 +4,7 @@ import type { ReminderPolicyIn, ReminderPolicyOut } from "./openapi";
 import type { DashboardSlotOut, OneoffDateIn, OneoffDecisionIn, OneoffDecisionOut } from "./openapi";
 import type { PackageEditIn, EditConflictOut, SectionPreviewRetryIn } from "./openapi";
 import { transportFetch } from "./transport";
+import type { OrganizationOut } from "./openapi";
 
 export type PackagePrecondition = { package: { id: number }; content_revision: number };
 const packageHeaders = (expected: PackagePrecondition) => ({ "If-Match": `"${expected.package.id}:${expected.content_revision}"` });
@@ -85,6 +86,7 @@ export async function request<T>(path: string, init: RequestInit = {}, timeoutMs
 }
 
 export const api = {
+  organization: (signal?: AbortSignal) => request<OrganizationOut>("/api/pairing/organization", { signal }),
   review: (id: number, signal?: AbortSignal) => request<ReviewDetailOut>(`/api/reviews/${id}`, { signal }),
   approveReview: (id: number, body: ApproveIn, signal?: AbortSignal) => request<{ publication: PublicationOutcome | null }>(`/api/reviews/${id}/approve`, { method: "POST", body: JSON.stringify(body), signal }, 120000),
   skipReview: (id: number, body: SkipIn, signal?: AbortSignal) => request<{ next_regular_at: string | null }>(`/api/reviews/${id}/skip`, { method: "POST", body: JSON.stringify(body), signal }),

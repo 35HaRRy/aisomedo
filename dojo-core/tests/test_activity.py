@@ -3,11 +3,11 @@ from __future__ import annotations
 from dojo import DojoActivity, DojoPairing
 from dojo.adapters.memory import InMemoryStore
 from dojo.model import ActivityPage, AuditEvent, Client
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 
 
 def make_system() -> tuple[InMemoryStore, DojoPairing, DojoActivity]:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     pairing = DojoPairing(pairing=store, audit=store, clock=FakeClock())
     activity = DojoActivity(audit=store, pairing=store)
     return store, pairing, activity

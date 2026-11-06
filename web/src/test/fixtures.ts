@@ -5,7 +5,7 @@ export function setupState(unfinished?: string): SetupOut {
 }
 
 export const client: ClientOut = {
-  id: 1, name: "Dojo bilgisayarı", kind: "browser", created_at: "2026-08-03T07:00:00Z",
+  id: 1, organization_id: 1, name: "Dojo bilgisayarı", kind: "browser", created_at: "2026-08-03T07:00:00Z",
   created_by: "cli", last_seen_at: null, revoked_at: null,
 };
 export function dashboard(): DashboardOut {

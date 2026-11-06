@@ -11,7 +11,7 @@ from dojo.exceptions import RenderFailed
 from dojo.model import ReelBuild, ReelClip
 from dojo.montage import REEL_FPS
 
-from .preview_process import run_preview_process
+from .preview_process import PreviewCancelled, run_preview_process
 
 logger = logging.getLogger("render: ")
 
@@ -48,8 +48,8 @@ def _probe_has_audio(path: Path, cancelled: Callable[[], bool] | None = None) ->
     return bool(result.stdout.strip())
 
 
-def _probe_is_video(path: Path) -> bool:
-    result = subprocess.run(
+def _probe_is_video(path: Path, cancelled: Callable[[], bool] | None = None) -> bool:
+    result = _run_command(
         [
             "ffprobe",
             "-v",
@@ -60,8 +60,7 @@ def _probe_is_video(path: Path) -> bool:
             "json",
             str(path),
         ],
-        capture_output=True,
-        text=True,
+        cancelled,
     )
     info = json.loads(result.stdout or "{}")
     still_formats = {"image2", "png_pipe", "jpeg_pipe", "webp_pipe", "bmp_pipe", "tiff_pipe"}
@@ -74,7 +73,8 @@ def _probe_is_video(path: Path) -> bool:
 class FfmpegReelRenderer:
     """Render an immutable 1080x1920 Reel: blurred fit, clip audio, watermark."""
 
-    def render(self, build: ReelBuild, work_dir: Path, out_path: Path) -> Path:
+    def render(self, build: ReelBuild, work_dir: Path, out_path: Path, *,
+               cancelled: Callable[[], bool] | None = None) -> Path:
         work_dir.mkdir(parents=True, exist_ok=True)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         segments: list[Path] = []
@@ -83,11 +83,12 @@ class FfmpegReelRenderer:
                 segments.append(
                     self._render_segment(
                         build.intro_asset,
-                        is_video=_probe_is_video(build.intro_asset),
+                        is_video=_probe_is_video(build.intro_asset, cancelled),
                         duration=build.intro_duration or build.photo_duration,
                         logo_asset=build.logo_asset,
                         work_dir=work_dir,
                         name="intro",
+                        cancelled=cancelled,
                     )
                 )
             for index, clip in enumerate(build.clips):
@@ -101,22 +102,24 @@ class FfmpegReelRenderer:
                         logo_asset=build.logo_asset,
                         work_dir=work_dir,
                         name=f"{index}-{clip.media_id}",
+                        cancelled=cancelled,
                     )
                 )
             if build.outro_asset is not None:
                 segments.append(
                     self._render_segment(
                         build.outro_asset,
-                        is_video=_probe_is_video(build.outro_asset),
+                        is_video=_probe_is_video(build.outro_asset, cancelled),
                         duration=build.outro_duration or build.photo_duration,
                         logo_asset=build.logo_asset,
                         work_dir=work_dir,
                         name="outro",
+                        cancelled=cancelled,
                     )
                 )
-            self._concat(segments, out_path)
-            self._assert_canvas(out_path)
-        except RenderFailed:
+            self._concat(segments, out_path, cancelled=cancelled)
+            self._assert_canvas(out_path, cancelled=cancelled)
+        except (RenderFailed, PreviewCancelled):
             raise
         except Exception as exc:
             raise RenderFailed(f"reel render failed: {exc}") from exc
@@ -267,8 +270,8 @@ class FfmpegReelRenderer:
                 f"reel concat failed: {result.stderr.strip()[:200]}"
             )
 
-    def _assert_canvas(self, path: Path) -> None:
-        result = subprocess.run(
+    def _assert_canvas(self, path: Path, *, cancelled: Callable[[], bool] | None = None) -> None:
+        result = _run_command(
             [
                 "ffprobe",
                 "-v",
@@ -281,8 +284,7 @@ class FfmpegReelRenderer:
                 "csv=p=0",
                 str(path),
             ],
-            capture_output=True,
-            text=True,
+            cancelled,
         )
         if result.returncode != 0:
             raise RenderFailed(

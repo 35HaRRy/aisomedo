@@ -10,7 +10,9 @@ from backend.snapshots import versioned_snapshot
 
 
 def get_activity(request: Request) -> DojoActivity:
-    return request.app.state.activity
+    from backend.organizations import get_organization_services
+
+    return get_organization_services(request).activity
 
 
 class ClientRefOut(BaseModel):

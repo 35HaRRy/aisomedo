@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pytest
 import worker.main as worker_main
-from dojo import DojoPublishing, InMemoryStore, Job
+from dojo import DojoPublishing, Job
 from dojo.adapters.stubs import StubMediaProcessor
 from dojo.observability import JsonFormatter
+from dojo.testing import scoped_memory_store
 from worker.main import (
     _emission_store,
     _maybe_create_all,
@@ -32,8 +33,8 @@ class TickSpy(DojoPublishing):
         self.sweeps = 0
         self._claims_left = 1
         super().__init__(
-            packages=InMemoryStore(),
-            audit=InMemoryStore(),
+            packages=scoped_memory_store(),
+            audit=scoped_memory_store(),
             media_root="/tmp/dojo-media",
             media=StubMediaProcessor(),
         )
