@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 
-from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore, SchedulePlan
+from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, SchedulePlan
 from dojo.adapters.signed_urls import HmacSignedUrlStore
 from dojo.adapters.stubs import (
     StubMediaProcessor,
@@ -12,7 +12,7 @@ from dojo.adapters.stubs import (
     StubNotifier,
     StubReelRenderer,
 )
-from dojo.testing import FIXED_AT, ISTANBUL, FakeClock
+from dojo.testing import FIXED_AT, ISTANBUL, FakeClock, scoped_memory_store
 from fastapi.testclient import TestClient
 from live_helpers import include_displayed_revision
 
@@ -20,7 +20,7 @@ from backend.main import create_app
 
 
 def make_app(tmp_path: Path):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = DojoPublishing(
         packages=store,
         audit=store,

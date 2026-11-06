@@ -23,6 +23,7 @@ async function fixture(page: Page) {
     if (path === "/api/appearance-preview") return route.fulfill({ contentType: "video/mp4", body: video });
     if (path === "/api/compat") return json({ api_version: "0.1.0" });
     if (path === "/api/pairing/me") return json({ ...client, name: "Dojo Web Yöneticisi" }, paired ? 200 : 401);
+    if (path === "/api/pairing/organization") return json({ name: "Test Dojo", logo_asset: null });
     if (path === "/api/setup") return json(setupState());
     if (path === "/api/dashboard") return json(data);
     if (path === "/api/packages/active/editor") return json(editor);

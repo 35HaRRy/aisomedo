@@ -14,7 +14,9 @@ def versioned_snapshot[**P, T](resource: str) -> Callable[[Callable[P, T]], Call
         def snapshot(*args: P.args, **kwargs: P.kwargs) -> T:
             request = cast(Request, kwargs["request"])
             response = cast(Response, kwargs["response"])
-            store = cast(PackageStore, request.app.state.publishing._packages)
+            from backend.organizations import get_organization_services
+
+            store = cast(PackageStore, get_organization_services(request).publishing._packages)
             with store.read_snapshot():
                 key = resource
                 if key == "package":

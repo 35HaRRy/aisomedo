@@ -6,13 +6,20 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from functools import wraps
 from threading import RLock
-from typing import overload
+from typing import Any, overload
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 
-from dojo.exceptions import ConsentPolicyChanged, NoConsentPolicy
+from dojo.exceptions import (
+    ConsentPolicyChanged,
+    NoConsentPolicy,
+    OrganizationInactive,
+    OrganizationNameTaken,
+    OrganizationScopeRequired,
+)
 from dojo.live import ChangeEvent, PackageState, emits
 from dojo.model import (
     AuditEvent,
@@ -22,6 +29,7 @@ from dojo.model import (
     Job,
     MetaCandidate,
     MetaConnectionStatus,
+    Organization,
     Package,
     PairingCode,
     PushRegistration,
@@ -65,31 +73,55 @@ class _DeliveryState:
     lease_expires_at: datetime | None = None
 
 
+def _scope_methods(cls: type) -> type:
+    global_methods = {
+        "create_organization", "find_organization", "find_organization_by_name_key",
+        "list_organizations", "deactivate_organization", "for_organization",
+        "find_code_by_hash", "find_client_by_credential_hash", "find_attempt_by_state_hash",
+        "get_change", "create_policy", "get_current_policy", "get_policy",
+        "command_transaction", "emission_transaction", "queue_change", "record_change",
+        "after_commit", "try_advisory_xact_lock", "read_snapshot",
+        "record_disk_sample", "prepare_alert_deliveries", "claim_alert_delivery",
+        "finish_alert_delivery", "recorded_alerts", "list_active_device_tokens",
+        "alert_delivery_active",
+    }
+
+    def guarded(method: Any) -> Any:
+        @wraps(method)
+        def call(self: InMemoryStore, *args: Any, **kwargs: Any) -> Any:
+            self._require_scope()
+            return method(self, *args, **kwargs)
+        return call
+
+    for name, method in vars(cls).copy().items():
+        if not name.startswith("_") and name not in global_methods and callable(method):
+            setattr(cls, name, guarded(method))
+    return cls
+
+
+@_scope_methods
 class InMemoryStore:
     def __init__(self) -> None:
+        self._organization_id: int | None = None
+        self._root = self
+        self._scopes: dict[int, InMemoryStore] = {}
+        self._ids: dict[str, int] = {}
+        self._organizations: dict[int, Organization] = {}
+        self._organization_names: dict[str, int] = {}
+        self._organization_lock = RLock()
         self._packages: list[Package] = []
         self._events: list[AuditEvent] = []
         self._codes: list[PairingCode] = []
         self._clients: list[Client] = []
         self._client_hashes: dict[int, str] = {}
-        self._next_id = 1
-        self._next_code_id = 1
-        self._next_client_id = 1
-        self._next_event_id = 1
         self._policies: list[ConsentPolicy] = []
         self._acceptances: list[ConsentAcceptance] = []
-        self._next_policy_id = 1
-        self._next_acceptance_id = 1
         self._consent_lock = RLock()
         self._uploads: list[Upload] = []
         self._jobs: list[Job] = []
         self._settings: dict[str, object] = {}
-        self._next_upload_id = 1
-        self._next_job_id = 1
         self._occurrences: list[YayinZamani] = []
-        self._next_occ_id = 1
         self._reviews: list[YayinIncelemesi] = []
-        self._next_review_id = 1
         self._push_regs: dict[int, PushRegistration] = {}
         self._push_by_token: dict[str, int] = {}
         self._meta_conn: MetaConnectionStatus | None = None
@@ -100,7 +132,6 @@ class InMemoryStore:
         self._alerts: list[OperationalAlert] = []
         self._alert_recipients_at: dict[str, datetime] = {}
         self._deliveries: list[_DeliveryState] = []
-        self._next_delivery_id = 1
         self._incidents: dict[str, str | None] = {}
         self._last_sampled_at: dict[str, datetime | None] = {}
         self._failure_generations: dict[int, int] = {}
@@ -117,6 +148,73 @@ class InMemoryStore:
         self._pending_changes: ContextVar[tuple[set[str], set[int]] | None] = ContextVar(
             "pending_changes", default=None,
         )
+
+    @property
+    def organization_id(self) -> int | None:
+        return self._organization_id
+
+    def _require_scope(self) -> int:
+        if self.organization_id is None:
+            raise OrganizationScopeRequired("organization scope is required")
+        return self.organization_id
+
+    def _allocate(self, kind: str) -> int:
+        with self._root._organization_lock:
+            value = self._root._ids.get(kind, 0) + 1
+            self._root._ids[kind] = value
+            return value
+
+    def for_organization(self, organization_id: int) -> InMemoryStore:
+        with self._root._organization_lock:
+            if organization_id not in self._root._organizations:
+                raise ValueError("organization not found")
+            if organization_id not in self._root._scopes:
+                scope = type(self._root)()
+                scope._organization_id = organization_id
+                scope._root = self._root
+                scope._organizations = self._root._organizations
+                scope._organization_names = self._root._organization_names
+                scope._organization_lock = self._root._organization_lock
+                scope._policies = self._root._policies
+                scope._consent_lock = self._root._consent_lock
+                self._root._scopes[organization_id] = scope
+            return self._root._scopes[organization_id]
+
+    def create_organization(
+        self, name: str, name_key: str, email: str, phone: str | None,
+    ) -> Organization:
+        with self._organization_lock:
+            if name_key in self._organization_names:
+                raise OrganizationNameTaken("organization name is already in use")
+            organization = Organization(len(self._organizations) + 1, name, email, phone)
+            self._organizations[organization.id] = organization
+            self._organization_names[name_key] = organization.id
+            return organization
+
+    def find_organization(self, organization_id: int) -> Organization | None:
+        return self._organizations.get(organization_id)
+
+    def find_organization_by_name_key(self, name_key: str) -> Organization | None:
+        organization_id = self._organization_names.get(name_key)
+        return self._organizations.get(organization_id) if organization_id is not None else None
+
+    def list_organizations(self, *, active_only: bool = False) -> list[Organization]:
+        return [o for o in self._organizations.values() if not active_only or o.active]
+
+    def deactivate_organization(self, organization_id: int) -> None:
+        scope = self.for_organization(organization_id)
+        with scope.command_transaction(), self._organization_lock:
+            organization = self._organizations[organization_id]
+            self._organizations[organization_id] = replace(organization, active=False)
+            scope.record_change(["auth"], revoked_client_ids=[c.id for c in scope._clients])
+
+    @contextmanager
+    def organization_transaction(self) -> Iterator[None]:
+        from dojo.organizations import DojoOrganizations
+
+        with self.command_transaction(), self._organization_lock:
+            DojoOrganizations(self).require_active(self._require_scope())
+            yield
 
     @contextmanager
     def package_lock(self, *, wait: bool = True) -> Iterator[bool]:
@@ -164,6 +262,8 @@ class InMemoryStore:
         with self._package_lock:
             snapshot = {name: deepcopy(value) for name, value in self.__dict__.items()
                         if not name.endswith("_lock") and not isinstance(value, ContextVar)
+                        and name not in {"_root", "_scopes", "_organizations",
+                                         "_organization_names", "_ids", "_policies"}
                         and not callable(value)}
             token = self._emission_active.set(True)
             callbacks: dict[str, Callable[[], None]] = {}
@@ -235,11 +335,15 @@ class InMemoryStore:
         for resource in sorted(set(resources)):
             self._live_versions[resource] = self._live_versions.get(resource, 0) + 1
             versions[resource] = self._live_versions[resource]
-        event = ChangeEvent(str(uuid4()), versions, list(revoked_client_ids or []))
+        event = ChangeEvent(str(uuid4()), versions, list(revoked_client_ids or []),
+                            self._require_scope())
         self._live_events[event.event_id] = event
         return deepcopy(event)
 
     def get_change(self, event_id: str) -> ChangeEvent | None:
+        if self.organization_id is None:
+            return next((deepcopy(scope._live_events[event_id]) for scope in self._scopes.values()
+                         if event_id in scope._live_events), None)
         return deepcopy(self._live_events.get(event_id))
 
     def get_resource_version(self, resource: str) -> int:
@@ -294,13 +398,13 @@ class InMemoryStore:
                         if existing.kind == "regular" and existing.due_at == obj.due_at:
                             return existing
                 self._check_schedule_uniqueness(obj)
-                created_occ = replace(obj, id=self._next_occ_id)
-                self._next_occ_id += 1
+                created_occ = replace(obj, id=self._allocate("occurrence"))
                 self._occurrences.append(created_occ)
                 return created_occ
         if isinstance(obj, Upload):
-            created_upload = replace(obj, id=self._next_upload_id)
-            self._next_upload_id += 1
+            if not any(p.id == obj.package_id for p in self._packages):
+                raise ValueError("upload package not found in this organization")
+            created_upload = replace(obj, id=self._allocate("upload"))
             self._uploads.append(created_upload)
             return created_upload
         if isinstance(obj, Job):
@@ -312,8 +416,7 @@ class InMemoryStore:
                         "INSERT INTO jobs", {}, Exception("duplicate job"),
                     )
             return self.create_job_once(obj)[0]
-        created_package = replace(obj, id=self._next_id)
-        self._next_id += 1
+        created_package = replace(obj, id=self._allocate("package"))
         self._packages.append(created_package)
         return created_package
 
@@ -332,10 +435,9 @@ class InMemoryStore:
                             and all(existing.payload.get(key) == job.payload.get(key)
                                     for key in fields)):
                         return existing, False
-            created = replace(job, id=self._next_job_id)
+            created = replace(job, id=self._allocate("job"))
             if audit is not None:
                 self.append(audit)
-            self._next_job_id += 1
             self._jobs.append(created)
             return created, True
 
@@ -350,10 +452,9 @@ class InMemoryStore:
             if existing is not None:
                 return existing, False
             self._check_schedule_uniqueness(review)
-            created = replace(review, id=self._next_review_id)
+            created = replace(review, id=self._allocate("review"))
             if audit is not None:
                 self.append(replace(audit, details={**audit.details, "review_id": created.id}))
-            self._next_review_id += 1
             self._reviews.append(created)
             return created, True
 
@@ -443,8 +544,7 @@ class InMemoryStore:
 
     @emits("activity")
     def append(self, event: AuditEvent) -> None:
-        stored = replace(event, id=self._next_event_id)
-        self._next_event_id += 1
+        stored = replace(event, id=self._allocate("audit"))
         self._events.append(stored)
 
     def list_recent(self, limit: int = 50, before_id: int | None = None) -> list[AuditEvent]:
@@ -454,12 +554,14 @@ class InMemoryStore:
         return list(reversed(events[-limit:]))
 
     def create_code(self, code: PairingCode) -> PairingCode:
-        created = replace(code, id=self._next_code_id)
-        self._next_code_id += 1
+        created = replace(code, id=self._allocate("code"), organization_id=self._require_scope())
         self._codes.append(created)
         return created
 
     def find_code_by_hash(self, code_hash: str) -> PairingCode | None:
+        if self.organization_id is None:
+            return next((c for scope in self._scopes.values() for c in scope._codes
+                         if c.code_hash == code_hash), None)
         return next((c for c in self._codes if c.code_hash == code_hash), None)
 
     def mark_code_consumed(self, code_id: int, at: datetime) -> bool:
@@ -474,13 +576,16 @@ class InMemoryStore:
 
     @emits(result=True)
     def create_client(self, client: Client, credential_hash: str) -> Client:
-        created = replace(client, id=self._next_client_id)
-        self._next_client_id += 1
+        created = replace(client, id=self._allocate("client"),
+                          organization_id=self._require_scope())
         self._client_hashes[created.id] = credential_hash
         self._clients.append(created)
         return created
 
     def find_client_by_credential_hash(self, credential_hash: str) -> Client | None:
+        if self.organization_id is None:
+            return next((c for scope in self._scopes.values() for c in scope._clients
+                         if scope._client_hashes.get(c.id) == credential_hash), None)
         for client in self._clients:
             if self._client_hashes.get(client.id) == credential_hash:
                 return client
@@ -526,13 +631,12 @@ class InMemoryStore:
                 self._policies[i] = updated
                 return updated
         created = ConsentPolicy(
-            id=self._next_policy_id,
+            id=self._allocate("policy"),
             version=version,
             text=text,
             created_by=created_by,
             created_at=created_at,
         )
-        self._next_policy_id += 1
         self._policies.append(created)
         return created
 
@@ -553,8 +657,7 @@ class InMemoryStore:
     def _record_acceptance(self, acceptance: ConsentAcceptance) -> bool:
         if any(a.policy_version == acceptance.policy_version for a in self._acceptances):
             return False
-        created = replace(acceptance, id=self._next_acceptance_id)
-        self._next_acceptance_id += 1
+        created = replace(acceptance, id=self._allocate("acceptance"))
         self._acceptances.append(created)
         return True
 
@@ -626,6 +729,13 @@ class InMemoryStore:
 
     @emits(result=True)
     def claim_next(self, claimed_at: datetime) -> Job | None:
+        try:
+            with self.organization_transaction():
+                return self._claim_next_active(claimed_at)
+        except OrganizationInactive:
+            return None
+
+    def _claim_next_active(self, claimed_at: datetime) -> Job | None:
         for i, job in enumerate(self._jobs):
             if job.status == "queued":
                 claimed = replace(job, status="processing", claimed_at=claimed_at)
@@ -781,6 +891,11 @@ class InMemoryStore:
                 self._push_regs.pop(owner, None)
 
     def list_active_device_tokens(self) -> list[PushRegistration]:
+        if self.organization_id is None:
+            return [r for scope in self._scopes.values() for r in scope.list_active_device_tokens()]
+        organization = self.find_organization(self._require_scope())
+        if organization is None or not organization.active:
+            return []
         active: list[PushRegistration] = []
         with self._monitoring_lock:
             for reg in list(self._push_regs.values()):
@@ -841,6 +956,13 @@ class InMemoryStore:
                 ))
 
     def prepare_alert_deliveries(self, now: datetime, *, limit: int = 100) -> int:
+        prepared = self._prepare_alert_deliveries(now, limit=limit)
+        if self.organization_id is None:
+            for scope in self._scopes.values():
+                prepared += scope._prepare_alert_deliveries(now, limit=max(0, limit - prepared))
+        return prepared
+
+    def _prepare_alert_deliveries(self, now: datetime, *, limit: int) -> int:
         with self._monitoring_lock:
             recipients = self.list_active_device_tokens()
             if not recipients:
@@ -853,19 +975,29 @@ class InMemoryStore:
                 # point are not historical recipients of these alerts.
                 for registration in recipients:
                     self._deliveries.append(_DeliveryState(
-                        delivery_id=self._next_delivery_id,
+                        delivery_id=self._allocate("delivery"),
                         alert_id=alert.alert_id,
                         client_id=registration.client_id,
                         status=DELIVERY_PENDING,
                         attempts=0,
                         due_at=now,
                     ))
-                    self._next_delivery_id += 1
                 self._alert_recipients_at[alert.alert_id] = now
             return len(unsnapshotted)
 
     def claim_alert_delivery(
         self, now: datetime, *, lease_seconds: int = 60,
+    ) -> DeliveryLease | None:
+        delivery = self._claim_alert_delivery(now, lease_seconds=lease_seconds)
+        if delivery is None and self.organization_id is None:
+            for scope in self._scopes.values():
+                delivery = scope._claim_alert_delivery(now, lease_seconds=lease_seconds)
+                if delivery is not None:
+                    return delivery
+        return delivery
+
+    def _claim_alert_delivery(
+        self, now: datetime, *, lease_seconds: int,
     ) -> DeliveryLease | None:
         with self._monitoring_lock:
             candidates = sorted(
@@ -906,6 +1038,13 @@ class InMemoryStore:
 
     def _current_registration(self, client_id: int) -> PushRegistration | None:
         """The registration a claim may use, rechecked for revocation."""
+        if self.organization_id is None:
+            return next((registration for scope in self._scopes.values()
+                         if (registration := scope._current_registration(client_id)) is not None),
+                        None)
+        organization = self.find_organization(self._require_scope())
+        if organization is None or not organization.active:
+            return None
         registration = self._push_regs.get(client_id)
         if registration is None:
             return None
@@ -914,9 +1053,18 @@ class InMemoryStore:
             return None
         return registration
 
+    def alert_delivery_active(self, lease: DeliveryLease) -> bool:
+        registration = self._current_registration(lease.client_id)
+        return registration is not None and registration.token == lease.token
+
     def finish_alert_delivery(
         self, lease: DeliveryLease, *, outcome: DeliveryOutcome, now: datetime,
     ) -> bool:
+        if self.organization_id is None and not any(
+            d.delivery_id == lease.delivery_id for d in self._deliveries
+        ):
+            return any(scope.finish_alert_delivery(lease, outcome=outcome, now=now)
+                       for scope in self._scopes.values())
         with self._monitoring_lock:
             delivery = next(
                 (d for d in self._deliveries if d.delivery_id == lease.delivery_id), None,
@@ -1035,9 +1183,13 @@ class InMemoryStore:
         return self._meta_attempts.get(attempt_id)
 
     def find_attempt_by_state_hash(self, state_hash: str) -> dict | None:
+        if self.organization_id is None:
+            return next((record for scope in self._scopes.values()
+                         if (record := scope.find_attempt_by_state_hash(state_hash)) is not None),
+                        None)
         for rec in self._meta_attempts.values():
             if rec.get("state_hash") == state_hash:
-                return rec
+                return {**rec, "organization_id": self.organization_id}
         return None
 
     @emits("setup", "settings", "dashboard", result=True)

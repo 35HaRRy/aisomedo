@@ -12,6 +12,7 @@ let pairingStatus = 200;
 let activityStatus = 200;
 let setup = setupState();
 let setupStatus = 200;
+let organizationLogo: string | null = null;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
 it("introduces the product to a new visitor and keeps pairing reachable", async () => {
@@ -33,9 +34,11 @@ beforeEach(() => {
   localStorage.clear();
   paired = true; snapshot = dashboard(); dashboardStatus = 200; pairingStatus = 200; activityStatus = 200;
   setup = setupState(); setupStatus = 200;
+  organizationLogo = null;
   window.location.hash = "#/dashboard";
   vi.stubGlobal("fetch", async (url: string) => {
     if (url === "/api/events") return liveResponse();
+    if (url === "/api/pairing/organization") return json({ name: "Test Organizasyonu", logo_asset: organizationLogo });
     if (url.endsWith("/compat")) return json({ api_version: "0.1.0" });
     if (url.endsWith("/me")) return paired ? json(client) : json({}, 401);
     if (url.endsWith("/validate")) { if (pairingStatus === 200) paired = true; return json({}, pairingStatus); }
@@ -51,6 +54,28 @@ beforeEach(() => {
     if (url === "/api/packages") return json([]);
     return json(snapshot, dashboardStatus);
   });
+});
+
+it("shows the organization name with the default logo and keeps the studio subtitle", async () => {
+  render(<App />);
+  const brand = await screen.findByRole("link", { name: /Test Organizasyonu.*Video & Reel Stüdyosu/ });
+  expect(within(brand).getByRole("img", { name: "Logo" })).toHaveAttribute("src", "/logo.jpg");
+});
+
+it("refreshes the organization logo after branding changes and falls back on image errors", async () => {
+  organizationLogo = `branding/assets/${"a".repeat(32)}.png`;
+  render(<App />);
+  const brand = await screen.findByRole("link", { name: /Test Organizasyonu.*Video & Reel Stüdyosu/ });
+  const logo = within(brand).getByRole("img", { name: "Logo" });
+  expect(logo).toHaveAttribute("src", `/api/settings/branding/assets/${"a".repeat(32)}.png`);
+  fireEvent.error(logo);
+  expect(within(brand).getByRole("img", { name: "Logo" })).toHaveAttribute("src", "/logo.jpg");
+  organizationLogo = `branding/assets/${"b".repeat(32)}.jpg`;
+  act(() => invalidateLive(["settings"]));
+  await waitFor(() => expect(within(brand).getByRole("img", { name: "Logo" })).toHaveAttribute("src", `/api/settings/branding/assets/${"b".repeat(32)}.jpg`));
+  organizationLogo = null;
+  act(() => invalidateLive(["settings"]));
+  await waitFor(() => expect(within(brand).getByRole("img", { name: "Logo" })).toHaveAttribute("src", "/logo.jpg"));
 });
 
 it("resumes incomplete setup once and preserves intentional navigation", async () => {

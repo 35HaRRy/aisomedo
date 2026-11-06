@@ -8,13 +8,62 @@ from zoneinfo import ZoneInfo
 
 from dojo import BrandingConfig, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.db import PostgresStore
+from dojo.exceptions import (
+    OrganizationInactive,
+    OrganizationInvalid,
+    OrganizationNameTaken,
+    OrganizationNotFound,
+)
 from dojo.model import ConsentPolicy, PairingCodeIssued
+from dojo.organizations import DojoOrganizations
 
 DEFAULT_URL = "postgresql+psycopg://dojo:dojo@localhost:5434/dojo"
 
 
-def mint_code(pairing: DojoPairing) -> PairingCodeIssued:
-    return pairing.create_pairing_code(requester="cli")
+def mint_code(pairing: DojoPairing, *, organization_id: int) -> PairingCodeIssued:
+    return pairing.create_pairing_code(requester="cli", organization_id=organization_id)
+
+
+def _organization_store(
+    parser: argparse.ArgumentParser, store: PostgresStore, name: str,
+) -> PostgresStore:
+    try:
+        organization = DojoOrganizations(store).require_name(name)
+    except (OrganizationInvalid, OrganizationNotFound, OrganizationInactive) as exc:
+        parser.error(str(exc))
+    return store.for_organization(organization.id)
+
+
+def organizations_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="dojo-organizations")
+    parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL", DEFAULT_URL))
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    create = subparsers.add_parser("create")
+    create.add_argument("--name", required=True)
+    create.add_argument("--email", required=True)
+    create.add_argument("--phone")
+    subparsers.add_parser("list")
+    deactivate = subparsers.add_parser("deactivate")
+    deactivate.add_argument("--name", required=True)
+    args = parser.parse_args(argv)
+    store = PostgresStore(args.database_url)
+    store.create_all()
+    organizations = DojoOrganizations(store)
+    try:
+        if args.command == "create":
+            organization = organizations.create(name=args.name, email=args.email, phone=args.phone)
+            print(f"Organization created: {organization.name} (id={organization.id})")
+        elif args.command == "deactivate":
+            organizations.deactivate(args.name)
+            print("Organization is inactive.")
+        else:
+            for organization in organizations.list():
+                status = "active" if organization.active else "inactive"
+                print(f"{organization.id}\t{organization.name}\t{organization.email}\t"
+                      f"{organization.phone or '-'}\t{status}")
+    except (OrganizationInvalid, OrganizationNameTaken, OrganizationNotFound) as exc:
+        parser.error(str(exc))
+    return 0
 
 
 def render_main(argv: list[str] | None = None) -> int:
@@ -28,11 +77,13 @@ def render_main(argv: list[str] | None = None) -> int:
         default=os.environ.get("MEDIA_ROOT", "media"),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("render-preview")
+    render = subparsers.add_parser("render-preview")
+    render.add_argument("--organization", required=True)
     args = parser.parse_args(argv)
 
     store = PostgresStore(args.database_url)
     store.create_all()
+    store = _organization_store(parser, store, args.organization)
     publishing = DojoPublishing(
         packages=store,
         audit=store,
@@ -54,13 +105,18 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("DATABASE_URL", DEFAULT_URL),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("create-code")
+    create = subparsers.add_parser("create-code")
+    create.add_argument("--organization", required=True)
     args = parser.parse_args(argv)
 
     store = PostgresStore(args.database_url)
     store.create_all()
+    store = _organization_store(parser, store, args.organization)
     pairing = DojoPairing(pairing=store, audit=store)
-    issued = mint_code(pairing)
+    try:
+        issued = mint_code(pairing, organization_id=store.organization_id)
+    except OrganizationInactive as exc:
+        parser.error(str(exc))
     print(f"Pairing code: {issued.raw_code}")
     print(f"Expires at:   {issued.expires_at.isoformat()}")
     return 0
@@ -90,9 +146,14 @@ def consent_main(argv: list[str] | None = None) -> int:
 
     store = PostgresStore(args.database_url)
     store.create_all()
-    setup = DojoSetup(setup=store, audit=store, pairing=store)
-    policy = set_consent_policy(setup, version=args.version, text=args.text)
-    print(f"Consent policy v{policy.version} saved")
+    organizations = DojoOrganizations(store).list()
+    if not organizations:
+        parser.error("initialize the database before setting the global consent policy")
+    for organization in organizations:
+        scoped = store.for_organization(organization.id)
+        setup = DojoSetup(setup=scoped, audit=scoped, pairing=scoped)
+        set_consent_policy(setup, version=args.version, text=args.text)
+    print(f"Consent policy v{args.version} saved globally")
     return 0
 
 
@@ -104,20 +165,24 @@ def settings_main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     limits = subparsers.add_parser("set-upload-limits")
+    limits.add_argument("--organization", required=True)
     limits.add_argument("--max-file-bytes", type=int)
     limits.add_argument("--max-package-bytes", type=int)
     branding = subparsers.add_parser("set-branding")
+    branding.add_argument("--organization", required=True)
     branding.add_argument("--logo-asset")
     branding.add_argument("--intro-asset")
     branding.add_argument("--intro-duration", type=float)
     branding.add_argument("--outro-asset")
     branding.add_argument("--outro-duration", type=float)
     caption = subparsers.add_parser("set-caption-template")
+    caption.add_argument("--organization", required=True)
     caption.add_argument("--text", required=True)
     args = parser.parse_args(argv)
 
     store = PostgresStore(args.database_url)
     store.create_all()
+    store = _organization_store(parser, store, args.organization)
     now = datetime.now(ZoneInfo("Europe/Istanbul"))
     if args.command == "set-upload-limits":
         if args.max_file_bytes is not None:

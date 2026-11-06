@@ -15,6 +15,7 @@ function server() {
       if (route.request().method() === "GET") reads.push(path);
       if (path === "/api/compat") return json({ api_version: "0.1.0" });
       if (path === "/api/pairing/me") return json(client);
+      if (path === "/api/pairing/organization") return json({ name: "Test Dojo", logo_asset: null });
       if (path === "/api/setup") return json(setupState());
       if (path === "/api/dashboard") return json({ ...dashboard(), package: snapshot.package });
       if (path === "/api/media/upload-limits") return json({ max_file_bytes: 2 ** 31, max_package_bytes: 20 * 2 ** 30 });

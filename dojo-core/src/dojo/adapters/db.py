@@ -13,15 +13,18 @@ import psycopg
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
     UniqueConstraint,
     create_engine,
     delete,
+    event,
     func,
     or_,
     select,
@@ -32,9 +35,23 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import URL, Connection, CursorResult
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    mapped_column,
+    sessionmaker,
+    with_loader_criteria,
+)
 
-from dojo.exceptions import ConsentPolicyChanged, NoConsentPolicy
+from dojo.exceptions import (
+    ConsentPolicyChanged,
+    NoConsentPolicy,
+    OrganizationInactive,
+    OrganizationNameTaken,
+    OrganizationNotFound,
+    OrganizationScopeRequired,
+)
 from dojo.live import ChangeEvent, PackageState, emits
 from dojo.model import (
     AuditEvent,
@@ -44,6 +61,7 @@ from dojo.model import (
     Job,
     MetaCandidate,
     MetaConnectionStatus,
+    Organization,
     Package,
     PairingCode,
     PushRegistration,
@@ -79,28 +97,51 @@ class Base(DeclarativeBase):
     pass
 
 
-class PackageRow(Base):
+class OrganizationRow(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    name_key: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True,
+                                       server_default=text("true"))
+
+
+class OrganizationOwned:
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True,
+    )
+
+
+class PackageRow(OrganizationOwned, Base):
     __tablename__ = "packages"
     __table_args__ = (
         Index(
             "ix_packages_status_active",
-            "status",
+            "organization_id", "status",
             unique=True,
             postgresql_where=text("status = 'active'"),
         ),
+        UniqueConstraint("organization_id", "id", name="uq_packages_organization_identity"),
+        UniqueConstraint("organization_id", "folder_name", name="uq_packages_organization_folder"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    folder_name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    folder_name: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
 
 
-class PackageStateRow(Base):
+class PackageStateRow(OrganizationOwned, Base):
     __tablename__ = "package_states"
     __table_args__ = (
         CheckConstraint("content_revision > 0 AND view_revision > 0",
-                        name="ck_package_states_revisions"),
+                         name="ck_package_states_revisions"),
+        ForeignKeyConstraint(["organization_id", "package_id"],
+                             ["packages.organization_id", "packages.id"],
+                             name="fk_package_states_organization_parent", ondelete="CASCADE"),
     )
 
     package_id: Mapped[int] = mapped_column(
@@ -111,15 +152,17 @@ class PackageStateRow(Base):
     document: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
-class LiveResourceVersionRow(Base):
+class LiveResourceVersionRow(OrganizationOwned, Base):
     __tablename__ = "live_resource_versions"
     __table_args__ = (CheckConstraint("version >= 0", name="ck_live_resource_version"),)
 
     resource: Mapped[str] = mapped_column(String(255), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"),
+                                               primary_key=True, index=True)
     version: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
-class LiveChangeEventRow(Base):
+class LiveChangeEventRow(OrganizationOwned, Base):
     __tablename__ = "live_change_events"
 
     event_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -127,7 +170,7 @@ class LiveChangeEventRow(Base):
     revoked_client_ids: Mapped[list[int]] = mapped_column(JSONB, nullable=False)
 
 
-class AuditRow(Base):
+class AuditRow(OrganizationOwned, Base):
     __tablename__ = "audit_events"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -137,7 +180,7 @@ class AuditRow(Base):
     details: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
-class PairingCodeRow(Base):
+class PairingCodeRow(OrganizationOwned, Base):
     __tablename__ = "pairing_codes"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -148,8 +191,11 @@ class PairingCodeRow(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class ClientRow(Base):
+class ClientRow(OrganizationOwned, Base):
     __tablename__ = "clients"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_clients_organization_identity"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -173,12 +219,16 @@ class ConsentPolicyRow(Base):
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
-class ConsentAcceptanceRow(Base):
+class ConsentAcceptanceRow(OrganizationOwned, Base):
     __tablename__ = "consent_acceptances"
+    __table_args__ = (
+        Index("ix_consent_acceptances_policy_version", "organization_id", "policy_version",
+              unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     policy_version: Mapped[int] = mapped_column(
-        ForeignKey("consent_policies.version"), unique=True, nullable=False, index=True
+        ForeignKey("consent_policies.version"), nullable=False
     )
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepting_client_id: Mapped[int] = mapped_column(nullable=False)
@@ -186,8 +236,14 @@ class ConsentAcceptanceRow(Base):
     accepting_client_kind: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
-class UploadRow(Base):
+class UploadRow(OrganizationOwned, Base):
     __tablename__ = "uploads"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_uploads_organization_identity"),
+        ForeignKeyConstraint(["organization_id", "package_id"],
+                             ["packages.organization_id", "packages.id"],
+                             name="fk_uploads_organization_parent"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     upload_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
@@ -205,16 +261,20 @@ class UploadRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class JobRow(Base):
+class JobRow(OrganizationOwned, Base):
     __tablename__ = "jobs"
     __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "upload_id"],
+                             ["uploads.organization_id", "uploads.id"],
+                             name="fk_jobs_organization_parent"),
         Index(
-            "uq_jobs_active_render", text("(payload ->> 'package')"),
+            "uq_jobs_active_render", "organization_id", text("(payload ->> 'package')"),
             text("(payload ->> 'digest')"), unique=True,
             postgresql_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
         ),
         Index(
-            "uq_jobs_active_media_preview", "kind", text("(payload ->> 'package_id')"),
+            "uq_jobs_active_media_preview", "organization_id", "kind",
+            text("(payload ->> 'package_id')"),
             text("(payload ->> 'media_id')"), unique=True,
             postgresql_where=text(
                 "kind IN ('section_preview', 'thumbnail') AND status IN ('queued', 'processing')"
@@ -252,6 +312,8 @@ class MonitoringIncidentRow(Base):
 class OperationalAlertRow(Base):
     __tablename__ = "operational_alerts"
     __table_args__ = (CheckConstraint(ALERT_KIND_CHECK, name="ck_operational_alerts_kind"),)
+    organization_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"),
+                                                      nullable=True, index=True)
 
     alert_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     event_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
@@ -293,23 +355,25 @@ class OperationalDeliveryRow(Base):
     )
 
 
-class SettingRow(Base):
+class SettingRow(OrganizationOwned, Base):
     __tablename__ = "settings"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"),
+                                               primary_key=True, index=True)
     value: Mapped[object] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class YayinZamaniRow(Base):
+class YayinZamaniRow(OrganizationOwned, Base):
     __tablename__ = "yayin_zamani"
     __table_args__ = (
         Index("ix_yayin_zamani_status_due", "status", "due_at"),
-        Index("uq_yayin_zamani_regular_due", "due_at", unique=True,
+        Index("uq_yayin_zamani_regular_due", "organization_id", "due_at", unique=True,
               postgresql_where=text("kind = 'regular'")),
-        Index("uq_yayin_zamani_pending_regular", "kind", unique=True,
+        Index("uq_yayin_zamani_pending_regular", "organization_id", "kind", unique=True,
               postgresql_where=text("kind = 'regular' AND status = 'pending'")),
-        Index("uq_yayin_zamani_pending_exception", "status", unique=True,
+        Index("uq_yayin_zamani_pending_exception", "organization_id", "status", unique=True,
               postgresql_where=text("kind IN ('manual', 'oneoff') AND status = 'pending'")),
     )
 
@@ -321,14 +385,14 @@ class YayinZamaniRow(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class YayinIncelemesiRow(Base):
+class YayinIncelemesiRow(OrganizationOwned, Base):
     __tablename__ = "yayin_incelemesi"
     __table_args__ = (
         UniqueConstraint(
             "occurrence_id", "revision_digest", name="uq_yayin_incelemesi_occ_rev"
         ),
         Index("ix_yayin_incelemesi_status", "status"),
-        Index("uq_yayin_incelemesi_actionable", text("(1)"), unique=True,
+        Index("uq_yayin_incelemesi_actionable", "organization_id", unique=True,
               postgresql_where=text("status IN ('pending', 'failed', 'uncertain', 'publishing')")),
     )
 
@@ -349,16 +413,24 @@ class YayinIncelemesiRow(Base):
     )
 
 
-class PushRegistrationRow(Base):
+class PushRegistrationRow(OrganizationOwned, Base):
     __tablename__ = "push_registrations"
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "client_id"],
+                             ["clients.organization_id", "clients.id"],
+                             name="fk_push_registrations_organization_parent"),
+    )
 
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), primary_key=True)
     token: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class MetaConnectionRow(Base):
+class MetaConnectionRow(OrganizationOwned, Base):
     __tablename__ = "meta_connections"
+    __table_args__ = (
+        UniqueConstraint("organization_id", name="uq_meta_connections_organization"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     ig_user_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -380,8 +452,13 @@ class MetaConnectionRow(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class MetaOAuthAttemptRow(Base):
+class MetaOAuthAttemptRow(OrganizationOwned, Base):
     __tablename__ = "meta_oauth_attempts"
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "initiated_by_client_id"],
+                             ["clients.organization_id", "clients.id"],
+                             name="fk_meta_oauth_attempts_organization_parent"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     state_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
@@ -400,15 +477,54 @@ class MetaOAuthAttemptRow(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-_read_connection: ContextVar[tuple[URL, Connection] | None] = ContextVar(
+class OrganizationSession(Session):
+    """Each session belongs to one immutable store scope, never ambient request state."""
+
+
+@event.listens_for(OrganizationSession, "do_orm_execute")
+def _scope_statement(state: Any) -> None:
+    owned = any(issubclass(mapper.class_, OrganizationOwned) for mapper in state.all_mappers)
+    if not owned or state.session.info.get("registry_lookup"):
+        return
+    organization_id = state.session.info.get("organization_id")
+    if organization_id is None:
+        raise OrganizationScopeRequired("organization scope is required")
+    if state.is_insert:
+        state.statement = state.statement.values(organization_id=organization_id)
+    else:
+        state.statement = state.statement.options(with_loader_criteria(
+            OrganizationOwned, lambda row: row.organization_id == organization_id,
+            include_aliases=True,
+        ))
+
+
+@event.listens_for(OrganizationSession, "before_flush")
+def _scope_writes(session: Session, _context: Any, _instances: Any) -> None:
+    organization_id = session.info.get("organization_id")
+    for row in session.new | session.dirty | session.deleted:
+        if isinstance(row, OrganizationOwned):
+            if organization_id is None:
+                raise OrganizationScopeRequired("organization scope is required")
+            if row.organization_id is not None and row.organization_id != organization_id:
+                raise ValueError("record belongs to another organization")
+            row.organization_id = organization_id
+
+
+_read_connection: ContextVar[tuple[URL, int | None, Connection] | None] = ContextVar(
     "read_connection", default=None,
 )
 
 
 class PostgresStore:
-    def __init__(self, url: str) -> None:
-        self._engine = create_engine(url)
-        self._session_factory = sessionmaker(bind=self._engine, expire_on_commit=False)
+    def __init__(self, url: str, *, organization_id: int | None = None,
+                 _engine: Any = None) -> None:
+        self._organization_id = organization_id
+        self._owns_engine = _engine is None
+        self._engine = _engine if _engine is not None else create_engine(url)
+        self._session_factory = sessionmaker(
+            bind=self._engine, expire_on_commit=False, class_=OrganizationSession,
+            info={"organization_id": organization_id},
+        )
         self._emission_connection: ContextVar[Connection | None] = ContextVar(
             "emission_connection", default=None,
         )
@@ -423,9 +539,84 @@ class PostgresStore:
             "pending_changes", default=None,
         )
 
+    @property
+    def organization_id(self) -> int | None:
+        return self._organization_id
+
+    def for_organization(self, organization_id: int) -> PostgresStore:
+        if self.find_organization(organization_id) is None:
+            raise ValueError("organization not found")
+        return PostgresStore(str(self._engine.url), organization_id=organization_id,
+                             _engine=self._engine)
+
+    def _require_scope(self) -> int:
+        if self.organization_id is None:
+            raise OrganizationScopeRequired("organization scope is required")
+        return self.organization_id
+
+    @staticmethod
+    def _organization_from_row(row: OrganizationRow) -> Organization:
+        return Organization(row.id, row.name, row.email, row.phone, row.active)
+
+    def create_organization(
+        self, name: str, name_key: str, email: str, phone: str | None,
+    ) -> Organization:
+        with self._session() as session:
+            row = OrganizationRow(name=name, name_key=name_key, email=email, phone=phone)
+            session.add(row)
+            try:
+                session.commit()
+            except IntegrityError as exc:
+                session.rollback()
+                if getattr(exc.orig, "sqlstate", None) == "23505":
+                    raise OrganizationNameTaken("organization name is already in use") from exc
+                raise
+            return self._organization_from_row(row)
+
+    def find_organization(self, organization_id: int) -> Organization | None:
+        with self._session() as session:
+            row = session.get(OrganizationRow, organization_id)
+            return self._organization_from_row(row) if row is not None else None
+
+    def find_organization_by_name_key(self, name_key: str) -> Organization | None:
+        with self._session() as session:
+            row = session.scalar(select(OrganizationRow).where(
+                OrganizationRow.name_key == name_key,
+            ))
+            return self._organization_from_row(row) if row is not None else None
+
+    def list_organizations(self, *, active_only: bool = False) -> list[Organization]:
+        with self._session() as session:
+            query = select(OrganizationRow).order_by(OrganizationRow.id)
+            if active_only:
+                query = query.where(OrganizationRow.active.is_(True))
+            return [self._organization_from_row(row) for row in session.scalars(query)]
+
+    def deactivate_organization(self, organization_id: int) -> None:
+        scope = self.for_organization(organization_id)
+        with scope.command_transaction(), scope._session() as session:
+            session.execute(update(OrganizationRow).where(
+                OrganizationRow.id == organization_id,
+            ).values(active=False))
+            clients = list(session.scalars(select(ClientRow.id)))
+            scope.record_change(["auth"], revoked_client_ids=clients)
+            session.commit()
+
+    @contextmanager
+    def organization_transaction(self) -> Iterator[None]:
+        with self.command_transaction(), self._session() as session:
+            organization = session.scalar(select(OrganizationRow).where(
+                OrganizationRow.id == self._require_scope(),
+            ).with_for_update(read=True))
+            if organization is None:
+                raise OrganizationNotFound("organization not found")
+            if not organization.active:
+                raise OrganizationInactive("organization is inactive")
+            yield
+
     @contextmanager
     def package_lock(self, *, wait: bool = True) -> Iterator[bool]:
-        # ponytail: one package writer; per-package locks if multiple active packages exist.
+        parameters = {"organization_id": self._require_scope()}
         if self._package_locked.get():
             yield True
             return
@@ -434,18 +625,24 @@ class PostgresStore:
             emission = self._emission_connection.get()
             if emission is not None:
                 acquired = True if wait else bool(emission.execute(
-                    text("SELECT pg_try_advisory_xact_lock(72861403)"),
+                    text("SELECT pg_try_advisory_xact_lock(72861403, :organization_id)"),
+                    parameters,
                 ).scalar_one())
                 if wait:
-                    emission.execute(text("SELECT pg_advisory_xact_lock(72861403)"))
+                    emission.execute(
+                        text("SELECT pg_advisory_xact_lock(72861403, :organization_id)"),
+                        parameters,
+                    )
                 yield acquired
             else:
                 with self._engine.connect() as connection:
                     acquired = True if wait else bool(connection.execute(
-                        text("SELECT pg_try_advisory_lock(72861403)"),
+                        text("SELECT pg_try_advisory_lock(72861403, :organization_id)"), parameters,
                     ).scalar_one())
                     if wait:
-                        connection.execute(text("SELECT pg_advisory_lock(72861403)"))
+                        connection.execute(
+                            text("SELECT pg_advisory_lock(72861403, :organization_id)"), parameters,
+                        )
                     # Session-level lock survives commit; reuse its connection for local sessions.
                     connection.commit()
                     binding = self._package_connection.set(connection) if acquired else None
@@ -455,7 +652,10 @@ class PostgresStore:
                         if binding is not None:
                             self._package_connection.reset(binding)
                         if acquired:
-                            connection.execute(text("SELECT pg_advisory_unlock(72861403)"))
+                            connection.execute(
+                                text("SELECT pg_advisory_unlock(72861403, :organization_id)"),
+                                parameters,
+                            )
                             connection.commit()
         finally:
             self._package_locked.reset(token)
@@ -503,20 +703,23 @@ class PostgresStore:
             session.commit()
         self.queue_change([f"package:{package.id}"])
 
-    def _session(self) -> Session:
+    def _session(self, *, registry_lookup: bool = False) -> Session:
+        info = {"organization_id": self.organization_id, "registry_lookup": registry_lookup}
         connection = self._emission_connection.get()
         if connection is None:
             snapshot = _read_connection.get()
-            if snapshot is not None and snapshot[0] == self._engine.url:
+            if snapshot is not None and snapshot[:2] == (self._engine.url, self.organization_id):
                 return self._session_factory(
-                    bind=snapshot[1], join_transaction_mode="rollback_only",
+                    bind=snapshot[2], join_transaction_mode="rollback_only", info=info,
                 )
             package_connection = self._package_connection.get()
-            return (self._session_factory(bind=package_connection)
-                    if package_connection is not None else self._session_factory())
+            return (self._session_factory(bind=package_connection, info=info)
+                    if package_connection is not None else self._session_factory(info=info))
         # Method-local sessions flush on commit, but neither commit nor close
         # the outer transaction. Reads/refreshes also use the lock connection.
-        return self._session_factory(bind=connection, join_transaction_mode="rollback_only")
+        return self._session_factory(
+            bind=connection, join_transaction_mode="rollback_only", info=info,
+        )
 
     @contextmanager
     def emission_transaction(self) -> Iterator[None]:
@@ -559,13 +762,13 @@ class PostgresStore:
     @contextmanager
     def read_snapshot(self) -> Iterator[None]:
         existing = _read_connection.get()
-        if existing is not None and existing[0] == self._engine.url:
+        if existing is not None and existing[:2] == (self._engine.url, self.organization_id):
             yield
             return
         with self._engine.connect().execution_options(isolation_level="REPEATABLE READ") as conn:
             with conn.begin():
                 conn.execute(text("SET TRANSACTION READ ONLY"))
-                token = _read_connection.set((self._engine.url, conn))
+                token = _read_connection.set((self._engine.url, self.organization_id, conn))
                 try:
                     yield
                 finally:
@@ -576,7 +779,8 @@ class PostgresStore:
         if connection is None:
             raise RuntimeError("advisory lock requires an emission transaction")
         return bool(connection.execute(
-            text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key},
+            text("SELECT pg_try_advisory_xact_lock(hashtext(:key), :organization_id)"),
+            {"key": str(key), "organization_id": self._require_scope()},
         ).scalar_one())
 
     @contextmanager
@@ -636,9 +840,12 @@ class PostgresStore:
         versions: dict[str, int] = {}
         with self._session() as session:
             for resource in sorted(set(resources)):
-                stmt = pg_insert(LiveResourceVersionRow).values(resource=resource, version=1)
+                stmt = pg_insert(LiveResourceVersionRow).values(
+                    resource=resource, version=1, organization_id=self._require_scope(),
+                )
                 increment = stmt.on_conflict_do_update(
-                    index_elements=[LiveResourceVersionRow.resource],
+                    index_elements=[LiveResourceVersionRow.organization_id,
+                                    LiveResourceVersionRow.resource],
                     set_={"version": LiveResourceVersionRow.version + 1},
                 ).returning(LiveResourceVersionRow.version)
                 versions[resource] = session.execute(increment).scalar_one()
@@ -649,19 +856,21 @@ class PostgresStore:
             session.execute(text("SELECT pg_notify('dojo_changes', :event_id)"),
                             {"event_id": row.event_id})
             session.commit()
-            return ChangeEvent(row.event_id, deepcopy(versions), list(row.revoked_client_ids))
+            return ChangeEvent(row.event_id, deepcopy(versions), list(row.revoked_client_ids),
+                               row.organization_id)
 
     def get_change(self, event_id: str) -> ChangeEvent | None:
-        with self._session() as session:
+        with self._session(registry_lookup=self.organization_id is None) as session:
             # Bound a stalled notification lookup so the listener can reconnect.
             session.execute(text("SET LOCAL statement_timeout = 5000"))
             row = session.get(LiveChangeEventRow, event_id)
-            return (ChangeEvent(row.event_id, deepcopy(row.versions), list(row.revoked_client_ids))
+            return (ChangeEvent(row.event_id, deepcopy(row.versions), list(row.revoked_client_ids),
+                                row.organization_id)
                     if row is not None else None)
 
     def get_resource_version(self, resource: str) -> int:
         with self._session() as session:
-            row = session.get(LiveResourceVersionRow, resource)
+            row = session.get(LiveResourceVersionRow, (resource, self._require_scope()))
             return row.version if row is not None else 0
 
     def open_change_listener(self) -> psycopg.Connection:
@@ -686,7 +895,8 @@ class PostgresStore:
         Base.metadata.create_all(self._engine)
 
     def dispose(self) -> None:
-        self._engine.dispose()
+        if self._owns_engine:
+            self._engine.dispose()
 
     @overload
     def create(self, obj: Package) -> Package: ...
@@ -790,12 +1000,13 @@ class PostgresStore:
         fields = ("package", "digest") if active_render else ("package_id", "media_id")
         if active_render:
             stmt = stmt.on_conflict_do_nothing(
-                index_elements=[text("(payload ->> 'package')"), text("(payload ->> 'digest')")],
+                index_elements=["organization_id", text("(payload ->> 'package')"),
+                                text("(payload ->> 'digest')")],
                 index_where=text("kind = 'render' AND status IN ('queued', 'processing')"),
             )
         elif active_preview:
             stmt = stmt.on_conflict_do_nothing(
-                index_elements=["kind", text("(payload ->> 'package_id')"),
+                index_elements=["organization_id", "kind", text("(payload ->> 'package_id')"),
                                 text("(payload ->> 'media_id')")],
                 index_where=text(
                     "kind IN ('section_preview', 'thumbnail') "
@@ -1091,6 +1302,7 @@ class PostgresStore:
             session.refresh(row)
             return PairingCode(
                 id=row.id,
+                organization_id=row.organization_id,
                 code_hash=row.code_hash,
                 expires_at=row.expires_at,
                 created_by=row.created_by,
@@ -1099,7 +1311,7 @@ class PostgresStore:
             )
 
     def find_code_by_hash(self, code_hash: str) -> PairingCode | None:
-        with self._session() as session:
+        with self._session(registry_lookup=self.organization_id is None) as session:
             row = session.scalar(
                 select(PairingCodeRow).where(PairingCodeRow.code_hash == code_hash)
             )
@@ -1107,6 +1319,7 @@ class PostgresStore:
                 return None
             return PairingCode(
                 id=row.id,
+                organization_id=row.organization_id,
                 code_hash=row.code_hash,
                 expires_at=row.expires_at,
                 created_by=row.created_by,
@@ -1153,7 +1366,7 @@ class PostgresStore:
             return self._client_from_row(row) if row is not None else None
 
     def find_client_by_credential_hash(self, credential_hash: str) -> Client | None:
-        with self._session() as session:
+        with self._session(registry_lookup=self.organization_id is None) as session:
             row = session.scalar(
                 select(ClientRow).where(ClientRow.credential_hash == credential_hash)
             )
@@ -1188,6 +1401,7 @@ class PostgresStore:
     def _client_from_row(row: ClientRow) -> Client:
         return Client(
             id=row.id,
+            organization_id=row.organization_id,
             name=row.name,
             kind=row.kind,
             created_at=row.created_at,
@@ -1314,7 +1528,7 @@ class PostgresStore:
             job_row = session.scalar(select(JobRow).where(JobRow.job_id == key))
             if job_row is not None:
                 return self._job_from_row(job_row)
-            setting_row = session.get(SettingRow, key)
+            setting_row = session.get(SettingRow, (key, self._require_scope()))
             return setting_row.value if setting_row is not None else None
 
     def get_by_pk(self, upload_pk: int | None) -> Upload | None:
@@ -1357,6 +1571,13 @@ class PostgresStore:
 
     @emits(result=True)
     def claim_next(self, claimed_at: datetime) -> Job | None:
+        try:
+            with self.organization_transaction():
+                return self._claim_next_active(claimed_at)
+        except OrganizationInactive:
+            return None
+
+    def _claim_next_active(self, claimed_at: datetime) -> Job | None:
         with self._session() as session:
             row = session.scalar(
                 select(JobRow)
@@ -1375,9 +1596,12 @@ class PostgresStore:
     @emits("settings", "setup", "dashboard")
     def set(self, key: str, value: object, *, updated_at: datetime) -> None:
         with self._session() as session:
-            stmt = pg_insert(SettingRow).values(key=key, value=value, updated_at=updated_at)
+            stmt = pg_insert(SettingRow).values(
+                key=key, value=value, updated_at=updated_at,
+                organization_id=self._require_scope(),
+            )
             stmt = stmt.on_conflict_do_update(
-                index_elements=[SettingRow.key],
+                index_elements=[SettingRow.organization_id, SettingRow.key],
                 set_={"value": stmt.excluded.value, "updated_at": stmt.excluded.updated_at},
             )
             session.execute(stmt)
@@ -1688,7 +1912,9 @@ class PostgresStore:
         rows = session.scalars(
             select(PushRegistrationRow)
             .join(ClientRow, ClientRow.id == PushRegistrationRow.client_id)
-            .where(ClientRow.revoked_at.is_(None), ClientRow.kind == "device")
+            .join(OrganizationRow, OrganizationRow.id == ClientRow.organization_id)
+            .where(ClientRow.revoked_at.is_(None), ClientRow.kind == "device",
+                   OrganizationRow.active.is_(True))
             .order_by(PushRegistrationRow.client_id)
         ).all()
         return [
@@ -1711,6 +1937,8 @@ class PostgresStore:
                 data=alert.data,
                 created_at=alert.created_at,
                 recipients_snapshotted_at=None,
+                organization_id=session.info.get("organization_id")
+                if alert.kind == "job.failed" else None,
             ).on_conflict_do_nothing(index_elements=[OperationalAlertRow.event_key])
         )
 
@@ -1753,8 +1981,10 @@ class PostgresStore:
 
     def prepare_alert_deliveries(self, now: datetime, *, limit: int = 100) -> int:
         prepared = 0
-        with self._session() as session:
+        with self._session(registry_lookup=self.organization_id is None) as session:
             recipients = self._active_device_registrations(session)
+            owners = {client_id: organization_id for client_id, organization_id in
+                      session.execute(select(ClientRow.id, ClientRow.organization_id)).all()}
             if not recipients:
                 return 0  # No recipient is not a delivery: alerts stay pending.
             # Locking the alerts makes the snapshot single-writer: a concurrent
@@ -1767,9 +1997,16 @@ class PostgresStore:
                 .with_for_update(skip_locked=True)
             ).all()
             for alert in unsnapshotted:
+                if (self.organization_id is not None and alert.organization_id is not None
+                        and alert.organization_id != self.organization_id):
+                    continue
+                eligible = [r for r in recipients if alert.organization_id is None
+                            or owners.get(r.client_id) == alert.organization_id]
+                if not eligible:
+                    continue
                 # One snapshot for the whole batch: devices paired after this
                 # point are not historical recipients of these alerts.
-                for registration in recipients:
+                for registration in eligible:
                     session.add(OperationalDeliveryRow(
                         alert_id=alert.alert_id,
                         client_id=registration.client_id,
@@ -1785,10 +2022,11 @@ class PostgresStore:
     def claim_alert_delivery(
         self, now: datetime, *, lease_seconds: int = 60,
     ) -> DeliveryLease | None:
-        with self._session() as session:
+        with self._session(registry_lookup=self.organization_id is None) as session:
             while True:
                 row = session.scalar(
                     select(OperationalDeliveryRow)
+                    .join(ClientRow, ClientRow.id == OperationalDeliveryRow.client_id)
                     .where(
                         OperationalDeliveryRow.status == DELIVERY_PENDING,
                         OperationalDeliveryRow.due_at <= now,
@@ -1841,15 +2079,26 @@ class PostgresStore:
         client = session.get(ClientRow, client_id)
         if client is None or client.revoked_at is not None or client.kind != "device":
             return None
+        organization = session.get(OrganizationRow, client.organization_id)
+        if organization is None or not organization.active:
+            return None
         return PushRegistration(
             client_id=row.client_id, token=row.token, updated_at=row.updated_at
         )
 
+    def alert_delivery_active(self, lease: DeliveryLease) -> bool:
+        with self._session(registry_lookup=self.organization_id is None) as session:
+            registration = self._current_registration(session, lease.client_id)
+            return registration is not None and registration.token == lease.token
+
     def finish_alert_delivery(
         self, lease: DeliveryLease, *, outcome: DeliveryOutcome, now: datetime,
     ) -> bool:
-        with self._session() as session:
-            row = session.get(OperationalDeliveryRow, lease.delivery_id, with_for_update=True)
+        with self._session(registry_lookup=self.organization_id is None) as session:
+            row = session.scalar(select(OperationalDeliveryRow)
+                                 .join(ClientRow, ClientRow.id == OperationalDeliveryRow.client_id)
+                                 .where(OperationalDeliveryRow.id == lease.delivery_id)
+                                 .with_for_update())
             if (
                 row is None
                 or row.status != DELIVERY_PENDING
@@ -1896,7 +2145,7 @@ class PostgresStore:
 
     def get_active_snapshot(self) -> tuple[MetaConnectionStatus, str] | None:
         with self._session() as session:
-            row = session.get(MetaConnectionRow, 1)
+            row = session.scalar(select(MetaConnectionRow))
             if row is None:
                 return None
             status = MetaConnectionStatus(
@@ -1930,10 +2179,10 @@ class PostgresStore:
         connection_type: str = "facebook_login",
     ) -> MetaConnectionStatus:
         with self._session() as session:
-            row = session.get(MetaConnectionRow, 1)
+            row = session.scalar(select(MetaConnectionRow))
             if row is None:
                 row = MetaConnectionRow(
-                    id=1,
+                    id=self._require_scope(),
                     ig_user_id=ig_user_id,
                     ig_username=ig_username,
                     page_id=page_id,
@@ -1975,7 +2224,7 @@ class PostgresStore:
 
     def get_raw_active(self) -> tuple[str, datetime | None] | None:
         with self._session() as session:
-            row = session.get(MetaConnectionRow, 1)
+            row = session.scalar(select(MetaConnectionRow))
             if row is None:
                 return None
             return row.encrypted_token, row.token_expires_at
@@ -1986,7 +2235,7 @@ class PostgresStore:
         *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None:
         with self._session() as session:
-            row = session.get(MetaConnectionRow, 1, with_for_update=True)
+            row = session.scalar(select(MetaConnectionRow).with_for_update())
             if row is None:
                 return None
             if (
@@ -2017,7 +2266,7 @@ class PostgresStore:
         *, expected_encrypted_token: str | None = None,
     ) -> MetaConnectionStatus | None:
         with self._session() as session:
-            row = session.get(MetaConnectionRow, 1, with_for_update=True)
+            row = session.scalar(select(MetaConnectionRow).with_for_update())
             if row is None:
                 return None
             if (
@@ -2062,7 +2311,7 @@ class PostgresStore:
             }
 
     def find_attempt_by_state_hash(self, state_hash: str) -> dict | None:
-        with self._session() as session:
+        with self._session(registry_lookup=self.organization_id is None) as session:
             row = session.scalar(
                 select(MetaOAuthAttemptRow).where(MetaOAuthAttemptRow.state_hash == state_hash)
             )
@@ -2070,6 +2319,7 @@ class PostgresStore:
                 return None
             return {
                 "id": row.id,
+                "organization_id": row.organization_id,
                 "state_hash": row.state_hash,
                 "initiated_by_client_id": row.initiated_by_client_id,
                 "return_uri": row.return_uri,

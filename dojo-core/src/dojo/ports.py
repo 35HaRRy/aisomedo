@@ -17,6 +17,7 @@ from dojo.model import (
     MetaConnectionStatus,
     Notification,
     NotificationResult,
+    Organization,
     Package,
     PairingCode,
     ProcessedMedia,
@@ -66,6 +67,7 @@ class PackageStore(Protocol):
 
 @runtime_checkable
 class AuditStore(Protocol):
+    def for_organization(self, organization_id: int) -> AuditStore: ...
     def append(self, event: AuditEvent) -> None: ...
     def list_recent(
         self, limit: int = 50, before_id: int | None = None
@@ -107,8 +109,24 @@ class SecretGenerator(Protocol):
     def generate_token(self) -> str: ...
 
 
+class OrganizationStore(Protocol):
+    @property
+    def organization_id(self) -> int | None: ...
+    def create_organization(
+        self, name: str, name_key: str, email: str, phone: str | None,
+    ) -> Organization: ...
+    def find_organization(self, organization_id: int) -> Organization | None: ...
+    def find_organization_by_name_key(self, name_key: str) -> Organization | None: ...
+    def list_organizations(self, *, active_only: bool = False) -> list[Organization]: ...
+    def deactivate_organization(self, organization_id: int) -> None: ...
+
+
 @runtime_checkable
-class PairingStore(Protocol):
+class PairingStore(OrganizationStore, Protocol):
+    @property
+    def organization_id(self) -> int | None: ...
+    def for_organization(self, organization_id: int) -> PairingStore: ...
+    def organization_transaction(self) -> AbstractContextManager[None]: ...
     def create_code(self, code: PairingCode) -> PairingCode: ...
     def find_code_by_hash(self, code_hash: str) -> PairingCode | None: ...
     def mark_code_consumed(self, code_id: int, at: datetime) -> bool: ...
@@ -228,13 +246,15 @@ class PushRegistrationStore(Protocol):
 @runtime_checkable
 class MediaProcessor(Protocol):
     def process(
-        self, upload: Upload, original_path: Path, work_dir: Path
+        self, upload: Upload, original_path: Path, work_dir: Path, *,
+        cancelled: Callable[[], bool] | None = None,
     ) -> ProcessedMedia: ...
 
 
 @runtime_checkable
 class ReelRenderer(Protocol):
-    def render(self, build: ReelBuild, work_dir: Path, out_path: Path) -> Path: ...
+    def render(self, build: ReelBuild, work_dir: Path, out_path: Path, *,
+               cancelled: Callable[[], bool] | None = None) -> Path: ...
     def render_sections(
         self, clips: list[ReelClip], work_dir: Path, out_path: Path, *,
         cancelled: Callable[[], bool],

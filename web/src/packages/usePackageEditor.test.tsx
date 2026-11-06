@@ -151,6 +151,19 @@ it("direct editor handlers cannot change inputs or submit while disconnected", a
   expect(result.current.draftInputs).toEqual(before); expect(server.writes).toHaveLength(0);
 });
 
+it("saves a card during a live resync instead of discarding the click", async () => {
+  const { server, result } = await setup();
+  act(() => result.current.setRanges("a", [{ start: 0, end: 5 }]));
+  await waitFor(() => expect(result.current.persisting).toBe(false));
+  const pending = deferred<Response>(); server.pendingRead = pending.promise;
+  act(() => invalidateLive());
+  await waitFor(() => expect(result.current.loading).toBe(true));
+  await act(async () => expect(await result.current.save("a")).toBe(true));
+  expect(server.writes.map(write => write.url)).toContain("/api/packages/active/edits");
+  expect(result.current.isDirty("a")).toBe(false);
+  await act(async () => pending.resolve(server.json(server.snapshot)));
+});
+
 it("a restored draft for a deleted package remains recoverable without a snapshot", async () => {
   const { result, server, unmount } = await setup();
   act(() => result.current.setRanges("a", [{ start: 0, end: 5 }]));

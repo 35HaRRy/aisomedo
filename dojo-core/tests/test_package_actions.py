@@ -6,15 +6,15 @@ from dataclasses import replace
 from threading import Event, Thread
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore, MontageTrimInvalid, Package, PackageChanged
+from dojo import DojoPublishing, MontageTrimInvalid, Package, PackageChanged
 from dojo.adapters.stubs import StubMediaProcessor, StubNotifier, StubReelRenderer
 from dojo.exceptions import JobNotFound, MediaNotFound, RenderFailed, UploadNotFound
 from dojo.model import AuditEvent, BrandingConfig, Client, YayinIncelemesi, YayinZamani
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 
 
 def make_editor(tmp_path, store=None, renderer=None):
-    store = store or InMemoryStore()
+    store = store or scoped_memory_store()
     seam = DojoPublishing(packages=store, audit=store, settings=store,
                           media_root=tmp_path, clock=FakeClock(),
                           media=StubMediaProcessor(), renderer=renderer or StubReelRenderer())
@@ -62,7 +62,7 @@ def test_photo_duration_invalid_writes_nothing(tmp_path, value):
 
 @pytest.mark.parametrize("adapter", ["memory", "postgres"])
 def test_clear_removes_only_package_files_records_and_pending_work(tmp_path, request, adapter):
-    store = request.getfixturevalue("pg_store") if adapter == "postgres" else InMemoryStore()
+    store = request.getfixturevalue("pg_store") if adapter == "postgres" else scoped_memory_store()
     seam, store, upload_id, media_job_id, mid = make_editor(tmp_path, store)
     package = seam.get_active_package()
     receiving = seam.start_upload("pending.jpg", "image/jpeg", 4)
@@ -122,7 +122,7 @@ def test_clear_during_render_does_not_restore_deleted_package_or_job(tmp_path):
     entered, release, cleared = Event(), Event(), Event()
 
     class SlowRenderer(StubReelRenderer):
-        def render(self, build, work_dir, out_path):
+        def render(self, build, work_dir, out_path, *, cancelled=None):
             entered.set()
             assert release.wait(5)
             return super().render(build, work_dir, out_path)
@@ -165,7 +165,7 @@ def test_failed_render_retry_never_replaces_last_complete_preview(tmp_path):
     seam.process_job(seam.claim_next_job().job_id)
 
     class PartialRenderer(StubReelRenderer):
-        def render(self, build, work_dir, out_path):
+        def render(self, build, work_dir, out_path, *, cancelled=None):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(b"partial")
             raise RenderFailed("interrupted")

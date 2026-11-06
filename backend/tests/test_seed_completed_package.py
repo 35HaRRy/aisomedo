@@ -2,8 +2,9 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore
+from dojo import DojoPublishing
 from dojo.package_media import describe_artifacts
+from dojo.testing import scoped_memory_store
 
 spec = spec_from_file_location(
     "seed_completed_package", Path(__file__).parents[1] / "scripts/seed_completed_package.py",
@@ -13,7 +14,7 @@ spec.loader.exec_module(seed)
 
 
 def test_seed_adds_one_playable_archive_without_changing_active_package(tmp_path):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = DojoPublishing(packages=store, audit=store, settings=store, media_root=tmp_path)
     active = publishing.get_active_package()
     package, created = seed.seed_completed_package(store, tmp_path)

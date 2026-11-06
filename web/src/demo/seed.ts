@@ -45,7 +45,7 @@ export function createDemoState(now: Date): DemoState {
     next_regular_at: regular, render_ready: true, preview_url: VIDEO,
   }]));
   const next_slots = [{ kind: "oneoff", occurrence_id: 3, due_at: at(1) }, { kind: "regular", occurrence_id: 4, due_at: regular }];
-  return { client: { id: 900001, name: "Örnek Stüdyo", kind: "browser", created_by: "demo", created_at: at(-1), last_seen_at: at(0), revoked_at: null },
+  return { client: { id: 900001, organization_id: 900001, name: "Örnek Stüdyo", kind: "browser", created_by: "demo", created_at: at(-1), last_seen_at: at(0), revoked_at: null },
     setup: { ready: true, checklist: ["pairing", "instagram", "schedule", "consent", "logo", "caption_template", "cards"].map(key => ({ key, label: key, complete: true, required: key !== "cards" })) },
     consent: { version: 1, text: "Demo medya rızası. Tüm kişiler ve kayıtlar temsilidir.", accepted_at: at(-1) },
     branding: { caption_template: "Birlikte çalış, birlikte geliş. #Demo", logo_asset: PHOTO, intro_asset: PHOTO, outro_asset: PHOTO, intro_duration: 2, outro_duration: 2 },

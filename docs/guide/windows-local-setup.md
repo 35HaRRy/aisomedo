@@ -119,7 +119,7 @@ uv run --project backend python -c "from cryptography.fernet import Fernet; prin
 . .\ops\Load-Env.ps1 -EnvFile .\ops\.env.local
 uv run --project backend python -m dojo.schema
 $env:SKIP_CREATE_ALL = '1'
-uv run --project backend dojo-create-pairing-code create-code
+uv run --project backend dojo-create-pairing-code create-code --organization "Kaizen Aikido Akademi"
 uv run --project backend python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -131,7 +131,7 @@ npm ci
 npm run dev
 ```
 
-Open **http://localhost:3000**, then pair with the printed code. Vite proxies `/api` and `/pub` to the API on port 8000. If the code expires, load the same environment in another root terminal and rerun the pairing-code command.
+Open **http://localhost:3000**, then pair with the printed organization's code. Vite proxies `/api` and `/pub` to the API on port 8000. If the code expires, load the same environment in another root terminal and rerun the pairing-code command with the required `--organization` name. See [organization management and upgrading existing data](../../README.md#organizations); stop the API and worker and back up database/media before upgrading an existing schema.
 
 6. Rendering and scheduling need exactly **one** worker. Only when ready, in a third root terminal:
 

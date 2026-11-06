@@ -138,15 +138,25 @@ def test_bootstrap_uses_real_http_publisher_and_signed_urls(monkeypatch, tmp_pat
     from dojo.adapters.memory import InMemoryStore
     from dojo.adapters.meta import HttpMetaPublisher
     from dojo.adapters.signed_urls import HmacSignedUrlStore
+    from dojo.organizations import (
+        INITIAL_ORGANIZATION_EMAIL,
+        INITIAL_ORGANIZATION_NAME,
+        DojoOrganizations,
+    )
     monkeypatch.setenv("META_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("MEDIA_ROOT", str(tmp_path))
     monkeypatch.setenv("SIGNED_URL_SECRET", "acceptance-only")
-    monkeypatch.setattr(bootstrap, "PostgresStore", lambda _: InMemoryStore())
+    registry = InMemoryStore()
+    organization = DojoOrganizations(registry).create(
+        name=INITIAL_ORGANIZATION_NAME, email=INITIAL_ORGANIZATION_EMAIL,
+    )
+    monkeypatch.setattr(bootstrap, "PostgresStore", lambda _: registry)
     publishing = bootstrap.build_publishing()
     assert isinstance(publishing._meta, HttpMetaPublisher)
     assert isinstance(publishing._signed_urls, HmacSignedUrlStore)
     assert isinstance(publishing._clock, bootstrap.RemoteClock)
     assert isinstance(publishing._notifier, bootstrap.CollectorNotifier)
+    assert publishing._packages.organization_id == organization.id
 
 
 def test_worker_bootstrap_preserves_normal_main_loop(monkeypatch):
@@ -161,6 +171,27 @@ def test_worker_bootstrap_preserves_normal_main_loop(monkeypatch):
     monkeypatch.setattr(worker, "main", lambda: visited.append(worker.build_publishing()))
     assert bootstrap.main(["worker"]) == 0
     assert visited == [sentinel]
+
+
+def test_seed_pairing_codes_use_the_explicit_acceptance_organization(monkeypatch, capsys):
+    from acceptance import bootstrap
+    from dojo import DojoPairing
+    from dojo.adapters.memory import InMemoryStore
+    from dojo.organizations import DojoOrganizations
+
+    from backend import cli
+
+    registry = InMemoryStore()
+    organization = DojoOrganizations(registry).create(name="Acceptance", email="test@example.com")
+    scoped = registry.for_organization(organization.id)
+    pairing = DojoPairing(pairing=scoped, audit=scoped)
+    monkeypatch.setattr(bootstrap, "build_pairing", lambda: pairing)
+    monkeypatch.setattr(bootstrap, "store", lambda: scoped)
+    monkeypatch.setattr(bootstrap, "build_setup", lambda: None)
+    monkeypatch.setattr(cli, "set_consent_policy", lambda *_args, **_kwargs: None)
+    assert bootstrap.main(["seed"]) == 0
+    assert len(scoped._codes) == 4
+    assert all(code.organization_id == organization.id for code in scoped._codes)
 
 
 @pytest.mark.parametrize("failure", ["startup", "browser", "cleanup", "image", None])

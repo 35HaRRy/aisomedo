@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup, InMemoryStore
+from dojo import DojoActivity, DojoPairing, DojoPublishing, DojoSetup
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 from fastapi.testclient import TestClient
 
 from backend.main import create_app
@@ -25,7 +25,7 @@ def test_empty_occurrence_contract_requires_folder_and_typed_result(tmp_path):
 
 
 def make_contract_app(tmp_path: Path) -> TestClient:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = DojoPublishing(
         packages=store,
         audit=store,

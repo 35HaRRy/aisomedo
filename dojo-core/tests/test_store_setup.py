@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
 from dojo.model import ConsentAcceptance
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 def make_acceptance(*, version: int = 1) -> ConsentAcceptance:
@@ -17,7 +16,7 @@ def make_acceptance(*, version: int = 1) -> ConsentAcceptance:
 
 
 def test_memory_policy_roundtrip_and_in_place_update() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     store.create_policy(version=1, text="v1", created_by="cli", created_at=FIXED_AT)
     store.create_policy(version=1, text="v1b", created_by="cli", created_at=FIXED_AT)
     found = store.get_policy(1)
@@ -27,7 +26,7 @@ def test_memory_policy_roundtrip_and_in_place_update() -> None:
 
 
 def test_memory_get_current_policy_returns_highest_version() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     store.create_policy(version=1, text="v1", created_by="cli", created_at=FIXED_AT)
     store.create_policy(version=3, text="v3", created_by="cli", created_at=FIXED_AT)
     current = store.get_current_policy()
@@ -37,7 +36,7 @@ def test_memory_get_current_policy_returns_highest_version() -> None:
 
 
 def test_memory_acceptance_idempotent() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     assert store.record_acceptance(make_acceptance()) is True
     assert store.record_acceptance(make_acceptance()) is False
     found = store.find_acceptance(1)

@@ -1,18 +1,18 @@
 import json
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore
+from dojo import DojoPublishing
 from dojo.adapters.stubs import StubMetaPublisher, StubNotifier, StubSignedUrlStore
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 
 
 @pytest.fixture(params=["memory", "postgres"])
 def store(request, pg_store):
-    return InMemoryStore() if request.param == "memory" else pg_store
+    return scoped_memory_store() if request.param == "memory" else pg_store
 
 
 def make_seam(tmp_path, store=None):
-    store = store or InMemoryStore()
+    store = store or scoped_memory_store()
     seam = DojoPublishing(packages=store, audit=store, uploads=store, jobs=store,
                           settings=store, media_root=tmp_path, clock=FakeClock(),
                           meta=StubMetaPublisher(), notifier=StubNotifier(),

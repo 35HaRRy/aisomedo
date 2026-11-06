@@ -3,15 +3,22 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
+from typing import cast
 from urllib.parse import urlencode, urlsplit
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from dojo.adapters.clock import SystemClock
-from dojo.exceptions import MetaProviderUnavailable, MetaTokenEncryptionError, MetaTokenInvalid
+from dojo.exceptions import (
+    MetaProviderUnavailable,
+    MetaTokenEncryptionError,
+    MetaTokenInvalid,
+    OrganizationScopeRequired,
+)
 from dojo.model import MetaCandidate
-from dojo.ports import Clock
+from dojo.organizations import DojoOrganizations
+from dojo.ports import Clock, OrganizationStore
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +216,18 @@ class HttpMetaPublisher:
             return "transient"
         return "definitive"
 
+    def _require_active_organization(self) -> None:
+        store = cast(OrganizationStore, self._store)
+        if store.organization_id is None:
+            raise OrganizationScopeRequired("organization scope is required")
+        DojoOrganizations(store).require_active(store.organization_id)
+
     def _post(self, path: str, payload: dict, *, host: str) -> dict:
         from dojo.exceptions import MetaPublishFailed as Failed
         from dojo.exceptions import MetaPublishUncertain as Uncertain
 
         url = f"{host}/{self._graph_version}/{path.lstrip('/')}"
+        self._require_active_organization()
         close = self._http is None
         client = self._client()
         try:
@@ -245,6 +259,7 @@ class HttpMetaPublisher:
         from dojo.exceptions import MetaPublishUncertain as Uncertain
 
         url = f"{host}/{self._graph_version}/{path.lstrip('/')}"
+        self._require_active_organization()
         close = self._http is None
         client = self._client()
         try:

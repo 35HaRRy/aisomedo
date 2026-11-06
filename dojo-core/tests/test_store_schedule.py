@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from dojo import InMemoryStore, YayinZamani
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 def make_occ(
@@ -21,7 +21,7 @@ def make_occ(
 
 
 def test_create_assigns_id_and_stores() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     occ = make_occ(store, kind="manual", due=FIXED_AT)
     assert occ.id >= 1
     assert len(store.list_all()) == 1
@@ -29,7 +29,7 @@ def test_create_assigns_id_and_stores() -> None:
 
 
 def test_max_regular_due_at() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     make_occ(store, kind="regular", due=FIXED_AT, status="due")
     make_occ(store, kind="regular", due=FIXED_AT + timedelta(days=14))
     make_occ(store, kind="manual", due=FIXED_AT + timedelta(days=99))
@@ -37,25 +37,25 @@ def test_max_regular_due_at() -> None:
 
 
 def test_max_regular_due_at_empty() -> None:
-    assert InMemoryStore().max_regular_due_at() is None
+    assert scoped_memory_store().max_regular_due_at() is None
 
 
 def test_has_regular_at() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     make_occ(store, kind="regular", due=FIXED_AT)
     assert store.has_regular_at(FIXED_AT) is True
     assert store.has_regular_at(FIXED_AT + timedelta(days=14)) is False
 
 
 def test_has_pending_exception() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     assert store.has_pending_exception() is False
     make_occ(store, kind="manual", due=FIXED_AT)
     assert store.has_pending_exception() is True
 
 
 def test_list_due() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     past = make_occ(store, kind="regular", due=FIXED_AT - timedelta(days=1), status="due")
     future = make_occ(store, kind="regular", due=FIXED_AT + timedelta(days=14))
     assert [o.id for o in store.list_due(FIXED_AT)] == [past.id]

@@ -4,9 +4,9 @@ import hashlib
 from datetime import datetime
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore, Job
+from dojo import DojoPublishing, Job
 from dojo.adapters.stubs import StubMediaProcessor
-from dojo.testing import FakeClock
+from dojo.testing import FakeClock, scoped_memory_store
 from worker.main import run_tick
 
 
@@ -17,8 +17,8 @@ class SpyPublishing(DojoPublishing):
         self.sweeps = 0
         self._claims_left = 1
         super().__init__(
-            packages=InMemoryStore(),
-            audit=InMemoryStore(),
+            packages=scoped_memory_store(),
+            audit=scoped_memory_store(),
             media_root="/tmp/dojo-media",
             media=StubMediaProcessor(),
         )
@@ -92,7 +92,7 @@ def test_run_tick_processes_render_and_preview_jobs(kind) -> None:
 
 
 def test_worker_finalization_emits_package_and_upload_versions(tmp_path) -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     publishing = DojoPublishing(packages=store, audit=store, uploads=store, jobs=store,
                                 settings=store, media_root=tmp_path, clock=FakeClock(),
                                 media=StubMediaProcessor())

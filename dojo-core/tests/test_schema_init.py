@@ -36,7 +36,9 @@ def config(url):
 
 def legacy(engine):
     """An unversioned database as 0013 create_all left it: no 0014 indexes."""
-    Base.metadata.create_all(engine)
+    from dojo.schema_checks import single_workspace_metadata
+
+    single_workspace_metadata().create_all(engine)
     with engine.begin() as conn:
         conn.execute(text("DROP INDEX IF EXISTS uq_jobs_active_render"))
         conn.execute(text("DROP INDEX IF EXISTS uq_yayin_zamani_regular_due"))
@@ -55,7 +57,7 @@ def legacy(engine):
 def assert_head(engine):
     with engine.connect() as conn:
         version = conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0021_media_preview_jobs"
+        assert version == "0022_organizations"
         assert conn.execute(text(
             "SELECT text, created_by FROM consent_policies WHERE version = 1"
         )).one() == ("Görsellerimin paylaşılmasını onaylıyorum.", "installation")
@@ -264,7 +266,7 @@ def test_backfill_is_idempotent_across_reinitialization(database):
 
 def test_downgrade_removes_only_new_objects(database):
     url, engine = database
-    command.upgrade(config(url), "head")
+    command.upgrade(config(url), "0021_media_preview_jobs")
     command.downgrade(config(url), "0014_emission_idempotency")
     with engine.connect() as conn:
         assert "monitoring_incidents" not in set(inspect(engine).get_table_names())
@@ -325,7 +327,7 @@ def test_default_consent_seed_does_not_overwrite_existing_policy(database):
     initialize_database(url)
     with engine.connect() as conn:
         assert conn.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0021_media_preview_jobs"
+            == "0022_organizations"
         assert conn.scalar(text(
             "SELECT text FROM consent_policies WHERE version = 1"
         )) == "custom text"

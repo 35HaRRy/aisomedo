@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([switch]$PairingCode, [switch]$CheckOnly, [switch]$StartWorker)
+param(
+    [switch]$PairingCode, [switch]$CheckOnly, [switch]$StartWorker,
+    [ValidateNotNullOrEmpty()][ValidatePattern('\S')]
+    [string]$OrganizationName = 'Kaizen Aikido Akademi'
+)
 $ErrorActionPreference = 'Stop'
 
 function New-Secret([switch]$Base64) {
@@ -44,6 +48,6 @@ if ($StartWorker) {
 }
 Write-Host 'Open http://localhost:9081 . Worker is opt-in; use -StartWorker for rendering and scheduling.'
 if ($PairingCode) {
-    docker @compose exec backend .venv/bin/dojo-create-pairing-code create-code
+    docker @compose exec backend .venv/bin/dojo-create-pairing-code create-code --organization $OrganizationName
     if ($LASTEXITCODE -ne 0) { throw 'Could not create a pairing code. Check local backend logs.' }
 }

@@ -48,6 +48,11 @@ from dojo.exceptions import (
     NoConsentPolicy,
     OccurrenceChanged,
     OccurrenceNotFound,
+    OrganizationInactive,
+    OrganizationInvalid,
+    OrganizationNameTaken,
+    OrganizationNotFound,
+    OrganizationScopeRequired,
     PackageChanged,
     PackageCompleted,
     PackageEditConflict,
@@ -103,6 +108,7 @@ from dojo.model import (
     MontageStatus,
     Notification,
     NotificationResult,
+    Organization,
     Package,
     PackageArtifact,
     PairingCode,
@@ -126,11 +132,14 @@ from dojo.model import (
 )
 from dojo.monitoring import DojoMonitoring
 from dojo.montage import REEL_FPS
+from dojo.organizations import DojoOrganizations
 from dojo.pairing import DojoPairing
 from dojo.publishing import DojoPublishing
 from dojo.setup import DojoSetup
 
 __all__ = [
+    "Organization", "DojoOrganizations", "OrganizationInactive", "OrganizationInvalid",
+    "OrganizationNameTaken", "OrganizationNotFound", "OrganizationScopeRequired",
     "OccurrenceChanged",
     "OccurrenceNotFound",
     "PackageArtifact",

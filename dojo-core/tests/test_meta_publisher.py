@@ -4,13 +4,13 @@ import httpx
 import pytest
 from dojo import InMemoryStore, MetaPublishFailed, MetaPublishUncertain
 from dojo.adapters.meta import FernetCipher, HttpMetaPublisher
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 def make_publisher(
     handler, connection_type="facebook_login"
 ) -> tuple[HttpMetaPublisher, InMemoryStore]:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     cipher = FernetCipher(FernetCipher.generate_key())
     store.upsert_active(
         ig_user_id="ig_123",

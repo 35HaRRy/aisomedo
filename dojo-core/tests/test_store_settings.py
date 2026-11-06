@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 def test_memory_settings_get_set() -> None:
-    store = InMemoryStore()
+    store = scoped_memory_store()
     assert store.get("upload.max_file_bytes") is None
     store.set("upload.max_file_bytes", 100, updated_at=FIXED_AT)
     assert store.get("upload.max_file_bytes") == 100

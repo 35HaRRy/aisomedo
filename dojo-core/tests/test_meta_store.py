@@ -16,7 +16,8 @@ def test_instagram_connection_survives_database_roundtrip_and_health_updates(pg_
         last_checked_at=NOW, last_refreshed_at=None, last_error=None,
         connection_type="instagram_login",
     )
-    reopened = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False))
+    reopened = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False),
+                             organization_id=pg_store.organization_id)
     try:
         status = reopened.get_meta_status()
         assert status.connection_type == "instagram_login"

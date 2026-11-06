@@ -6,10 +6,9 @@ from threading import Barrier, Event
 import pytest
 from dojo import DojoPublishing, SchedulePlan
 from dojo.adapters.db import PostgresStore
-from dojo.adapters.memory import InMemoryStore
 from dojo.adapters.stubs import StubReelRenderer
 from dojo.model import AuditEvent, Job, YayinIncelemesi, YayinZamani
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -35,14 +34,15 @@ def audit(action="render.queued"):
 
 @pytest.fixture
 def other(pg_store):
-    store = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False))
+    store = PostgresStore(pg_store._engine.url.render_as_string(hide_password=False),
+                          organization_id=pg_store.organization_id)
     yield store
     store.dispose()
 
 
 @pytest.mark.parametrize("memory", [False, True])
 def test_regular_identity_preserves_oneoffs(pg_store, memory):
-    store = InMemoryStore() if memory else pg_store
+    store = scoped_memory_store() if memory else pg_store
     occ = YayinZamani(id=0, kind="regular", due_at=FIXED_AT,
                       status="pending", created_at=FIXED_AT)
     first = store.create(occ)
@@ -82,7 +82,7 @@ def test_later_tick_during_blocked_render(pg_store, other, tmp_path):
     entered, release = Event(), Event()
 
     class BlockedRenderer(StubReelRenderer):
-        def render(self, build, work_dir, out_path):
+        def render(self, build, work_dir, out_path, *, cancelled=None):
             entered.set()
             assert release.wait(10)
             return super().render(build, work_dir, out_path)
@@ -139,7 +139,7 @@ def test_review_race_records_one_creation(pg_store, other, tmp_path):
 @pytest.mark.parametrize("memory", [False, True])
 @pytest.mark.parametrize("terminal", ["failed", "completed"])
 def test_created_contract_allows_terminal_retry(pg_store, memory, terminal):
-    store = InMemoryStore() if memory else pg_store
+    store = scoped_memory_store() if memory else pg_store
     first, created = store.create_job_once(job("first"), audit=audit())
     assert created
     existing, created = store.create_job_once(job("duplicate"), audit=audit())
@@ -196,7 +196,7 @@ def test_regular_occurrence_race_keeps_outer_transactions(pg_store, other):
 
 @pytest.mark.parametrize("memory", [False, True])
 def test_review_insert_contract_and_revision_identity(pg_store, memory):
-    store = InMemoryStore() if memory else pg_store
+    store = scoped_memory_store() if memory else pg_store
     review = YayinIncelemesi(id=0, occurrence_id=1, package_folder="p",
                             revision_digest="d", caption=None, status="pending",
                             created_at=FIXED_AT)
@@ -247,7 +247,7 @@ def test_explicit_preview_retry(pg_store, tmp_path, terminal):
 
 @pytest.mark.parametrize("memory", [False, True])
 def test_legacy_create_raises_on_duplicates(pg_store, memory):
-    store = InMemoryStore() if memory else pg_store
+    store = scoped_memory_store() if memory else pg_store
     store.create(job("dup"))
     with pytest.raises(Exception):
         store.create(job("dup"))

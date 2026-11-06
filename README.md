@@ -2,7 +2,7 @@
 
 **From instant captured media to Instagram Reels. You stay in control.**
 
-Aisomedo helps a class administrator turn photos and videos into branded Instagram Reels. Collect media, choose the order and video sections, review the result, then approve publication. A schedule helps you stay on track. It never replaces your approval.
+Aisomedo gives each organization its own workspace for turning photos and videos into branded Instagram Reels. Collect media, choose the order and video sections, review the result, then approve publication. A schedule helps you stay on track. It never replaces your approval.
 
 ![Aisomedo dashboard with an active package and a review ready to open](web/public/promotion/web/dashboard.png)
 
@@ -12,7 +12,7 @@ Aisomedo helps a class administrator turn photos and videos into branded Instagr
 - **Keep your style.** Add your logo and optional opening and closing cards to a vertical Reel.
 - **Keep the final decision.** Approve, skip, or reschedule a review. Opening a preview does not publish it.
 - **Keep a clear history.** A package is completed only after Instagram confirms publication. You can view past packages and activity.
-- **Use web and Android.** Pair trusted browsers and phones with one-time codes. There are no passwords or user roles; paired clients have equal access.
+- **Use web and Android.** Pair trusted browsers and phones with organization-specific one-time codes. There are no passwords or user roles; clients within the same organization have equal access.
 
 This is a self-hosted project under active development, not a managed social media service. No measured productivity claims are made.
 
@@ -51,7 +51,46 @@ Install **Git, PowerShell, and Docker Desktop**; start Docker's Linux container 
 
 [Detailed Windows setup, environment/Meta settings, and native installation →](docs/guide/windows-local-setup.md) · [Browser setup, restart/stop, and Android connection →](docs/guide/getting-started.md)
 
+## Organizations
+
+Organization **name and email are required**; phone is optional. Names are unique after whitespace/Unicode/case normalization. Existing installation data and paired clients are attached to **Kaizen Aikido Akademi**, email **kaizenaikidoakademi@gmail.com**, with no phone number. Existing credentials and media paths are preserved; new organizations complete their own setup.
+
+Run these commands in the configured backend environment (`DATABASE_URL` must point to the intended database):
+
+```powershell
+uv run --project backend dojo-organizations create --name "Example Dojo" --email "dojo@example.com"
+uv run --project backend dojo-organizations list
+uv run --project backend dojo-create-pairing-code create-code --organization "Example Dojo"
+uv run --project backend dojo-organizations deactivate --name "Example Dojo"
+```
+
+For the local Docker installation, use the same arguments after `docker compose --env-file ops/.env.local -p aisomedo-local -f ops/docker-compose.prod.yml -f ops/docker-compose.local.yml exec backend .venv/bin/dojo-organizations` (or `.venv/bin/dojo-create-pairing-code`). The startup script selects Kaizen by default; use `-OrganizationName "Example Dojo" -PairingCode` for another existing organization.
+
+**Deactivation stops access and work, not just new logins.** Existing browser/device credentials, unused pairing codes, live connections, rendering, scheduling, and new publication requests are blocked. Data is retained. An Instagram request already sent cannot be recalled; an uncertain result must not be blindly retried. Reactivation and organization deletion are not provided.
+
+`dojo-settings` and `dojo-render` also require `--organization`. The consent-policy text/version remains installation-wide; each organization accepts it separately. Archived guides describe historical single-workspace commands; add the organization argument when using those examples.
+
+The API and worker must share the same media volume, including `.signed-url-revocations` (cross-process signed-link cancellation). Keep this directory in media backups. Its tiny markers can be pruned only after the maximum signed-link lifetime has elapsed.
+
+### Upgrading an existing installation
+
+Stop **both the API and worker**, then take a consistent database/media backup using the existing backup procedure. Update the application images/code, run the serialized schema initializer (`python -m dojo.schema` in the configured backend runtime), then restart the new API and, when intended, the worker. Do not run old and new processes against the upgraded schema together. The migration creates Kaizen and backfills ownership without resetting data. Downgrade is intentionally refused; restore the pre-upgrade backup to roll back. Do not delete volumes to upgrade.
+
+## Run the web frontend
+
+Install **Node.js 26.13.0** and keep the backend running at **http://localhost:8000** ([backend setup →](docs/guide/windows-local-setup.md)). In a new PowerShell terminal, from the repository root:
+
+```powershell
+Set-Location web
+npm ci
+npm run dev
+```
+
+Open **http://localhost:3000** and pair with a fresh one-time code. The frontend forwards API requests to the backend on port 8000. Stop the frontend with **Ctrl+C**.
+
 ## A simple publishing flow
+
+Each organization has separate packages, media, settings, Instagram credentials, and publication work. A pairing code determines the organization; there is no organization picker or shared client list.
 
 ### 1. Upload and arrange your media
 

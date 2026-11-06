@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore, SchedulePlan
+from dojo import DojoPublishing, SchedulePlan
 from dojo.adapters.stubs import (
     StubMediaProcessor,
     StubMetaPublisher,
@@ -20,11 +20,11 @@ from dojo.exceptions import (
     PublicationInProgress,
     PublicationNotReady,
 )
-from dojo.testing import FIXED_AT, ISTANBUL, FakeClock
+from dojo.testing import FIXED_AT, ISTANBUL, FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path: Path, meta: StubMetaPublisher | None = None):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     renderer = StubReelRenderer()
     meta = meta or StubMetaPublisher()
     signed = StubSignedUrlStore()

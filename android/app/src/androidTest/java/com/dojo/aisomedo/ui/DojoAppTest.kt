@@ -42,7 +42,7 @@ class DojoAppTest {
                 if (request.path == "/api/packages/active/editor") return MockResponse().setResponseCode(404)
                 val body = when (request.path) {
                     "/api/compat" -> """{"api_version":"0.1.0","android_min_version_code":1,"android_current_version_code":1,"update_url":"https://example.com/update"}"""
-                    "/api/pairing/me" -> """{"id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
+                    "/api/pairing/me" -> """{"id":1,"organization_id":1,"kind":"device","name":"Telefon","created_at":"2026-10-05T12:00:00Z","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
                     "/api/setup" -> """{"checklist":[],"ready":true}"""
                     "/api/packages" -> "[]"
                     "/api/settings/plan" -> """{"anchor_date":"2026-10-05","anchor_time":"18:30:00","enabled":false,"timezone":"Europe/Istanbul"}"""

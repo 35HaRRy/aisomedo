@@ -45,7 +45,7 @@ class OfflineAppViewModelTest {
         val owner = ViewModelStore()
         val origin: String
         var model: AppViewModel
-        val client = ClientOut("now", "cli", 1, "device", null, "Telefon", null)
+        val client = ClientOut("now", "cli", 1, "device", null, "Telefon", 1, null)
         fun dashboard() = """{"generated_at":"2026-10-12T12:00:00Z","package":{"id":1,"folder_name":"$folder","created_at":"now","status":"active"},"next_slot":null,"pending_actions":[],"plan":{"anchor_date":null,"anchor_time":null,"enabled":false,"timezone":"Europe/Istanbul"},"instagram":{"health":"unknown"},"worker":{"phase":null,"status":"unknown"}}"""
         val editor = """{"content_revision":1,"view_revision":1,"package":{"id":1,"folder_name":"active","created_at":"now","status":"active"},"media":[],"montage":{"card_duration":0,"clips":[],"combined_duration":0,"duration_complete":true,"max_duration_seconds":90,"order":[],"over_limit":false,"required_action":null,"selections":{},"trims":{}},"render_stale":false,"render_preview_url":null,"render_revision":null}"""
         init {
@@ -58,7 +58,7 @@ class OfflineAppViewModelTest {
                         .throttleBody(64, 100, TimeUnit.MILLISECONDS)
                     val body = when (path) {
                         "/api/compat" -> """{"api_version":"0.1","android_min_version_code":1,"android_current_version_code":5,"update_url":"https://dojo.example/release"}"""
-                        "/api/pairing/me" -> """{"id":1,"name":"${if (request.getHeader("Authorization")?.contains("NEW") == true) "New" else "Telefon"}","kind":"device","created_at":"now","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
+                        "/api/pairing/me" -> """{"id":1,"organization_id":1,"name":"${if (request.getHeader("Authorization")?.contains("NEW") == true) "New" else "Telefon"}","kind":"device","created_at":"now","created_by":"cli","last_seen_at":null,"revoked_at":null}"""
                         "/api/setup" -> """{"checklist":[],"ready":true}"""
                         "/api/dashboard" -> dashboard()
                         "/api/packages/active/editor" -> editor

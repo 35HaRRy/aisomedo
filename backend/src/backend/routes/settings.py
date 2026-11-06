@@ -23,7 +23,9 @@ from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
-    return request.app.state.publishing
+    from backend.organizations import get_organization_services
+
+    return get_organization_services(request).publishing
 
 
 class BrandingDefaultsIn(BaseModel):
@@ -33,6 +35,13 @@ class BrandingDefaultsIn(BaseModel):
     outro_asset: str | None = None
     outro_duration: float | None = Field(default=None, gt=0, multiple_of=1, strict=True)
     caption_template: str | None = None
+
+    @field_validator("logo_asset", "intro_asset", "outro_asset")
+    @classmethod
+    def workspace_asset(cls, value: str | None) -> str | None:
+        from dojo.branding_assets import validate_asset_reference
+
+        return validate_asset_reference(value)
 
     @field_validator("logo_asset")
     @classmethod

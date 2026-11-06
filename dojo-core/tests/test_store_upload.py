@@ -5,7 +5,7 @@ from datetime import timedelta
 from dojo.adapters.db import PostgresStore
 from dojo.adapters.memory import InMemoryStore
 from dojo.model import Package, Upload
-from dojo.testing import FIXED_AT
+from dojo.testing import FIXED_AT, scoped_memory_store
 
 
 def make_upload(upload_id: str = "u-1") -> Upload:
@@ -24,8 +24,14 @@ def make_upload(upload_id: str = "u-1") -> Upload:
     )
 
 
+def memory_with_package() -> InMemoryStore:
+    store = scoped_memory_store()
+    store.create(Package(id=0, folder_name="06-08-2026 14-30", created_at=FIXED_AT))
+    return store
+
+
 def test_memory_upload_roundtrip() -> None:
-    store = InMemoryStore()
+    store = memory_with_package()
     created = store.create(make_upload())
     assert created.id > 0
     assert store.get("u-1") == created
@@ -35,7 +41,7 @@ def test_memory_upload_roundtrip() -> None:
 
 
 def test_memory_upload_update() -> None:
-    store = InMemoryStore()
+    store = memory_with_package()
     created = store.create(make_upload())
     updated = store.update(
         Upload(
@@ -58,7 +64,7 @@ def test_memory_upload_update() -> None:
 
 
 def test_memory_upload_list_stale() -> None:
-    store = InMemoryStore()
+    store = memory_with_package()
     store.create(make_upload("u-1"))
     stale = store.list_stale(FIXED_AT + timedelta(seconds=1))
     assert [u.upload_id for u in stale] == ["u-1"]
@@ -66,7 +72,7 @@ def test_memory_upload_list_stale() -> None:
 
 
 def test_memory_list_active_includes_processing() -> None:
-    store = InMemoryStore()
+    store = memory_with_package()
     created = store.create(make_upload("u-1"))
     store.update(
         Upload(

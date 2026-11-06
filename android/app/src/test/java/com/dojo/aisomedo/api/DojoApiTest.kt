@@ -128,7 +128,7 @@ class DojoApiTest {
 
     @Test fun safeReadRecoversFromTwoTransportTimeoutsWithoutUserRetry() = runBlocking {
         MockWebServer().use { server ->
-            server.enqueue(MockResponse().setBody("""{"id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}"""))
+            server.enqueue(MockResponse().setBody("""{"id":1,"organization_id":1,"kind":"device","name":"test","created_at":"now","created_by":"test","last_seen_at":null,"revoked_at":null}"""))
             val attempts = AtomicInteger()
             val http = OkHttpClient.Builder().addInterceptor { chain ->
                 if (attempts.incrementAndGet() <= 2) throw java.net.SocketTimeoutException("Synthetic timeout")

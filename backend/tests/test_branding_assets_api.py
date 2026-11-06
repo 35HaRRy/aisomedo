@@ -56,6 +56,40 @@ def test_rejected_upload_preserves_defaults(tmp_path: Path, data: bytes, status:
     assert publishing.get_branding_defaults() == before
 
 
+def test_organization_and_pairing_logo_follow_branding(tmp_path: Path) -> None:
+    client, _, pairing, _ = make_app(tmp_path)
+    headers = bearer(pair_device(client, pairing))
+    assert client.get("/api/pairing/organization").status_code == 401
+    assert client.get("/api/pairing/organization", headers=headers).json() == {
+        "name": "Test Dojo", "logo_asset": None,
+    }
+    asset = client.post(
+        "/api/settings/branding/assets", headers=headers, content=png()
+    ).json()["asset"]
+    client.patch("/api/settings/branding", headers=headers, json={"logo_asset": asset})
+    assert client.get("/api/pairing/organization", headers=headers).json()["logo_asset"] == asset
+
+    code = pairing.create_pairing_code(requester="cli").raw_code
+    client.patch("/api/settings/branding", headers=headers, json={"logo_asset": None})
+    assert client.get("/api/pairing/branding/logo", params={"code": code}).status_code == 404
+    client.patch("/api/settings/branding", headers=headers, json={"logo_asset": asset})
+    assert client.get("/api/pairing/branding/logo", params={"code": "aaaaaaaa"}).status_code == 404
+    logo = client.get("/api/pairing/branding/logo", params={"code": code})
+    assert logo.status_code == 200
+    assert logo.headers["content-type"] == "image/png"
+    assert logo.headers["cache-control"] == "no-store"
+    pairing.validate_code(code=code, kind="device", name="Phone")
+    assert client.get("/api/pairing/branding/logo", params={"code": code}).status_code == 404
+
+
+def test_pairing_logo_is_throttled(tmp_path: Path) -> None:
+    client, _, _, _ = make_app(tmp_path)
+    url = "/api/pairing/branding/logo"
+    for _ in range(10):
+        assert client.get(url, params={"code": "invalid"}).status_code == 404
+    assert client.get(url, params={"code": "invalid"}).status_code == 429
+
+
 def test_revoked_client_cannot_upload(tmp_path: Path) -> None:
     client, _, pairing, _ = make_app(tmp_path)
     headers = bearer(pair_device(client, pairing))

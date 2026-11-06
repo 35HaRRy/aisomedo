@@ -7,7 +7,6 @@ from dataclasses import replace
 import pytest
 from dojo import (
     DojoPublishing,
-    InMemoryStore,
     PackageLimitExceeded,
     UploadChecksumMismatch,
     UploadConflict,
@@ -23,11 +22,11 @@ from dojo.adapters.stubs import (
     StubNotifier,
     StubSignedUrlStore,
 )
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 
 
 def make_seam(tmp_path, **overrides):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     return (
         store,
         DojoPublishing(

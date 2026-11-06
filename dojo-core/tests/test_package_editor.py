@@ -4,13 +4,13 @@ import hashlib
 import json
 
 import pytest
-from dojo import DojoPublishing, InMemoryStore, MediaNotFound, NoActivePackage, PackageChanged
+from dojo import DojoPublishing, MediaNotFound, NoActivePackage, PackageChanged
 from dojo.adapters.stubs import StubMediaProcessor
-from dojo.testing import FakeClock, complete_confirmed_package
+from dojo.testing import FakeClock, complete_confirmed_package, scoped_memory_store
 
 
 def make_package(tmp_path, filename="Çalışma.MP4"):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     seam = DojoPublishing(packages=store, audit=store, settings=store, media_root=tmp_path,
                           clock=FakeClock(),
                           media=StubMediaProcessor(content_type="video/mp4", duration=30.0))
@@ -59,7 +59,7 @@ def test_editor_snapshot_reads_finalized_and_removed_without_mutation(tmp_path):
 
 
 def test_empty_editor_read_never_creates_package(tmp_path):
-    store = InMemoryStore()
+    store = scoped_memory_store()
     seam = DojoPublishing(packages=store, audit=store, media_root=tmp_path, clock=FakeClock())
     with pytest.raises(NoActivePackage):
         seam.get_active_editor()

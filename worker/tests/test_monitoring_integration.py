@@ -22,7 +22,7 @@ from dojo import DojoPublishing, InMemoryStore, Job
 from dojo.adapters.stubs import StubMediaProcessor, StubNotifier
 from dojo.model import Client
 from dojo.monitoring import DojoMonitoring
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 from worker.main import run_tick, start_monitoring
 from worker.monitoring import (
     DEFAULT_LOW_PERCENT,
@@ -46,8 +46,8 @@ class BlockingPublishing(DojoPublishing):
         self.processed: list[str] = []
         self._claims_left = 1
         super().__init__(
-            packages=InMemoryStore(),
-            audit=InMemoryStore(),
+            packages=scoped_memory_store(),
+            audit=scoped_memory_store(),
             media_root="/tmp/dojo-media",
             media=StubMediaProcessor(),
         )
@@ -152,7 +152,7 @@ def test_a_blocked_render_does_not_suppress_disk_sampling():
     """The collector's own thread samples while the main tick is stuck."""
     gate = threading.Event()
     publishing = BlockingPublishing(gate)
-    store = InMemoryStore()
+    store = scoped_memory_store()
     usage = UsageRecorder()
     runner = make_runner(store, FakeDelivery(), usage)
     stop = threading.Event()
@@ -192,7 +192,7 @@ def test_collector_activity_never_renews_the_worker_busy_deadline(
     busy_deadline = record["deadline"]
 
     usage = UsageRecorder()
-    runner = make_runner(InMemoryStore(), FakeDelivery(), usage)
+    runner = make_runner(scoped_memory_store(), FakeDelivery(), usage)
     stop = threading.Event()
     collector = start_monitoring(runner, stop)
     try:
@@ -214,7 +214,7 @@ def test_monitoring_failures_never_skip_the_job():
     # 0.01s interval turns this into a ten-second wall of warnings and asserts
     # nothing extra.
     runner = make_runner(
-        InMemoryStore(), FakeDelivery(fail=True), usage, interval=0.05
+        scoped_memory_store(), FakeDelivery(fail=True), usage, interval=0.05
     )
     gate = threading.Event()
     gate.set()  # the job completes at once; the test is about isolation
@@ -319,7 +319,7 @@ def _register_device(store, token: str = "token-1") -> None:
 
 def test_a_second_worker_delivers_the_same_alert_without_a_duplicate_claim():
     """Followers may deliver too; the store's leases stop a double send."""
-    store = InMemoryStore()
+    store = scoped_memory_store()
     _fail_one_job(store)
     _register_device(store)
 
@@ -349,7 +349,7 @@ def test_disabled_monitoring_neither_samples_nor_acknowledges(monkeypatch):
     monkeypatch.delenv("MONITORING_ENABLED", raising=False)
     assert worker_main.build_monitoring() is None
 
-    store = InMemoryStore()
+    store = scoped_memory_store()
     notifier = StubNotifier()
     _fail_one_job(store)
     _register_device(store, "token-1")
@@ -514,7 +514,7 @@ def test_a_clean_join_logs_no_incomplete_shutdown(
     stop = threading.Event()
     stop.set()
     collector = start_monitoring(
-        make_runner(InMemoryStore(), FakeDelivery(), UsageRecorder()), stop
+        make_runner(scoped_memory_store(), FakeDelivery(), UsageRecorder()), stop
     )
     collector.join(5)
 
@@ -531,7 +531,7 @@ def test_a_clean_join_logs_no_incomplete_shutdown(
 def test_worker_start_and_stop_the_collector_with_the_shutdown_event(monkeypatch):
     """main() starts one collector and joins it on the same SIGTERM event."""
     handlers: dict[int, object] = {}
-    runner = make_runner(InMemoryStore(), FakeDelivery(), UsageRecorder())
+    runner = make_runner(scoped_memory_store(), FakeDelivery(), UsageRecorder())
     store = DisposableStore()
     health = PhaseRecorder()
     started: list[tuple[object, threading.Thread]] = []

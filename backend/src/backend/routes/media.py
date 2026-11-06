@@ -27,7 +27,9 @@ from backend.snapshots import versioned_snapshot
 
 
 def get_publishing(request: Request) -> DojoPublishing:
-    return request.app.state.publishing
+    from backend.organizations import get_organization_services
+
+    return get_organization_services(request).publishing
 
 
 router = APIRouter(prefix="/api/media/uploads", tags=["media"])

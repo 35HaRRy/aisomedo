@@ -20,13 +20,13 @@ from dojo import DojoPublishing
 from dojo.adapters.db import LiveChangeEventRow
 from dojo.adapters.memory import InMemoryStore
 from dojo.model import AuditEvent, Client, Job, Package, Upload, YayinIncelemesi, YayinZamani
-from dojo.testing import FIXED_AT, FakeClock
+from dojo.testing import FIXED_AT, FakeClock, scoped_memory_store
 from sqlalchemy import select
 
 
 @pytest.fixture(params=["memory", "postgres"])
 def store(request, pg_store):
-    return InMemoryStore() if request.param == "memory" else pg_store
+    return scoped_memory_store() if request.param == "memory" else pg_store
 
 
 def events(store):

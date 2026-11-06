@@ -17,6 +17,7 @@ from backend.deps import (
     build_setup,
     get_current_client,
 )
+from backend.organizations import OrganizationServices, build_organization_services
 from backend.proxy import ProxyHeadersMiddleware, parse_trusted_proxies
 from backend.routes import activity as activity_router
 from backend.routes import branding_assets as branding_assets_router
@@ -92,15 +93,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         app.state.readiness = readiness_probe.check
     if not hasattr(app.state, "publishing"):
         app.state.publishing = build_publishing()
-    try:
-        app.state.publishing.repair_open_folders(requester="system")
-    except Exception:  # noqa: BLE001 - startup repair never blocks boot
-        import logging
-
-        logging.getLogger(__name__).exception(
-            "open-folder repair failed",
-            extra={"event": "startup.folder_repair_failed", "status": "error"},
-        )
     if not hasattr(app.state, "pairing"):
         app.state.pairing = build_pairing()
     if not hasattr(app.state, "activity"):
@@ -122,6 +114,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     else:
         _wire_setup_meta(app)
     _wire_setup_meta(app)
+    if not hasattr(app.state, "services_factory"):
+        registry = getattr(app.state.publishing, "_packages", None)
+        if registry is not None and registry.organization_id is None:
+            app.state.services_factory = lambda organization_id: build_organization_services(
+                organization_id, registry,
+            )
     from dojo.adapters.db import PostgresStore
 
     from backend.live import LiveHub
@@ -150,6 +148,7 @@ def create_app(
     cookie_secure: bool | None = None,
     trusted_proxies: str | None = None,
     readiness: Callable[[], bool] | None = None,
+    services_factory: Callable[[int], OrganizationServices] | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Aisomedo publishing API",
@@ -161,6 +160,8 @@ def create_app(
     )
     if publishing is not None:
         app.state.publishing = publishing
+    if services_factory is not None:
+        app.state.services_factory = services_factory
     if pairing is not None:
         app.state.pairing = pairing
     if activity is not None:

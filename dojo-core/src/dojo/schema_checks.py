@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import CheckConstraint, MetaData, inspect, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Index,
+    MetaData,
+    PrimaryKeyConstraint,
+    UniqueConstraint,
+    inspect,
+    text,
+)
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine.reflection import Inspector
 
@@ -47,8 +57,11 @@ def preflight_emission_conflicts(connection: Connection) -> None:
     for table, required, query in queries:
         if table not in tables:
             continue
-        if not required <= {c["name"] for c in inspector.get_columns(table)}:
+        columns = {c["name"] for c in inspector.get_columns(table)}
+        if not required <= columns:
             continue  # Structural validation will reject this unsupported schema.
+        if "organization_id" in columns:
+            query = query.replace("GROUP BY ", "GROUP BY organization_id, ")
         for ids in connection.execute(text(query)).scalars():
             conflicts.append(f"{table}: row IDs {ids}")
     if conflicts:
@@ -77,6 +90,58 @@ EMISSION_REVISION = "0014_emission_idempotency"
 MONITORING_REVISION = "0015_operational_monitoring"
 MONITORING_CHECKS_REVISION = "0016_monitoring_checks"
 LIVE_REVISION = "0017_live_state"
+ORGANIZATION_REVISION = "0022_organizations"
+
+
+def single_workspace_metadata() -> MetaData:
+    """The pre-organization shape, for conservative adoption of old create_all DBs."""
+    from dojo.adapters.db import Base
+
+    metadata = MetaData()
+    for source in Base.metadata.sorted_tables:
+        if source.name != "organizations":
+            source.to_metadata(metadata)
+    old_indexes: dict[str, list[Any]] = {
+        "ix_packages_status_active": ["status"],
+        "uq_yayin_zamani_regular_due": ["due_at"],
+        "uq_yayin_zamani_pending_regular": ["kind"],
+        "uq_yayin_zamani_pending_exception": ["status"],
+        "uq_yayin_incelemesi_actionable": [text("(1)")],
+        "ix_consent_acceptances_policy_version": ["policy_version"],
+    }
+    for table in metadata.tables.values():
+        if "organization_id" not in table.c:
+            continue
+        for index in list(table.indexes):
+            if index.name in {"uq_jobs_active_render", "uq_jobs_active_media_preview"}:
+                old_indexes[index.name] = [c for c in index.expressions
+                                           if getattr(c, "name", None) != "organization_id"]
+            if index.name in old_indexes:
+                table.indexes.remove(index)
+                columns = [table.c[c] if isinstance(c, str) else c
+                           for c in old_indexes[index.name]]
+                Index(index.name, *columns, unique=True,
+                      postgresql_where=index.dialect_options["postgresql"].get("where"),
+                      _table=table)
+            elif any(c.name == "organization_id" for c in index.columns):
+                table.indexes.remove(index)
+        for constraint in list(table.constraints):
+            if "organization_id" not in getattr(constraint, "columns", ()):
+                continue
+            table.constraints.remove(constraint)
+            if isinstance(constraint, PrimaryKeyConstraint):
+                table.c.organization_id.primary_key = False
+                table.append_constraint(PrimaryKeyConstraint(
+                    *(c.name for c in constraint.columns if c.name != "organization_id"),
+                ))
+            elif isinstance(constraint, ForeignKeyConstraint):
+                table.foreign_keys.difference_update(constraint.elements)
+            elif not isinstance(constraint, UniqueConstraint):
+                raise RuntimeError("unrecognized organization constraint")
+        table._columns.remove(table.c.organization_id)
+        if table.name == "packages":
+            table.append_constraint(UniqueConstraint("folder_name"))
+    return metadata
 
 
 def _is_pending_monitoring(difference: tuple) -> bool:
@@ -110,7 +175,9 @@ def validate_legacy_schema(connection: Connection) -> str:
 
     inspector = inspect(connection)
     tables = set(inspector.get_table_names()) - {"alembic_version"}
-    current = set(Base.metadata.tables)
+    organization_schema = "organizations" in tables
+    baseline = Base.metadata if organization_schema else single_workspace_metadata()
+    current = set(baseline.tables)
     previous = current - LIVE_TABLES
     if tables not in (current, previous, previous - MONITORING_TABLES):
         raise RuntimeError("Unsupported unversioned schema: table set differs from baseline")
@@ -137,7 +204,7 @@ def validate_legacy_schema(connection: Connection) -> str:
     if schedule_present and schedule_present != SCHEDULE_INDEXES:
         raise RuntimeError("Unsupported unversioned schema: incomplete schedule indexes")
     expected = MetaData()
-    for table in Base.metadata.sorted_tables:
+    for table in baseline.sorted_tables:
         copied = table.to_metadata(expected)
         for index in list(copied.indexes):
             if index.name in EMISSION_INDEXES and not present:
@@ -189,6 +256,8 @@ def validate_legacy_schema(connection: Connection) -> str:
                        if not (d[0] == "add_table" and d[1].name in LIVE_TABLES)]
     if differences:
         raise RuntimeError(f"Unsupported unversioned schema: {differences!r}")
+    if organization_schema:
+        return ORGANIZATION_REVISION
     if pending_monitoring:
         return EMISSION_REVISION if present else OLDEST_BASELINE
     if pending_checks:
