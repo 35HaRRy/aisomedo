@@ -672,7 +672,8 @@ def test_run_collects_immediately_then_waits_one_interval() -> None:
 
 
 def test_run_uses_monotonic_deadlines_so_a_slow_turn_does_not_shift_them() -> None:
-    runner, _store, _notifier, _usage = make_runner(interval=60.0)
+    monotonic = FakeMonotonic()
+    runner, _store, _notifier, _usage = make_runner(interval=60.0, monotonic=monotonic)
     stop = ScriptedStop(turns=2)
 
     runner.run(stop)  # type: ignore[arg-type]
@@ -681,9 +682,8 @@ def test_run_uses_monotonic_deadlines_so_a_slow_turn_does_not_shift_them() -> No
     # the interval shortens its own wait instead of pushing the schedule out.
     assert stop.waits == [pytest.approx(60.0), pytest.approx(120.0)]
 
-    drifting = FakeMonotonic()
     slow_stop = ScriptedStop(turns=2)
-    _with_tick_cost(runner, drifting, 20.0).run(slow_stop)  # type: ignore[arg-type]
+    _with_tick_cost(runner, monotonic, 20.0).run(slow_stop)  # type: ignore[arg-type]
 
     assert slow_stop.waits == [pytest.approx(40.0), pytest.approx(80.0)]
 
