@@ -61,6 +61,29 @@ def test_pairing_clients_and_codes_stay_in_their_workspace(workspaces):
     assert len(root.for_organization(b["organization_id"]).list_clients()) == 1
 
 
+def test_pairing_branding_uses_the_codes_workspace_not_the_visitors_session(workspaces):
+    from io import BytesIO
+
+    from PIL import Image
+
+    _, _, first, second = workspaces
+    codes, logos = [], []
+    for client, color in ((first, "red"), (second, "blue")):
+        image = BytesIO()
+        Image.new("RGB", (20, 20), color).save(image, format="PNG")
+        uploaded = client.post("/api/settings/branding/assets", content=image.getvalue()).json()
+        client.patch("/api/settings/branding", json={"logo_asset": uploaded["asset"]})
+        logos.append(client.get(uploaded["preview_url"]).content)
+        codes.append(client.post("/api/pairing/codes").json()["code"])
+    assert first.get("/api/pairing/organization").json()["name"] == "A"
+    assert second.get("/api/pairing/organization").json()["name"] == "B"
+    visitor = TestClient(first.app)
+    assert visitor.get("/api/pairing/organization").status_code == 401
+    for code, logo in zip(codes, logos, strict=True):
+        assert visitor.get("/api/pairing/branding/logo", params={"code": code}).content == logo
+    assert first.get("/api/pairing/branding/logo", params={"code": codes[1]}).content == logos[1]
+
+
 def test_parallel_settings_reads_do_not_share_scope(workspaces):
     _, _, first, second = workspaces
     for client, caption in ((first, "First caption"), (second, "Second caption")):

@@ -13,7 +13,14 @@ from dojo.exceptions import (
     PairingCodeExpired,
     PairingCodeInvalid,
 )
-from dojo.model import AuditEvent, Client, PairingCode, PairingCodeIssued, PairingResult
+from dojo.model import (
+    AuditEvent,
+    Client,
+    Organization,
+    PairingCode,
+    PairingCodeIssued,
+    PairingResult,
+)
 from dojo.ports import AuditStore, Clock, Hasher, PairingStore, SecretGenerator
 
 CODE_TTL = timedelta(minutes=10)
@@ -86,6 +93,16 @@ class DojoPairing:
             )
         )
         return PairingCodeIssued(raw_code=raw, expires_at=code.expires_at)
+
+    def pending_code_organization(self, *, code: str) -> Organization | None:
+        """Organization a still-usable code belongs to; never consumes the code."""
+        found = self._pairing.find_code_by_hash(self._hasher.hash(code))
+        if found is None or found.consumed_at is not None:
+            return None
+        if self._clock.now() > found.expires_at:
+            return None
+        organization = self._pairing.find_organization(found.organization_id)
+        return organization if organization is not None and organization.active else None
 
     def validate_code(self, *, code: str, kind: str, name: str) -> PairingResult:
         found = self._pairing.find_code_by_hash(self._hasher.hash(code))

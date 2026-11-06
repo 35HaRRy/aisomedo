@@ -72,11 +72,13 @@ export const API_PATHS: readonly string[] = [
   "/api/packages/{folder_name}",
   "/api/packages/{folder_name}/artifacts",
   "/api/packages/{folder_name}/download",
+  "/api/pairing/branding/logo",
   "/api/pairing/clients",
   "/api/pairing/clients/{client_id}/revoke",
   "/api/pairing/codes",
   "/api/pairing/me",
   "/api/pairing/me/push-token",
+  "/api/pairing/organization",
   "/api/pairing/validate",
   "/api/reviews/occurrences/{occurrence_id}/reschedule",
   "/api/reviews/occurrences/{occurrence_id}/skip",
@@ -364,6 +366,11 @@ export type OneoffDecisionOut = {
   "occurrence_id": number;
   "package_folder": string | null;
   "status": string;
+};
+
+export type OrganizationOut = {
+  "logo_asset": string | null;
+  "name": string;
 };
 
 export type PackageArtifactOut = {

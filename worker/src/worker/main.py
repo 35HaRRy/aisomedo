@@ -259,8 +259,9 @@ def build_meta(*, store: PostgresStore | None = None) -> object | None:
             ),
             cipher=cipher,
             audit=store,
-            app_id=os.environ.get("META_APP_ID", "dev_app_id"),
-            app_secret=os.environ.get("META_APP_SECRET", "dev_secret"),
+            # Compose passes unset values as ""; fall back like a missing key.
+            app_id=os.environ.get("META_APP_ID") or "dev_app_id",
+            app_secret=os.environ.get("META_APP_SECRET") or "dev_secret",
             redirect_uri=os.environ.get("META_REDIRECT_URI", "").strip()
             or f"{resolve_public_base_url()}/api/meta/oauth/callback",
             graph_version=os.environ.get("META_GRAPH_VERSION", "v26.0"),

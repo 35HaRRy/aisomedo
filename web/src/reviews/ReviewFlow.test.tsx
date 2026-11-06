@@ -30,6 +30,7 @@ beforeEach(() => {
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
     if (url.endsWith("/compat")) return json({ api_version: "0.1.0" });
     if (url.endsWith("/me")) return json(client);
+    if (url === "/api/pairing/organization") return json({ name: "Test Dojo", logo_asset: null });
     if (url === "/api/setup") return json(setupState());
     if (url === "/api/dashboard") return json(state);
     if (url === "/api/packages/active/editor") return json(editor, editorStatus);

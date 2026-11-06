@@ -20,6 +20,32 @@ def test_global_pairing_cannot_issue_without_an_organization(system):
         pairing.create_pairing_code(requester="cli")
 
 
+def test_pending_code_only_reveals_its_active_organization_without_consuming(system):
+    _, organizations, pairing, a, b = system
+    code = pairing.create_pairing_code(requester="cli", organization_id=a.id).raw_code
+    assert pairing.pending_code_organization(code="invalid") is None
+    assert pairing.pending_code_organization(code=code) == a
+    pairing.validate_code(code=code, kind="browser", name="Browser")
+    assert pairing.pending_code_organization(code=code) is None
+    code = pairing.create_pairing_code(requester="cli", organization_id=b.id).raw_code
+    organizations.deactivate("B")
+    assert pairing.pending_code_organization(code=code) is None
+
+
+def test_pending_code_does_not_reveal_expired_organization(system):
+    from datetime import timedelta
+
+    from dojo.pairing import CODE_TTL
+    from dojo.testing import FakeClock
+
+    _, _, pairing, a, _ = system
+    clock = FakeClock()
+    pairing._clock = clock
+    code = pairing.create_pairing_code(requester="cli", organization_id=a.id).raw_code
+    pairing._clock = FakeClock(clock.now() + CODE_TTL + timedelta(seconds=1))
+    assert pairing.pending_code_organization(code=code) is None
+
+
 def test_pairing_code_attaches_client_to_its_organization(system):
     root, _, pairing, a, b = system
     issued = pairing.create_pairing_code(requester="cli", organization_id=a.id)

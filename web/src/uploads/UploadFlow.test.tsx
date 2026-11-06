@@ -18,6 +18,7 @@ function fixture({ fileLimit = 100000000, holdFirst = false, loseFirst = false, 
     if (url === "/api/events") return liveResponse();
     if (url === "/api/compat") return json({ api_version: "0.1.0" });
     if (url === "/api/pairing/me") return json(client);
+    if (url === "/api/pairing/organization") return json({ name: "Test Dojo", logo_asset: null });
     if (url === "/api/setup") return json(setupState());
     if (url === "/api/dashboard") return json(dashboard());
     if (url === "/api/packages/active/editor") return json(emptyEditor());

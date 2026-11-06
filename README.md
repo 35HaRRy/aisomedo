@@ -76,6 +76,18 @@ The API and worker must share the same media volume, including `.signed-url-revo
 
 Stop **both the API and worker**, then take a consistent database/media backup using the existing backup procedure. Update the application images/code, run the serialized schema initializer (`python -m dojo.schema` in the configured backend runtime), then restart the new API and, when intended, the worker. Do not run old and new processes against the upgraded schema together. The migration creates Kaizen and backfills ownership without resetting data. Downgrade is intentionally refused; restore the pre-upgrade backup to roll back. Do not delete volumes to upgrade.
 
+## Run the web frontend
+
+Install **Node.js 26.13.0** and keep the backend running at **http://localhost:8000** ([backend setup →](docs/guide/windows-local-setup.md)). In a new PowerShell terminal, from the repository root:
+
+```powershell
+Set-Location web
+npm ci
+npm run dev
+```
+
+Open **http://localhost:3000** and pair with a fresh one-time code. The frontend forwards API requests to the backend on port 8000. Stop the frontend with **Ctrl+C**.
+
 ## A simple publishing flow
 
 Each organization has separate packages, media, settings, Instagram credentials, and publication work. A pairing code determines the organization; there is no organization picker or shared client list.

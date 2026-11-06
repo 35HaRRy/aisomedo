@@ -1769,6 +1769,31 @@
         "title": "OrderIn",
         "type": "object"
       },
+      "OrganizationOut": {
+        "properties": {
+          "logo_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Asset"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "logo_asset"
+        ],
+        "title": "OrganizationOut",
+        "type": "object"
+      },
       "PackageArtifactOut": {
         "properties": {
           "artifact_ref": {
@@ -5396,6 +5421,42 @@
         ]
       }
     },
+    "/api/pairing/branding/logo": {
+      "get": {
+        "description": "Workspace logo for the pairing screen; only a still-usable code exposes it.",
+        "operationId": "branding_logo_api_pairing_branding_logo_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Branding Logo",
+        "tags": [
+          "pairing"
+        ]
+      }
+    },
     "/api/pairing/clients": {
       "get": {
         "operationId": "list_clients_api_pairing_clients_get",
@@ -5572,6 +5633,27 @@
           }
         },
         "summary": "Put Push Token",
+        "tags": [
+          "pairing"
+        ]
+      }
+    },
+    "/api/pairing/organization": {
+      "get": {
+        "operationId": "organization_api_pairing_organization_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Organization",
         "tags": [
           "pairing"
         ]
