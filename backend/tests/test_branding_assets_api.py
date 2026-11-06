@@ -84,9 +84,10 @@ def test_organization_and_pairing_logo_follow_branding(tmp_path: Path) -> None:
 
 def test_pairing_logo_is_throttled(tmp_path: Path) -> None:
     client, _, _, _ = make_app(tmp_path)
+    url = "/api/pairing/branding/logo"
     for _ in range(10):
-        assert client.get("/api/pairing/branding/logo", params={"code": "invalid"}).status_code == 404
-    assert client.get("/api/pairing/branding/logo", params={"code": "invalid"}).status_code == 429
+        assert client.get(url, params={"code": "invalid"}).status_code == 404
+    assert client.get(url, params={"code": "invalid"}).status_code == 429
 
 
 def test_revoked_client_cannot_upload(tmp_path: Path) -> None:
