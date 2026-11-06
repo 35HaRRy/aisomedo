@@ -42,6 +42,7 @@ export async function installPromotionFixture(page: Page, paired = true, tours =
     }
     if (path === "/api/compat") return json({ api_version: "0.1.0" });
     if (path === "/api/pairing/me") return json({ ...client, name: "Örnek çalışma alanı" }, paired ? 200 : 401);
+    if (path === "/api/pairing/organization") return json({ name: "Örnek çalışma alanı", logo_asset: null });
     if (path === "/api/pairing/validate") { paired = true; return json({}); }
     if (path === "/api/setup") return json(setupState(setupReady ? undefined : "instagram"));
     if (path === "/api/dashboard") return json(data);
