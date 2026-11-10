@@ -1,0 +1,20 @@
+# Override for the INDEPENDENT gateway Compose project, not dojo-prod.
+services:
+  gateway:
+    environment:
+      AISOMEDO_DOMAIN: ${AISOMEDO_DOMAIN:?set AISOMEDO_DOMAIN to the existing public hostname}
+    volumes:
+      - type: bind
+        source: ${AISOMEDO_GATEWAY_CONFIG:?set absolute path to ops/gateway/aisomedo.caddy}
+        target: /etc/caddy/sites-enabled/aisomedo.caddy
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - default
+      - aisomedo-proxy
+
+networks:
+  aisomedo-proxy:
+    external: true
+    name: gateway-aisomedo

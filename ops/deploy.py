@@ -27,6 +27,12 @@ FILES = (
     "docker-compose.monitoring.yml",
     "deploy.py",
 )
+# Keep pre-gateway release bundles valid for adoption and rollback.
+OPTIONAL_FILES = ("docker-compose.shared-gateway.yml",)
+GATEWAY_FILES = {
+    "gateway-aisomedo.caddy": "gateway/aisomedo.caddy",
+    "gateway-adapter.yml": "gateway/shared-gateway.yml",
+}
 SERVICES = ("backend", "worker", "gateway")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 IMAGE = re.compile(r"ghcr\.io/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}\Z")
@@ -55,8 +61,13 @@ def build_bundle(sha: str, images: dict[str, str], output: Path) -> Path:
     if output.is_symlink() or output.exists():
         raise ValueError("bundle output must be a new directory")
     output.mkdir(parents=True, mode=0o700)
-    for name in FILES:
+    for name in (*FILES, *OPTIONAL_FILES):
         shutil.copyfile(Path(__file__).resolve().parent / name, output / name)
+    for name, source in GATEWAY_FILES.items():
+        source_path = Path(__file__).resolve().parent / source
+        if not source_path.is_file():
+            source_path = Path(__file__).resolve().parent / name
+        shutil.copyfile(source_path, output / name)
     (output / "release.json").write_text(
         json.dumps({"sha": sha, "images": images}), encoding="utf-8"
     )
@@ -69,7 +80,9 @@ def validate_bundle(path: Path) -> dict[str, str]:
     if path.is_symlink() or not path.is_dir():
         raise ValueError("bundle must be a real directory")
     expected = {*FILES, "release.json", "images.json"}
-    if {p.name for p in path.iterdir()} != expected:
+    if {p.name for p in path.iterdir()} not in (
+        expected, expected | set(OPTIONAL_FILES), expected | set(OPTIONAL_FILES) | set(GATEWAY_FILES)
+    ):
         raise ValueError("bundle contains missing or unexpected files")
     if any(p.is_symlink() or not p.is_file() for p in path.iterdir()):
         raise ValueError("bundle files must be regular files, not links")
@@ -115,7 +128,7 @@ def options(mode: str, origin: str) -> None:
         )
     )
     if (
-        mode not in ("dedicated", "existing-proxy")
+        mode not in ("dedicated", "existing-proxy", "shared-gateway")
         or parts.scheme != "https"
         or not valid_host
         or (port is not None and not 1 <= port <= 65535)
@@ -150,6 +163,8 @@ def compose(release: Path, root: Path, mode: str, monitoring: bool) -> list[str]
     if not env.is_file() or env.is_symlink():
         raise ValueError("missing trusted config/production.env")
     files = [release / "docker-compose.prod.yml", release / f"docker-compose.{mode}.yml"]
+    if not files[1].is_file():
+        raise ValueError("release does not support the requested deployment mode")
     if monitoring:
         files.append(release / "docker-compose.monitoring.yml")
     files.append(release / "images.json")
@@ -174,9 +189,11 @@ def installed_bundle(release: Path, root: Path) -> Path:
     target = directory / sha
     if target.exists():
         validate_bundle(target)
+        if {p.name for p in target.iterdir()} != {p.name for p in release.iterdir()}:
+            raise ValueError("refusing to overwrite a different recorded release")
         if any(
             (target / name).read_bytes() != (release / name).read_bytes()
-            for name in (*FILES, "release.json", "images.json")
+            for name in (p.name for p in release.iterdir())
         ):
             raise ValueError("refusing to overwrite a different recorded release")
     else:
@@ -744,7 +761,7 @@ def main() -> int:
         command = commands.add_parser(name)
         command.add_argument("--release", required=True, type=Path)
         command.add_argument("--root", required=True, type=Path)
-        command.add_argument("--mode", choices=("dedicated", "existing-proxy"), required=True)
+        command.add_argument("--mode", choices=("dedicated", "existing-proxy", "shared-gateway"), required=True)
         command.add_argument("--monitoring", action="store_true")
         command.add_argument("--origin", required=True)
     args = vars(parser.parse_args())

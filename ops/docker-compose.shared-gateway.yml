@@ -1,0 +1,15 @@
+# Internal ingress only; independent shared Caddy owns public HTTPS.
+# Use instead of dedicated/existing-proxy, never in addition to them.
+services:
+  gateway:
+    environment:
+      SITE_ADDRESS: ":80"
+    networks:
+      default:
+      proxy:
+        aliases: [aisomedo-gateway]
+
+networks:
+  proxy:
+    external: true
+    name: gateway-aisomedo

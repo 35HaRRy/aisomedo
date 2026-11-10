@@ -101,6 +101,7 @@ jobs:
           docker compose --env-file ops/.env.example -f ops/docker-compose.yml config --quiet
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.dedicated.yml config
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml config
+      - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.shared-gateway.yml config
       - run: docker compose --env-file ops/.env.example -f ops/docker-compose.prod.yml -f ops/docker-compose.existing-proxy.yml pull db
       # The monitoring override requires BOTH the credential path and the project id, so CI supplies throwaway values with no real project, key or token.
       # Render only: nothing is started, so no notification can ever be sent, and no real credential is read or needed.
@@ -343,7 +344,7 @@ jobs:
           assert re.fullmatch(r'[a-z_][a-z0-9_-]*', env['DEPLOY_USER'])
           assert env['DEPLOY_PORT'].isdigit() and 1 <= int(env['DEPLOY_PORT']) <= 65535
           assert re.fullmatch(r'(/[a-zA-Z0-9_-]+)+', env['DEPLOY_ROOT'])
-          assert env['DEPLOY_MODE'] in ('dedicated', 'existing-proxy')
+          assert env['DEPLOY_MODE'] in ('dedicated', 'existing-proxy', 'shared-gateway')
           assert env['DEPLOY_MONITORING'] in ('true', 'false')
           origin = urlsplit(env['DEPLOY_ORIGIN'])
           assert origin.scheme == 'https' and origin.hostname and not origin.username

@@ -1,0 +1,4 @@
+{$AISOMEDO_DOMAIN} {
+	reverse_proxy aisomedo-gateway:80
+	import access-log
+}

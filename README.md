@@ -129,6 +129,8 @@ New-browser walkthroughs explain the important controls. Use **Tüm tanıtımlar
 
 Repository: `web/`, `android/`, `backend/`, `dojo-core/`, `worker/`, and `ops/`. See [domain terms](CONTEXT.md), [product design](docs/specs/dojo-reel-publishing-mvp.md).
 
+For independent shared HTTPS ingress, use the [package-only deployment guide](ops/gateway/README.md). CI bundles Aisomedo's site/adapter; no server checkout/build is needed. The shared gateway is managed separately.
+
 For web development, install Node.js 26.13.0, then run `npm ci` and `npm run dev` inside `web/`. For checks, use `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:browser`. The Python workspace uses Python 3.12 and `uv`; backend/domain/worker integration tests also need PostgreSQL through Docker and FFmpeg.
 
 ## Android app
