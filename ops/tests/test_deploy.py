@@ -33,6 +33,63 @@ def test_bundle_roundtrip_and_pins_init(cli, tmp_path):
     assert not any(".env" in p.name for p in bundle.iterdir())
 
 
+def test_bundle_delivers_own_gateway_files_without_a_checkout(cli, tmp_path):
+    bundle = cli.build_bundle(NEW, IMAGES, tmp_path / "bundle")
+    assert (bundle / "gateway-aisomedo.caddy").is_file(), "site must travel in its own bundle"
+    assert (bundle / "gateway-adapter.yml").is_file(), "adapter must not require a checkout"
+    assert cli.validate_bundle(bundle) == IMAGES
+    (bundle / "gateway-adapter.yml").unlink()
+    with pytest.raises(ValueError):
+        cli.validate_bundle(bundle)
+
+
+def test_downloaded_bundle_can_repackage_current_digests_without_checkout(cli, tmp_path):
+    bundle = cli.build_bundle(NEW, IMAGES, tmp_path / "downloaded")
+    spec = importlib.util.spec_from_file_location("downloaded_deploy", bundle / "deploy.py")
+    downloaded = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(downloaded)
+    baseline = downloaded.build_bundle(NEW, IMAGES, tmp_path / "baseline")
+    assert downloaded.validate_bundle(baseline) == IMAGES
+    site = "gateway-aisomedo.caddy"
+    assert (baseline / site).read_bytes() == (bundle / site).read_bytes()
+
+
+def test_shared_gateway_mode_is_bundled_without_rejecting_legacy_releases(cli, tmp_path):
+    bundle = cli.build_bundle(NEW, IMAGES, tmp_path / "bundle")
+    mode_file = bundle / "docker-compose.shared-gateway.yml"
+    assert mode_file.is_file(), "shared gateway deployment mode must travel with releases"
+    mode_file.unlink()
+    for name in ("gateway-aisomedo.caddy", "gateway-adapter.yml"):
+        (bundle / name).unlink(missing_ok=True)
+    assert cli.validate_bundle(bundle) == IMAGES
+    root = tmp_path / "install"
+    (root / "config").mkdir(parents=True)
+    (root / "config/production.env").write_text("POSTGRES_PASSWORD=fixture\n")
+    with pytest.raises(ValueError, match="mode"):
+        cli.compose(bundle, root, "shared-gateway", False)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_shared_gateway_rollout_and_rollback_keep_recorded_mode(cli, installation, fail):
+    root, new, docker = installation
+    state_path = root / "current.json"
+    state = json.loads(state_path.read_text())
+    state["mode"] = "shared-gateway"
+    state_path.write_text(json.dumps(state))
+    if fail:
+        docker.fail = "--wait-timeout"
+        with pytest.raises(RuntimeError):
+            cli.deploy(new, root, mode="shared-gateway", monitoring=False, origin="https://example.test")
+    else:
+        cli.deploy(new, root, mode="shared-gateway", monitoring=False, origin="https://example.test")
+    assert json.loads(state_path.read_text())["mode"] == "shared-gateway"
+    commands = [c for c in docker.calls if "up" in c and "--help" not in c]
+    assert commands
+    assert all(
+        any(str(arg).endswith("docker-compose.shared-gateway.yml") for arg in c) for c in commands
+    )
+
+
 @pytest.mark.parametrize(
     "sha,images",
     [
