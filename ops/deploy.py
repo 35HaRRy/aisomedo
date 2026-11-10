@@ -80,9 +80,12 @@ def validate_bundle(path: Path) -> dict[str, str]:
     if path.is_symlink() or not path.is_dir():
         raise ValueError("bundle must be a real directory")
     expected = {*FILES, "release.json", "images.json"}
-    if {p.name for p in path.iterdir()} not in (
-        expected, expected | set(OPTIONAL_FILES), expected | set(OPTIONAL_FILES) | set(GATEWAY_FILES)
-    ):
+    allowed = (
+        expected,
+        expected | set(OPTIONAL_FILES),
+        expected | set(OPTIONAL_FILES) | set(GATEWAY_FILES),
+    )
+    if {p.name for p in path.iterdir()} not in allowed:
         raise ValueError("bundle contains missing or unexpected files")
     if any(p.is_symlink() or not p.is_file() for p in path.iterdir()):
         raise ValueError("bundle files must be regular files, not links")
@@ -761,7 +764,9 @@ def main() -> int:
         command = commands.add_parser(name)
         command.add_argument("--release", required=True, type=Path)
         command.add_argument("--root", required=True, type=Path)
-        command.add_argument("--mode", choices=("dedicated", "existing-proxy", "shared-gateway"), required=True)
+        command.add_argument(
+            "--mode", choices=("dedicated", "existing-proxy", "shared-gateway"), required=True
+        )
         command.add_argument("--monitoring", action="store_true")
         command.add_argument("--origin", required=True)
     args = vars(parser.parse_args())

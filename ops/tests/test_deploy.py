@@ -35,8 +35,8 @@ def test_bundle_roundtrip_and_pins_init(cli, tmp_path):
 
 def test_bundle_delivers_own_gateway_files_without_a_checkout(cli, tmp_path):
     bundle = cli.build_bundle(NEW, IMAGES, tmp_path / "bundle")
-    assert (bundle / "gateway-aisomedo.caddy").is_file(), "Aisomedo site must travel in its own bundle"
-    assert (bundle / "gateway-adapter.yml").is_file(), "gateway adapter must not require a checkout"
+    assert (bundle / "gateway-aisomedo.caddy").is_file(), "site must travel in its own bundle"
+    assert (bundle / "gateway-adapter.yml").is_file(), "adapter must not require a checkout"
     assert cli.validate_bundle(bundle) == IMAGES
     (bundle / "gateway-adapter.yml").unlink()
     with pytest.raises(ValueError):
@@ -50,7 +50,8 @@ def test_downloaded_bundle_can_repackage_current_digests_without_checkout(cli, t
     spec.loader.exec_module(downloaded)
     baseline = downloaded.build_bundle(NEW, IMAGES, tmp_path / "baseline")
     assert downloaded.validate_bundle(baseline) == IMAGES
-    assert (baseline / "gateway-aisomedo.caddy").read_bytes() == (bundle / "gateway-aisomedo.caddy").read_bytes()
+    site = "gateway-aisomedo.caddy"
+    assert (baseline / site).read_bytes() == (bundle / site).read_bytes()
 
 
 def test_shared_gateway_mode_is_bundled_without_rejecting_legacy_releases(cli, tmp_path):
@@ -84,7 +85,9 @@ def test_shared_gateway_rollout_and_rollback_keep_recorded_mode(cli, installatio
     assert json.loads(state_path.read_text())["mode"] == "shared-gateway"
     commands = [c for c in docker.calls if "up" in c and "--help" not in c]
     assert commands
-    assert all(any(str(arg).endswith("docker-compose.shared-gateway.yml") for arg in c) for c in commands)
+    assert all(
+        any(str(arg).endswith("docker-compose.shared-gateway.yml") for arg in c) for c in commands
+    )
 
 
 @pytest.mark.parametrize(
