@@ -2,7 +2,9 @@
 
 **From instant captured media to Instagram Reels. You stay in control.**
 
-Aisomedo gives each organization its own workspace for turning photos and videos into branded Instagram Reels. Collect media, choose the order and video sections, review the result, then approve publication. A schedule helps you stay on track. It never replaces your approval.
+Aisomedo aims to simplyfy the way organizations create and publish branded Instagram Reels by providing them with a dedicated workspace tailored for their needs. Our platform allows users to effortlessly collect media, select the order and sections of their videos, and review the final product before giving their approval for publication. This streamlined process ensures that the branding remains consistent and that organizations maintain their unique style throughout their content.
+
+With the growing prominence of video content on social media platforms, particularly Instagram, businesses are seeking innovative ways to engage their audience. Aisomedo addresses this demand by offering a centralized solution where media collection, editing, branding, captions, and review processes coexist harmoniously, offering a flow that eliminates the chaotic nature of content creation.
 
 ![Aisomedo dashboard with an active package and a review ready to open](web/public/promotion/web/dashboard.png)
 
